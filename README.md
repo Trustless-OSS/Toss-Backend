@@ -1,29 +1,46 @@
-# Trustless Backend Module
+# Toss Backend
 
-This is a parallel Rust + Axum backend module for Trustless-OSS.
+This repository contains the Rust + Axum backend for Trustless OSS. It provides the API surface for the platform, background jobs, and integrations with PostgreSQL, Redis, GitHub, and Stellar.
 
-It is intentionally scoped as an incremental migration surface that can grow
-route-by-route alongside the existing TypeScript backend in `apps/backend`.
+## Prerequisites
 
-## Run
+- Rust toolchain
+- Docker Compose
+- A local environment file based on [.env.example](.env.example)
 
-Start the local infra first:
+## Quick start
 
-```bash
-docker compose up -d postgres redis
-```
+1. Copy the sample environment configuration:
 
-Then create the Axum env file from the example and run the service:
+   ```bash
+   cp .env.example .env
+   ```
 
-```bash
-cp apps/backend-axum/.env.example apps/backend-axum/.env
-cargo run --manifest-path apps/backend-axum/Cargo.toml
-```
+2. Start the supporting services:
 
-The server listens on `PORT`, defaulting to `4001`.
+   ```bash
+   docker compose up -d postgres redis
+   ```
 
-## Routes
+3. Run the backend:
 
-- `GET /` — module status
+   ```bash
+   cargo run
+   ```
+
+The server listens on the `PORT` environment variable and defaults to `4001`.
+
+## Health endpoints
+
+- `GET /` — service status
 - `GET /health` — health check
-- `GET /api/health` — API-shaped health check
+- `GET /api/health` — API-style health check
+
+## Useful commands
+
+```bash
+cargo fmt
+cargo test
+cargo build
+docker compose down
+```
