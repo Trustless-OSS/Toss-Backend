@@ -1,4 +1,4 @@
-# Toss Backend
+# ⚡️⚡️ Trustless-OSS Axum Backend ⚡️⚡️
 
 This repository contains the Rust + Axum backend for Trustless OSS. It provides the API surface for the platform, background jobs, and integrations with PostgreSQL, Redis, GitHub, and Stellar.
 
@@ -19,7 +19,7 @@ This repository contains the Rust + Axum backend for Trustless OSS. It provides 
 2. Start the supporting services:
 
    ```bash
-   docker compose up -d postgres redis
+   docker compose up -d
    ```
 
 3. Run the backend:
@@ -28,7 +28,7 @@ This repository contains the Rust + Axum backend for Trustless OSS. It provides 
    cargo run
    ```
 
-The server listens on the `PORT` environment variable and defaults to `4001`.
+The server listens on the `PORT` environment variable and defaults to `5000`.
 
 ## Health endpoints
 

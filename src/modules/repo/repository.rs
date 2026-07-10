@@ -4,7 +4,7 @@ use uuid::Uuid;
 
 use crate::{
     error::{require_db, AppError},
-    infra::{cache, cache_keys},
+    infra::{cache_keys},
     shared::models::{Assignment, Contributor, Issue, Repo},
     state::AppState,
 };
@@ -884,6 +884,7 @@ pub async fn delete_repos_by_installation_id(
     Ok(())
 }
 
+//  Delete Repositry from DB 
 pub async fn delete_repo_by_github_id(
     state: &AppState,
     github_repo_id: i64,
