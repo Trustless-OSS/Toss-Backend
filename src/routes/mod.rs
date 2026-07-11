@@ -14,7 +14,7 @@ pub fn router() -> Router<AppState> {
         .merge(queue::router())
         .merge(github::routes::router())
         .merge(repo::routes::router())
-        .merge(escrow::routes::router())
+        .merge(escrow::router::router())
         .merge(bounty::routes::router())
         .merge(contributor::routes::router())
 }

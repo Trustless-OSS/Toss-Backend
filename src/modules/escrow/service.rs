@@ -1,12 +1,16 @@
-use rust_decimal::Decimal;
+/// All escrow business logic — deploy, fund, close, refund, milestone operations.
+///
+/// This module talks directly to the TrustlessWork API and the database.
+/// Handlers in `handler.rs` call into these functions; they contain no HTTP
+/// concerns (no Axum types, no request parsing).
+use rust_decimal::{prelude::ToPrimitive, Decimal};
 use serde_json::{json, Value};
-use tracing::{error, info};
+use tracing::info;
 
 use crate::{
     error::AppError,
     infra::stellar::signer::sign_and_send_transaction,
     modules::{
-        bounty::labels::difficulty_label,
         escrow::trustless_work::client::tw_fetch,
         repo::repository::{get_repo_by_id, update_issue_status, update_repo_escrow_balance},
     },
@@ -14,14 +18,12 @@ use crate::{
     state::AppState,
 };
 
+// USDC contract address on Stellar testnet.
 const TESTNET_USDC: &str = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
 
-fn decode_base58(input: &str) -> Result<Vec<u8>, AppError> {
-    bs58::decode(input)
-        .into_vec()
-        .map_err(|error| AppError::stellar(format!("invalid base58 address: {error}")))
-}
+// ── Deploy ────────────────────────────────────────────────────────────────────
 
+/// Build the unsigned deploy transaction for a new multi-release escrow.
 pub async fn create_unsigned_escrow(
     state: &AppState,
     repo: &Repo,
@@ -59,6 +61,7 @@ pub async fn create_unsigned_escrow(
         .ok_or_else(|| AppError::internal("TrustlessWork response missing unsignedTransaction"))
 }
 
+/// Submit the signed deploy XDR, persist the resulting contract ID.
 pub async fn submit_deploy_escrow(
     state: &AppState,
     repo_id: uuid::Uuid,
@@ -83,6 +86,9 @@ pub async fn submit_deploy_escrow(
     Ok(contract_id.to_string())
 }
 
+// ── Fund ──────────────────────────────────────────────────────────────────────
+
+/// Build the unsigned fund transaction.
 pub async fn create_fund_unsigned(
     state: &AppState,
     repo: &Repo,
@@ -101,7 +107,7 @@ pub async fn create_fund_unsigned(
         Some(json!({
             "contractId": contract_id,
             "signer": funder_wallet,
-            "amount": amount,
+            "amount": decimal_json_number(amount, "amount")?,
         })),
     )
     .await?;
@@ -113,6 +119,7 @@ pub async fn create_fund_unsigned(
         .ok_or_else(|| AppError::internal("TrustlessWork response missing unsignedTransaction"))
 }
 
+/// Submit the signed fund XDR and update the stored balance.
 pub async fn submit_fund_escrow(
     state: &AppState,
     repo_id: uuid::Uuid,
@@ -135,287 +142,7 @@ pub async fn submit_fund_escrow(
     Ok(new_balance)
 }
 
-pub async fn create_close_unsigned(
-    state: &AppState,
-    repo: &Repo,
-    maintainer_wallet: &str,
-) -> Result<String, AppError> {
-    let contract_id = repo
-        .escrow_contract_id
-        .as_deref()
-        .ok_or_else(|| AppError::bad_request("No escrow deployed"))?;
-
-    let response = tw_fetch(
-        state,
-        "/escrow/multi-release/close-escrow",
-        reqwest::Method::POST,
-        Some(json!({
-            "contractId": contract_id,
-            "signer": maintainer_wallet,
-        })),
-    )
-    .await?;
-
-    response
-        .get("unsignedTransaction")
-        .and_then(|value| value.as_str())
-        .map(str::to_owned)
-        .ok_or_else(|| AppError::internal("TrustlessWork response missing unsignedTransaction"))
-}
-
-pub async fn submit_close_escrow(
-    state: &AppState,
-    repo_id: uuid::Uuid,
-    signed_xdr: &str,
-) -> Result<(), AppError> {
-    tw_fetch(
-        state,
-        "/helper/send-transaction",
-        reqwest::Method::POST,
-        Some(json!({ "signedXdr": signed_xdr })),
-    )
-    .await?;
-
-    crate::modules::repo::repository::clear_repo_escrow(state, repo_id).await
-}
-
-pub async fn push_milestone_on_chain(
-    state: &AppState,
-    repo: &Repo,
-    issue: &Issue,
-    payout_address: &str,
-    payout_chain: &str,
-) -> Result<i32, AppError> {
-    let platform_key = state.config.platform_stellar_public_key.as_str();
-    let contract_id = repo
-        .escrow_contract_id
-        .as_deref()
-        .ok_or_else(|| AppError::bad_request("No escrow deployed"))?;
-
-    let escrow_array = tw_fetch(
-        state,
-        &format!("/helper/get-escrow-by-contract-ids?contractIds[]={contract_id}"),
-        reqwest::Method::GET,
-        None,
-    )
-    .await?;
-
-    let escrow_data = escrow_array
-        .as_array()
-        .and_then(|items| items.first())
-        .cloned()
-        .ok_or_else(|| AppError::internal(format!("Escrow not found: {contract_id}")))?;
-
-    let current_milestones = escrow_data
-        .get("milestones")
-        .and_then(|value| value.as_array())
-        .cloned()
-        .unwrap_or_default();
-
-    let receiver = build_receiver(payout_chain, payout_address)?;
-    let milestone_data = json!({
-        "description": format!("Issue #{}: {}", issue.github_issue_number, issue.title),
-        "amount": issue.reward_amount,
-        "status": "pending",
-        "evidence": "",
-        "flags": { "approved": false, "released": false, "disputed": false, "resolved": false },
-        "receiver": receiver,
-    });
-
-    let mut new_milestones = current_milestones.clone();
-    let milestone_index = if let Some(index) = issue.milestone_index {
-        if (index as usize) < new_milestones.len() {
-            new_milestones[index as usize] = milestone_data.clone();
-            index
-        } else {
-            let index = current_milestones.len() as i32;
-            new_milestones.push(milestone_data);
-            index
-        }
-    } else {
-        let index = current_milestones.len() as i32;
-        new_milestones.push(milestone_data);
-        index
-    };
-
-    let escrow_payload = strip_escrow_metadata(&escrow_data);
-    let mut payload = escrow_payload;
-    if let Some(obj) = payload.as_object_mut() {
-        obj.insert("milestones".to_string(), json!(new_milestones));
-    }
-
-    let update_res = tw_fetch(
-        state,
-        "/escrow/multi-release/update-escrow",
-        reqwest::Method::PUT,
-        Some(json!({
-            "signer": platform_key,
-            "contractId": contract_id,
-            "escrow": payload,
-        })),
-    )
-    .await?;
-
-    let unsigned = update_res
-        .get("unsignedTransaction")
-        .and_then(|value| value.as_str())
-        .ok_or_else(|| AppError::internal("missing unsignedTransaction"))?;
-
-    sign_and_send_transaction(state, unsigned, None).await?;
-    update_issue_status(state, issue.id, "active", Some(milestone_index)).await?;
-    info!(
-        issue = issue.github_issue_number,
-        milestone_index, "issue pushed on-chain"
-    );
-    Ok(milestone_index)
-}
-
-pub async fn release_escrow_milestone(
-    state: &AppState,
-    repo: &Repo,
-    issue: &Issue,
-) -> Result<String, AppError> {
-    let platform_key = state.config.platform_stellar_public_key.as_str();
-    let contract_id = repo
-        .escrow_contract_id
-        .as_deref()
-        .ok_or_else(|| AppError::bad_request("No escrow deployed"))?;
-    let milestone_index = issue.milestone_index.ok_or_else(|| {
-        AppError::bad_request(format!(
-            "milestone_index is null for issue #{}",
-            issue.github_issue_number
-        ))
-    })?;
-
-    let approve_res = tw_fetch(
-        state,
-        "/escrow/multi-release/approve-milestone",
-        reqwest::Method::POST,
-        Some(json!({
-            "approver": platform_key,
-            "contractId": contract_id,
-            "milestoneIndex": milestone_index.to_string(),
-        })),
-    )
-    .await;
-
-    match approve_res {
-        Ok(response) => {
-            let unsigned = response
-                .get("unsignedTransaction")
-                .and_then(|value| value.as_str())
-                .ok_or_else(|| AppError::internal("missing unsignedTransaction"))?;
-            sign_and_send_transaction(state, unsigned, None).await?;
-        }
-        Err(error)
-            if error
-                .to_string()
-                .contains("already been approved previously") => {}
-        Err(error) => return Err(error),
-    }
-
-    let release_res = tw_fetch(
-        state,
-        "/escrow/multi-release/release-milestone-funds",
-        reqwest::Method::POST,
-        Some(json!({
-            "releaseSigner": platform_key,
-            "contractId": contract_id,
-            "milestoneIndex": milestone_index.to_string(),
-        })),
-    )
-    .await;
-
-    match release_res {
-        Ok(response) => {
-            let unsigned = response
-                .get("unsignedTransaction")
-                .and_then(|value| value.as_str())
-                .ok_or_else(|| AppError::internal("missing unsignedTransaction"))?;
-            let result = sign_and_send_transaction(state, unsigned, None).await?;
-            Ok(result
-                .get("hash")
-                .or_else(|| result.get("transactionHash"))
-                .and_then(|value| value.as_str())
-                .unwrap_or("success")
-                .to_string())
-        }
-        Err(error) => {
-            let message = error.to_string();
-            if message.contains("already been released previously")
-                || message.contains("already been paid")
-            {
-                Ok("success".to_string())
-            } else if message.contains("Only the dispute resolver can execute this function")
-                && issue.reward_amount == Decimal::ZERO
-            {
-                Ok("success".to_string())
-            } else {
-                Err(error)
-            }
-        }
-    }
-}
-
-fn build_receiver(payout_chain: &str, payout_address: &str) -> Result<Value, AppError> {
-    if payout_chain == "stellar" {
-        return Ok(json!({
-            "payout_type": 0,
-            "stellar_address": payout_address,
-            "destination_domain": 0,
-            "recipient": "0000000000000000000000000000000000000000000000000000000000000000",
-        }));
-    }
-
-    let destination_domain = match payout_chain {
-        "base" => 6,
-        "ethereum" => 0,
-        "solana" => 5,
-        _ => 0,
-    };
-
-    let recipient_hex = if payout_chain == "solana" {
-        pad_left(&hex::encode(decode_base58(payout_address)?), 64, '0')
-    } else {
-        let clean = payout_address.strip_prefix("0x").unwrap_or(payout_address);
-        pad_left(&clean.to_ascii_lowercase(), 64, '0')
-    };
-
-    Ok(json!({
-        "payout_type": 1,
-        "stellar_address": Value::Null,
-        "destination_domain": destination_domain,
-        "recipient": recipient_hex,
-    }))
-}
-
-fn pad_left(value: &str, len: usize, ch: char) -> String {
-    if value.len() >= len {
-        return value.to_string();
-    }
-    let padding: String = std::iter::repeat(ch).take(len - value.len()).collect();
-    format!("{padding}{value}")
-}
-
-fn strip_escrow_metadata(escrow_data: &Value) -> Value {
-    let mut payload = escrow_data.clone();
-    if let Some(obj) = payload.as_object_mut() {
-        for key in [
-            "type",
-            "createdAt",
-            "updatedAt",
-            "balance",
-            "inconsistencies",
-            "contractBaseId",
-            "isActive",
-            "receiverMemo",
-        ] {
-            obj.remove(key);
-        }
-    }
-    payload
-}
-
+/// Re-fetch the on-chain balance and sync it to the database if it drifted.
 pub async fn sync_repo_escrow_balance(state: &AppState, repo: &Repo) -> Result<Decimal, AppError> {
     let contract_id = repo
         .escrow_contract_id
@@ -447,6 +174,60 @@ pub async fn sync_repo_escrow_balance(state: &AppState, repo: &Repo) -> Result<D
     Ok(on_chain_balance)
 }
 
+// ── Close ─────────────────────────────────────────────────────────────────────
+
+/// Build the unsigned close-escrow transaction.
+pub async fn create_close_unsigned(
+    state: &AppState,
+    repo: &Repo,
+    maintainer_wallet: &str,
+) -> Result<String, AppError> {
+    let contract_id = repo
+        .escrow_contract_id
+        .as_deref()
+        .ok_or_else(|| AppError::bad_request("No escrow deployed"))?;
+
+    let response = tw_fetch(
+        state,
+        "/escrow/multi-release/close-escrow",
+        reqwest::Method::POST,
+        Some(json!({
+            "contractId": contract_id,
+            "signer": maintainer_wallet,
+        })),
+    )
+    .await?;
+
+    response
+        .get("unsignedTransaction")
+        .and_then(|value| value.as_str())
+        .map(str::to_owned)
+        .ok_or_else(|| AppError::internal("TrustlessWork response missing unsignedTransaction"))
+}
+
+/// Submit the signed close XDR and clear the escrow record in the database.
+pub async fn submit_close_escrow(
+    state: &AppState,
+    repo_id: uuid::Uuid,
+    signed_xdr: &str,
+) -> Result<(), AppError> {
+    tw_fetch(
+        state,
+        "/helper/send-transaction",
+        reqwest::Method::POST,
+        Some(json!({ "signedXdr": signed_xdr })),
+    )
+    .await?;
+
+    crate::modules::repo::repository::clear_repo_escrow(state, repo_id).await
+}
+
+// ── Refund ────────────────────────────────────────────────────────────────────
+
+/// Full refund flow: dispute/resolve every unreleased milestone, withdraw
+/// remaining balance, cancel all open issues.
+///
+/// Returns `(total_refunded, cancelled_issue_count)`.
 pub async fn refund_escrow(
     state: &AppState,
     repo: &Repo,
@@ -537,7 +318,10 @@ pub async fn refund_escrow(
                     "disputeResolver": resolver_pub,
                     "contractId": contract_id,
                     "milestoneIndex": index.to_string(),
-                    "distributions": [{ "address": maintainer_wallet, "amount": amount }],
+                    "distributions": [{
+                        "address": maintainer_wallet,
+                        "amount": decimal_json_number(amount, "distribution amount")?,
+                    }],
                 })),
             )
             .await?;
@@ -668,7 +452,10 @@ pub async fn refund_escrow(
             Some(json!({
                 "contractId": contract_id,
                 "disputeResolver": if is_dual_wallet { resolver_pub.clone() } else { platform_key.to_string() },
-                "distributions": [{ "address": maintainer_wallet, "amount": current_balance }],
+                "distributions": [{
+                    "address": maintainer_wallet,
+                    "amount": decimal_json_number(current_balance, "distribution amount")?,
+                }],
             })),
         )
         .await?;
@@ -702,4 +489,278 @@ pub async fn refund_escrow(
 
     update_repo_escrow_balance(state, repo.id, Decimal::ZERO, Some(repo.github_repo_id)).await?;
     Ok((total_refunded, cancelled_count))
+}
+
+// ── Milestone operations ──────────────────────────────────────────────────────
+
+/// Add or update a milestone on-chain for the given issue, then mark it active.
+pub async fn push_milestone_on_chain(
+    state: &AppState,
+    repo: &Repo,
+    issue: &Issue,
+    payout_address: &str,
+    payout_chain: &str,
+) -> Result<i32, AppError> {
+    let platform_key = state.config.platform_stellar_public_key.as_str();
+    let contract_id = repo
+        .escrow_contract_id
+        .as_deref()
+        .ok_or_else(|| AppError::bad_request("No escrow deployed"))?;
+
+    let escrow_array = tw_fetch(
+        state,
+        &format!("/helper/get-escrow-by-contract-ids?contractIds[]={contract_id}"),
+        reqwest::Method::GET,
+        None,
+    )
+    .await?;
+
+    let escrow_data = escrow_array
+        .as_array()
+        .and_then(|items| items.first())
+        .cloned()
+        .ok_or_else(|| AppError::internal(format!("Escrow not found: {contract_id}")))?;
+
+    let current_milestones = escrow_data
+        .get("milestones")
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    let receiver = build_receiver(payout_chain, payout_address)?;
+    let milestone_data = json!({
+        "description": format!("Issue #{}: {}", issue.github_issue_number, issue.title),
+        "amount": decimal_json_number(issue.reward_amount, "milestone amount")?,
+        "status": "pending",
+        "evidence": "",
+        "flags": { "approved": false, "released": false, "disputed": false, "resolved": false },
+        "receiver": receiver,
+    });
+
+    let mut new_milestones = current_milestones.clone();
+    let milestone_index = if let Some(index) = issue.milestone_index {
+        if (index as usize) < new_milestones.len() {
+            new_milestones[index as usize] = milestone_data.clone();
+            index
+        } else {
+            let index = current_milestones.len() as i32;
+            new_milestones.push(milestone_data);
+            index
+        }
+    } else {
+        let index = current_milestones.len() as i32;
+        new_milestones.push(milestone_data);
+        index
+    };
+
+    let escrow_payload = strip_escrow_metadata(&escrow_data);
+    let mut payload = escrow_payload;
+    if let Some(obj) = payload.as_object_mut() {
+        obj.insert("milestones".to_string(), json!(new_milestones));
+    }
+
+    let update_res = tw_fetch(
+        state,
+        "/escrow/multi-release/update-escrow",
+        reqwest::Method::PUT,
+        Some(json!({
+            "signer": platform_key,
+            "contractId": contract_id,
+            "escrow": payload,
+        })),
+    )
+    .await?;
+
+    let unsigned = update_res
+        .get("unsignedTransaction")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| AppError::internal("missing unsignedTransaction"))?;
+
+    sign_and_send_transaction(state, unsigned, None).await?;
+    update_issue_status(state, issue.id, "active", Some(milestone_index)).await?;
+    info!(
+        issue = issue.github_issue_number,
+        milestone_index, "issue pushed on-chain"
+    );
+    Ok(milestone_index)
+}
+
+/// Approve and release funds for a completed milestone.
+pub async fn release_escrow_milestone(
+    state: &AppState,
+    repo: &Repo,
+    issue: &Issue,
+) -> Result<String, AppError> {
+    let platform_key = state.config.platform_stellar_public_key.as_str();
+    let contract_id = repo
+        .escrow_contract_id
+        .as_deref()
+        .ok_or_else(|| AppError::bad_request("No escrow deployed"))?;
+    let milestone_index = issue.milestone_index.ok_or_else(|| {
+        AppError::bad_request(format!(
+            "milestone_index is null for issue #{}",
+            issue.github_issue_number
+        ))
+    })?;
+
+    let approve_res = tw_fetch(
+        state,
+        "/escrow/multi-release/approve-milestone",
+        reqwest::Method::POST,
+        Some(json!({
+            "approver": platform_key,
+            "contractId": contract_id,
+            "milestoneIndex": milestone_index.to_string(),
+        })),
+    )
+    .await;
+
+    match approve_res {
+        Ok(response) => {
+            let unsigned = response
+                .get("unsignedTransaction")
+                .and_then(|value| value.as_str())
+                .ok_or_else(|| AppError::internal("missing unsignedTransaction"))?;
+            sign_and_send_transaction(state, unsigned, None).await?;
+        }
+        Err(error)
+            if error
+                .to_string()
+                .contains("already been approved previously") => {}
+        Err(error) => return Err(error),
+    }
+
+    let release_res = tw_fetch(
+        state,
+        "/escrow/multi-release/release-milestone-funds",
+        reqwest::Method::POST,
+        Some(json!({
+            "releaseSigner": platform_key,
+            "contractId": contract_id,
+            "milestoneIndex": milestone_index.to_string(),
+        })),
+    )
+    .await;
+
+    match release_res {
+        Ok(response) => {
+            let unsigned = response
+                .get("unsignedTransaction")
+                .and_then(|value| value.as_str())
+                .ok_or_else(|| AppError::internal("missing unsignedTransaction"))?;
+            let result = sign_and_send_transaction(state, unsigned, None).await?;
+            Ok(result
+                .get("hash")
+                .or_else(|| result.get("transactionHash"))
+                .and_then(|value| value.as_str())
+                .unwrap_or("success")
+                .to_string())
+        }
+        Err(error) => {
+            let message = error.to_string();
+            if message.contains("already been released previously")
+                || message.contains("already been paid")
+            {
+                Ok("success".to_string())
+            } else if message.contains("Only the dispute resolver can execute this function")
+                && issue.reward_amount == Decimal::ZERO
+            {
+                Ok("success".to_string())
+            } else {
+                Err(error)
+            }
+        }
+    }
+}
+
+// ── Private helpers ───────────────────────────────────────────────────────────
+
+/// Build a TrustlessWork receiver object for the given chain and address.
+fn build_receiver(payout_chain: &str, payout_address: &str) -> Result<Value, AppError> {
+    if payout_chain == "stellar" {
+        return Ok(json!({
+            "payout_type": 0,
+            "stellar_address": payout_address,
+            "destination_domain": 0,
+            "recipient": "0000000000000000000000000000000000000000000000000000000000000000",
+        }));
+    }
+
+    let destination_domain = match payout_chain {
+        "base" => 6,
+        "ethereum" => 0,
+        "solana" => 5,
+        _ => 0,
+    };
+
+    let recipient_hex = if payout_chain == "solana" {
+        pad_left(&hex::encode(decode_base58(payout_address)?), 64, '0')
+    } else {
+        let clean = payout_address.strip_prefix("0x").unwrap_or(payout_address);
+        pad_left(&clean.to_ascii_lowercase(), 64, '0')
+    };
+
+    Ok(json!({
+        "payout_type": 1,
+        "stellar_address": Value::Null,
+        "destination_domain": destination_domain,
+        "recipient": recipient_hex,
+    }))
+}
+
+fn decode_base58(input: &str) -> Result<Vec<u8>, AppError> {
+    bs58::decode(input)
+        .into_vec()
+        .map_err(|error| AppError::stellar(format!("invalid base58 address: {error}")))
+}
+
+fn pad_left(value: &str, len: usize, ch: char) -> String {
+    if value.len() >= len {
+        return value.to_string();
+    }
+    let padding: String = std::iter::repeat(ch).take(len - value.len()).collect();
+    format!("{padding}{value}")
+}
+
+/// Remove read-only metadata fields before sending an escrow payload to the
+/// update endpoint.
+fn strip_escrow_metadata(escrow_data: &Value) -> Value {
+    let mut payload = escrow_data.clone();
+    if let Some(obj) = payload.as_object_mut() {
+        for key in [
+            "type",
+            "createdAt",
+            "updatedAt",
+            "balance",
+            "inconsistencies",
+            "contractBaseId",
+            "isActive",
+            "receiverMemo",
+        ] {
+            obj.remove(key);
+        }
+    }
+    payload
+}
+
+fn decimal_json_number(value: Decimal, field_name: &str) -> Result<Value, AppError> {
+    let number = value
+        .to_f64()
+        .and_then(serde_json::Number::from_f64)
+        .ok_or_else(|| AppError::internal(format!("Invalid {field_name}")))?;
+
+    Ok(Value::Number(number))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decimal_json_number_serializes_as_number() {
+        let value = decimal_json_number(Decimal::new(125, 1), "amount").unwrap();
+
+        assert!(value.is_number());
+        assert_eq!(value, json!(12.5));
+    }
 }

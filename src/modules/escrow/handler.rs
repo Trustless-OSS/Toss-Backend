@@ -1,106 +1,37 @@
-use axum::{extract::State, routing::post, Json, Router};
+/// Thin Axum handler functions.
+///
+/// Each handler is responsible only for:
+///   1. Extracting data from the HTTP request.
+///   2. Calling the relevant `service` function.
+///   3. Shaping the HTTP response.
+///
+/// No business logic lives here.
+use axum::{extract::State, Json};
 use rust_decimal::Decimal;
-use serde::{Deserialize, Serialize};
 use tracing::error;
-use uuid::Uuid;
 
 use crate::{
     error::AppError,
     middleware::auth::AuthedUser,
-    modules::escrow::trustless_work::milestone::{
-        create_close_unsigned, create_fund_unsigned, create_unsigned_escrow, refund_escrow,
-        submit_close_escrow, submit_deploy_escrow,
-    },
-    modules::github::auth::post_comment,
-    modules::repo::repository::{
-        get_contributor_by_github_id, get_repo_by_id, is_maintainer, list_issues_to_cancel,
+    modules::{
+        escrow::{
+            dto::{
+                CloseEscrowBody, ContractIdResponse, CreateEscrowBody, FundEscrowBody, OkResponse,
+                RefundEscrowBody, RefundResponse, SubmitCloseBody, SubmitDeployBody,
+                SubmitFundBody, SubmitFundResponse, UnsignedTransactionResponse,
+            },
+            service,
+        },
+        github::auth::post_comment,
+        repo::repository::{
+            get_contributor_by_github_id, get_repo_by_id, is_maintainer, list_issues_to_cancel,
+            update_repo_escrow_balance,
+        },
     },
     state::AppState,
 };
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct CreateEscrowBody {
-    repo_id: Uuid,
-    maintainer_wallet: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct SubmitDeployBody {
-    repo_id: Uuid,
-    signed_xdr: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct FundEscrowBody {
-    repo_id: Uuid,
-    amount: Decimal,
-    funder_wallet: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct SubmitFundBody {
-    repo_id: Uuid,
-    amount: Decimal,
-    signed_xdr: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RefundEscrowBody {
-    repo_id: Uuid,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct CloseEscrowBody {
-    repo_id: Uuid,
-    maintainer_wallet: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct SubmitCloseBody {
-    repo_id: Uuid,
-    signed_xdr: String,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct UnsignedTransactionResponse {
-    unsigned_transaction: String,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ContractIdResponse {
-    contract_id: String,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct SubmitFundResponse {
-    ok: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    new_balance: Option<Decimal>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct RefundResponse {
-    refunded_amount: Decimal,
-    cancelled_issues: i64,
-}
-
-#[derive(Debug, Serialize)]
-struct OkResponse {
-    ok: bool,
-}
-
-async fn create_escrow_unsigned(
+pub async fn create_escrow_unsigned(
     State(state): State<AppState>,
     user: AuthedUser,
     Json(body): Json<CreateEscrowBody>,
@@ -116,14 +47,14 @@ async fn create_escrow_unsigned(
     }
 
     let unsigned_transaction =
-        create_unsigned_escrow(&state, &repo, &body.maintainer_wallet).await?;
+        service::create_unsigned_escrow(&state, &repo, &body.maintainer_wallet).await?;
 
     Ok(Json(UnsignedTransactionResponse {
         unsigned_transaction,
     }))
 }
 
-async fn submit_deploy(
+pub async fn submit_deploy(
     State(state): State<AppState>,
     user: AuthedUser,
     Json(body): Json<SubmitDeployBody>,
@@ -134,12 +65,12 @@ async fn submit_deploy(
         ));
     }
 
-    let contract_id = submit_deploy_escrow(&state, body.repo_id, &body.signed_xdr).await?;
+    let contract_id = service::submit_deploy_escrow(&state, body.repo_id, &body.signed_xdr).await?;
 
     Ok(Json(ContractIdResponse { contract_id }))
 }
 
-async fn fund_unsigned(
+pub async fn fund_unsigned(
     State(state): State<AppState>,
     user: AuthedUser,
     Json(body): Json<FundEscrowBody>,
@@ -150,7 +81,7 @@ async fn fund_unsigned(
 
     let repo = get_repo_by_id(&state, body.repo_id)
         .await?
-        .ok_or_else(|| AppError::bad_request("No escrow deployed for this repository"))?;
+        .ok_or_else(|| AppError::bad_request("Repo Not Found"))?;
 
     if repo.escrow_contract_id.is_none() {
         return Err(AppError::bad_request(
@@ -165,20 +96,19 @@ async fn fund_unsigned(
     }
 
     let unsigned_transaction =
-        create_fund_unsigned(&state, &repo, body.amount, &body.funder_wallet).await?;
+        service::create_fund_unsigned(&state, &repo, body.amount, &body.funder_wallet).await?;
 
     Ok(Json(UnsignedTransactionResponse {
         unsigned_transaction,
     }))
 }
 
-async fn submit_fund(
+pub async fn submit_fund(
     State(state): State<AppState>,
     _user: AuthedUser,
     Json(body): Json<SubmitFundBody>,
 ) -> Result<Json<SubmitFundResponse>, AppError> {
     use crate::modules::escrow::trustless_work::client::tw_fetch;
-    use crate::modules::repo::repository::update_repo_escrow_balance;
 
     tw_fetch(
         &state,
@@ -204,7 +134,7 @@ async fn submit_fund(
     }
 }
 
-async fn refund(
+pub async fn refund(
     State(state): State<AppState>,
     user: AuthedUser,
     Json(body): Json<RefundEscrowBody>,
@@ -241,7 +171,7 @@ async fn refund(
     let contract_id = repo.escrow_contract_id.clone().unwrap_or_default();
 
     let (refunded_amount, cancelled_issues) =
-        refund_escrow(&state, &repo, maintainer_wallet).await?;
+        service::refund_escrow(&state, &repo, maintainer_wallet).await?;
 
     for issue in &issues_to_cancel {
         let comment = format!(
@@ -260,7 +190,7 @@ async fn refund(
     }))
 }
 
-async fn close_unsigned(
+pub async fn close_unsigned(
     State(state): State<AppState>,
     user: AuthedUser,
     Json(body): Json<CloseEscrowBody>,
@@ -280,14 +210,14 @@ async fn close_unsigned(
     }
 
     let unsigned_transaction =
-        create_close_unsigned(&state, &repo, &body.maintainer_wallet).await?;
+        service::create_close_unsigned(&state, &repo, &body.maintainer_wallet).await?;
 
     Ok(Json(UnsignedTransactionResponse {
         unsigned_transaction,
     }))
 }
 
-async fn submit_close(
+pub async fn submit_close(
     State(state): State<AppState>,
     user: AuthedUser,
     Json(body): Json<SubmitCloseBody>,
@@ -298,18 +228,7 @@ async fn submit_close(
         ));
     }
 
-    submit_close_escrow(&state, body.repo_id, &body.signed_xdr).await?;
+    service::submit_close_escrow(&state, body.repo_id, &body.signed_xdr).await?;
 
     Ok(Json(OkResponse { ok: true }))
-}
-
-pub fn router() -> Router<AppState> {
-    Router::new()
-        .route("/api/escrow/create-unsigned", post(create_escrow_unsigned))
-        .route("/api/escrow/submit-deploy", post(submit_deploy))
-        .route("/api/escrow/fund-unsigned", post(fund_unsigned))
-        .route("/api/escrow/submit-fund", post(submit_fund))
-        .route("/api/escrow/refund", post(refund))
-        .route("/api/escrow/close-unsigned", post(close_unsigned))
-        .route("/api/escrow/submit-close", post(submit_close))
 }

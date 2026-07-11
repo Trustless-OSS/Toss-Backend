@@ -1,10 +1,9 @@
 use rust_decimal::Decimal;
-use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::{
     error::{require_db, AppError},
-    infra::{cache_keys},
+    infra::cache_keys,
     shared::models::{Assignment, Contributor, Issue, Repo},
     state::AppState,
 };
@@ -152,12 +151,13 @@ pub async fn list_repos_for_user(
 }
 
 pub async fn upsert_repo(
-    pool: &PgPool,
+    state: &AppState,
     github_repo_id: i64,
     full_name: &str,
     owner_github_id: i64,
     owner_username: &str,
 ) -> Result<Repo, AppError> {
+    let pool = require_db(&state.db)?;
     sqlx::query_as::<_, Repo>(
         "INSERT INTO repos (github_repo_id, full_name, owner_github_id, owner_username, reward_low, reward_medium, reward_high)
          VALUES ($1, $2, $3, $4, 1, 2, 3)
@@ -496,7 +496,6 @@ pub async fn get_issue_with_repo(
     state: &AppState,
     issue_id: Uuid,
 ) -> Result<Option<(Issue, Repo)>, AppError> {
-    let pool = require_db(&state.db)?;
     let issue = get_issue_by_id(state, issue_id).await?;
     let Some(issue) = issue else {
         return Ok(None);
@@ -829,7 +828,7 @@ pub async fn reserve_repo_balance(
 }
 
 pub async fn upsert_installation_repo(
-    pool: &PgPool,
+    state: &AppState,
     github_repo_id: i64,
     full_name: &str,
     owner_github_id: i64,
@@ -840,6 +839,7 @@ pub async fn upsert_installation_repo(
     installer_github_id: i64,
     github_installation_id: i64,
 ) -> Result<(), AppError> {
+    let pool = require_db(&state.db)?;
     sqlx::query(
         "INSERT INTO repos (
             github_repo_id, full_name, owner_github_id, owner_username, owner_type,
@@ -884,7 +884,7 @@ pub async fn delete_repos_by_installation_id(
     Ok(())
 }
 
-//  Delete Repositry from DB 
+//  Delete Repositry from DB
 pub async fn delete_repo_by_github_id(
     state: &AppState,
     github_repo_id: i64,

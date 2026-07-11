@@ -1,4 +1,5 @@
-pub mod adapter;
-pub mod routes;
-pub mod soroban;
+pub mod dto;
+pub mod handler;
+pub mod router;
+pub mod service;
 pub mod trustless_work;

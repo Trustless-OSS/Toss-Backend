@@ -3,7 +3,7 @@ use serde_json::Value;
 use crate::{
     error::AppError,
     modules::{
-        escrow::trustless_work::milestone::push_milestone_on_chain,
+        escrow::service::push_milestone_on_chain,
         github::auth::post_comment,
         repo::repository::{
             ensure_contributor, get_issue_by_repo_and_github_id, get_repo_by_github_id,

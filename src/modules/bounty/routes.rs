@@ -10,9 +10,7 @@ use uuid::Uuid;
 use crate::{
     error::AppError,
     middleware::auth::AuthedUser,
-    modules::escrow::trustless_work::milestone::{
-        push_milestone_on_chain, release_escrow_milestone,
-    },
+    modules::escrow::service::{push_milestone_on_chain, release_escrow_milestone},
     modules::github::auth::{fetch_github_issue_state, post_comment},
     modules::repo::repository::{
         get_assignment_for_issue, get_issue_by_repo_and_github_id, get_issue_with_repo,
