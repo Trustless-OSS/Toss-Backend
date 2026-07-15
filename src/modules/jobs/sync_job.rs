@@ -2,7 +2,7 @@ use rust_decimal::Decimal;
 use tracing::info;
 
 use crate::{
-    error::{require_db, AppError},
+    error::AppError,
     modules::{
         escrow::trustless_work::client::tw_fetch,
         repo::repository::{list_active_escrow_repos, update_repo_escrow_balance},
