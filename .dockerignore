@@ -1,8 +1,11 @@
-target
 .git
 .gitignore
 .env
 .env.example
+target
+docker-compose.yml
+render.yaml
+README.md
 .DS_Store
 .vscode
 .idea

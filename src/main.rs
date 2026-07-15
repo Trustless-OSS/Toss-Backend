@@ -24,7 +24,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let address = SocketAddr::from(([0, 0, 0, 0], config.port));
     let state = AppState::new(config)?;
-    
+
     // Run database migrations
     if let Some(pool) = state.db.as_ref() {
         sqlx::migrate!("./migrations")
@@ -32,7 +32,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .await
             .expect("Failed to run database migrations");
     }
-    
+
     infra::queue::start_workers(state.clone()).await;
     infra::queue::start_scheduler(state.clone());
 
