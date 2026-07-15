@@ -9,15 +9,19 @@ services:
         value: info
       - key: PORT
         value: 5000
+      - key: NODE_ENV
+        value: production
     autoDeploy: true
+    databaseName: toss-postgres
+    databaseUser: postgres
+
+  - type: redis
+    name: toss-redis
+    plan: starter
+    maxmemoryPolicy: noevict
 
 databases:
-  - name: postgres
+  - name: toss-postgres
     engine: postgres
     version: "16"
-    plan: starter
-
-  - name: redis
-    engine: redis
-    version: "7"
     plan: starter
