@@ -57,36 +57,14 @@ create table if not exists assignments (
 
 -- Ensure completion_percentage column exists for existing tables (idempotent)
 ALTER TABLE assignments ADD COLUMN IF NOT EXISTS completion_percentage numeric check (completion_percentage >= 0 and completion_percentage <= 100) default null;
--- Row Level Security (RLS)
+
 -- ============================================================
-
-alter table repos         enable row level security;
-alter table contributors  enable row level security;
-alter table issues        enable row level security;
-alter table assignments   enable row level security;
-
--- Repos: owner can read/write their own repos
-DROP POLICY IF EXISTS "repos_owner" ON repos;
-create policy "repos_owner" on repos
-  for all using (
-    owner_github_id = (auth.jwt() -> 'user_metadata' ->> 'provider_id')::bigint OR
-    installer_github_id = (auth.jwt() -> 'user_metadata' ->> 'provider_id')::bigint
-  );
-
--- Contributors: users can read/write their own contributor row
-DROP POLICY IF EXISTS "contributors_self" on contributors;
-create policy "contributors_self" on contributors
-  for all using (github_user_id = (auth.jwt() -> 'user_metadata' ->> 'provider_id')::bigint);
-
--- Issues: anyone authenticated can read; backend service role writes
-DROP POLICY IF EXISTS "issues_read" on issues;
-create policy "issues_read" on issues
-  for select using (auth.role() = 'authenticated');
-
--- Assignments: anyone authenticated can read
-DROP POLICY IF EXISTS "assignments_read" on assignments;
-create policy "assignments_read" on assignments
-  for select using (auth.role() = 'authenticated');
+-- NOTE: Row Level Security (RLS) policies use Supabase-specific
+-- functions (auth.jwt(), auth.role()) and must be applied directly
+-- in the Supabase dashboard or via the Supabase CLI — NOT here.
+-- Applying them in this migration will fail on plain PostgreSQL
+-- (e.g. Render managed Postgres) which lacks the `auth` schema.
+-- ============================================================
 
 -- ============================================================
 -- Indexes for performance

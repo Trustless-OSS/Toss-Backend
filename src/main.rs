@@ -26,34 +26,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let address = SocketAddr::from(([0, 0, 0, 0], config.port));
     let state = AppState::new(config)?;
 
-    // Run database migrations with retry (handles cloud cold-start network delays)
+    // Run database migrations
     if let Some(pool) = state.db.as_ref() {
         info!("running database migrations");
-        let max_attempts = 10u32;
-        let mut attempt = 0u32;
-        loop {
-            attempt += 1;
-            match sqlx::migrate!("./migrations").run(pool).await {
-                Ok(_) => {
-                    info!("database migrations completed");
-                    break;
-                }
-                Err(e) if attempt < max_attempts => {
-                    let delay_secs = 2u64.pow(attempt).min(30);
-                    tracing::warn!(
-                        attempt,
-                        max_attempts,
-                        delay_secs,
-                        error = %e,
-                        "migration attempt failed, retrying"
-                    );
-                    tokio::time::sleep(std::time::Duration::from_secs(delay_secs)).await;
-                }
-                Err(e) => {
-                    panic!("Failed to run database migrations after {max_attempts} attempts: {e}");
-                }
-            }
-        }
+        sqlx::migrate!("./migrations")
+            .run(pool)
+            .await
+            .expect("Failed to run database migrations");
+        info!("database migrations completed");
     }
 
     infra::queue::start_workers(state.clone()).await;
