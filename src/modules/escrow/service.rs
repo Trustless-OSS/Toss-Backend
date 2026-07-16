@@ -20,6 +20,8 @@ use crate::{
 
 // USDC contract address on Stellar testnet.
 const TESTNET_USDC: &str = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
+const TRUSTLESS_WORK_FEE_BPS: i64 = 30;
+const BASIS_POINTS: i64 = 10_000;
 
 // ── Deploy ────────────────────────────────────────────────────────────────────
 
@@ -267,6 +269,7 @@ pub async fn refund_escrow(
         == Some(resolver_pub.as_str());
 
     let mut total_refunded = Decimal::ZERO;
+    let mut remaining_balance = current_escrow_balance(state, contract_id).await?;
 
     if is_dual_wallet {
         for (index, milestone) in milestones.iter().enumerate() {
@@ -282,6 +285,29 @@ pub async fn refund_escrow(
                     .unwrap_or(false)
             {
                 continue;
+            }
+
+            let milestone_amount = milestone
+                .get("amount")
+                .and_then(decimal_from_value)
+                .unwrap_or(Decimal::ZERO);
+            if milestone_amount <= Decimal::ZERO {
+                return Err(AppError::bad_request(format!(
+                    "Cannot resolve milestone {index}: its amount is not positive"
+                )));
+            }
+
+            let observed_balance = current_escrow_balance(state, contract_id).await?;
+            remaining_balance = remaining_balance.min(observed_balance);
+            let distribution_amount = resolution_distribution_amount(
+                milestone_amount,
+                remaining_balance,
+                state.config.is_mainnet(),
+            );
+            if distribution_amount <= Decimal::ZERO {
+                return Err(AppError::bad_request(format!(
+                    "Cannot resolve milestone {index}: escrow has no available balance"
+                )));
             }
 
             let dispute_res = tw_fetch(
@@ -303,13 +329,6 @@ pub async fn refund_escrow(
                 }
             }
 
-            let amount = milestone
-                .get("amount")
-                .and_then(|value| value.as_f64())
-                .map(Decimal::from_f64_retain)
-                .flatten()
-                .unwrap_or(Decimal::ZERO);
-
             let resolve_res = tw_fetch(
                 state,
                 "/escrow/multi-release/resolve-milestone-dispute",
@@ -320,7 +339,10 @@ pub async fn refund_escrow(
                     "milestoneIndex": index.to_string(),
                     "distributions": [{
                         "address": maintainer_wallet,
-                        "amount": decimal_json_number(amount, "distribution amount")?,
+                        "amount": decimal_json_number(
+                            distribution_amount,
+                            "distribution amount",
+                        )?,
                     }],
                 })),
             )
@@ -330,8 +352,11 @@ pub async fn refund_escrow(
                 .and_then(|value| value.as_str())
             {
                 sign_and_send_transaction(state, unsigned, Some(&resolver_secret)).await?;
+                remaining_balance = (remaining_balance
+                    - consumed_balance_amount(distribution_amount, state.config.is_mainnet()))
+                .max(Decimal::ZERO);
+                total_refunded += distribution_amount;
             }
-            total_refunded += amount;
         }
     } else {
         let new_milestones: Vec<Value> = milestones
@@ -428,23 +453,19 @@ pub async fn refund_escrow(
         }
     }
 
-    let bal_res = tw_fetch(
-        state,
-        &format!("/helper/get-multiple-escrow-balance?addresses[]={contract_id}"),
-        reqwest::Method::GET,
-        None,
-    )
-    .await?;
-    let current_balance = bal_res
-        .as_array()
-        .and_then(|items| items.first())
-        .and_then(|item| item.get("balance"))
-        .and_then(|value| value.as_f64())
-        .map(Decimal::from_f64_retain)
-        .flatten()
-        .unwrap_or(Decimal::ZERO);
+    let observed_balance = current_escrow_balance(state, contract_id).await?;
+    let current_balance = if is_dual_wallet {
+        remaining_balance.min(observed_balance)
+    } else {
+        observed_balance
+    };
 
     if current_balance > Decimal::ZERO {
+        let distribution_amount = resolution_distribution_amount(
+            current_balance,
+            current_balance,
+            state.config.is_mainnet(),
+        );
         let withdraw_res = tw_fetch(
             state,
             "/escrow/multi-release/withdraw-remaining-funds",
@@ -454,7 +475,7 @@ pub async fn refund_escrow(
                 "disputeResolver": if is_dual_wallet { resolver_pub.clone() } else { platform_key.to_string() },
                 "distributions": [{
                     "address": maintainer_wallet,
-                    "amount": decimal_json_number(current_balance, "distribution amount")?,
+                    "amount": decimal_json_number(distribution_amount, "distribution amount")?,
                 }],
             })),
         )
@@ -473,8 +494,8 @@ pub async fn refund_escrow(
                 },
             )
             .await?;
+            total_refunded += distribution_amount;
         }
-        total_refunded += current_balance;
     }
 
     let issues = crate::modules::repo::repository::list_issues_to_cancel(state, repo.id).await?;
@@ -752,6 +773,58 @@ fn decimal_json_number(value: Decimal, field_name: &str) -> Result<Value, AppErr
     Ok(Value::Number(number))
 }
 
+async fn current_escrow_balance(state: &AppState, contract_id: &str) -> Result<Decimal, AppError> {
+    let response = tw_fetch(
+        state,
+        &format!("/helper/get-multiple-escrow-balance?addresses[]={contract_id}"),
+        reqwest::Method::GET,
+        None,
+    )
+    .await?;
+
+    response
+        .as_array()
+        .and_then(|items| items.first())
+        .and_then(|item| item.get("balance"))
+        .and_then(decimal_from_value)
+        .ok_or_else(|| AppError::internal("TrustlessWork response missing escrow balance"))
+}
+
+fn decimal_from_value(value: &Value) -> Option<Decimal> {
+    match value {
+        Value::Number(number) => number.to_string().parse().ok(),
+        Value::String(string) => string.parse().ok(),
+        _ => None,
+    }
+}
+
+fn resolution_distribution_amount(
+    milestone_amount: Decimal,
+    current_balance: Decimal,
+    is_mainnet: bool,
+) -> Decimal {
+    let available = current_balance.max(Decimal::ZERO);
+    let target = milestone_amount.min(available).max(Decimal::ZERO);
+
+    if !is_mainnet {
+        return target.round_dp(7);
+    }
+
+    let fee_multiplier =
+        Decimal::from(BASIS_POINTS - TRUSTLESS_WORK_FEE_BPS) / Decimal::from(BASIS_POINTS);
+    (target * fee_multiplier).round_dp(7)
+}
+
+fn consumed_balance_amount(distribution_amount: Decimal, is_mainnet: bool) -> Decimal {
+    if !is_mainnet {
+        return distribution_amount;
+    }
+
+    let fee_multiplier =
+        Decimal::from(BASIS_POINTS - TRUSTLESS_WORK_FEE_BPS) / Decimal::from(BASIS_POINTS);
+    (distribution_amount / fee_multiplier).round_dp(7)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -762,5 +835,21 @@ mod tests {
 
         assert!(value.is_number());
         assert_eq!(value, json!(12.5));
+    }
+
+    #[test]
+    fn caps_resolution_at_live_balance() {
+        assert_eq!(
+            resolution_distribution_amount(Decimal::new(10001, 2), Decimal::from(100), false),
+            Decimal::from(100)
+        );
+    }
+
+    #[test]
+    fn subtracts_mainnet_protocol_fee_from_resolution() {
+        assert_eq!(
+            resolution_distribution_amount(Decimal::from(100), Decimal::from(100), true),
+            Decimal::new(997, 1)
+        );
     }
 }

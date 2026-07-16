@@ -1,7 +1,7 @@
 services:
   postgres:
     image: postgres:16-alpine
-    container_name: trustless_postgres
+    container_name: toss_postgres
     environment:
       POSTGRES_DB: trustless_oss
       POSTGRES_USER: postgres
@@ -20,7 +20,7 @@ services:
 
   redis:
     image: redis:7-alpine
-    container_name: trustless_redis
+    container_name: toss_redis
     ports:
       - "6379:6379"
     volumes:

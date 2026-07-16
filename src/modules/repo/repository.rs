@@ -192,6 +192,22 @@ pub async fn update_repo_escrow_contract(
     Ok(())
 }
 
+pub async fn update_repo_escrow_funder_wallet(
+    state: &AppState,
+    repo_id: Uuid,
+    funder_wallet: &str,
+) -> Result<(), AppError> {
+    let pool = require_db(&state.db)?;
+    sqlx::query("UPDATE repos SET escrow_funder_wallet = $1 WHERE id = $2")
+        .bind(funder_wallet)
+        .bind(repo_id)
+        .execute(pool)
+        .await
+        .map_err(|error| AppError::database(error.to_string()))?;
+    invalidate_repo_cache(state, repo_id, None).await;
+    Ok(())
+}
+
 pub async fn update_repo_escrow_balance(
     state: &AppState,
     repo_id: Uuid,
@@ -234,11 +250,15 @@ pub async fn update_repo_rewards(
 
 pub async fn clear_repo_escrow(state: &AppState, repo_id: Uuid) -> Result<(), AppError> {
     let pool = require_db(&state.db)?;
-    sqlx::query("UPDATE repos SET escrow_contract_id = NULL, escrow_balance = 0 WHERE id = $1")
-        .bind(repo_id)
-        .execute(pool)
-        .await
-        .map_err(|error| AppError::database(error.to_string()))?;
+    sqlx::query(
+        "UPDATE repos
+         SET escrow_contract_id = NULL, escrow_funder_wallet = NULL, escrow_balance = 0
+         WHERE id = $1",
+    )
+    .bind(repo_id)
+    .execute(pool)
+    .await
+    .map_err(|error| AppError::database(error.to_string()))?;
     invalidate_repo_cache(state, repo_id, None).await;
     Ok(())
 }

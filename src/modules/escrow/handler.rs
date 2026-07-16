@@ -24,8 +24,8 @@ use crate::{
         },
         github::auth::post_comment,
         repo::repository::{
-            get_contributor_by_github_id, get_repo_by_id, is_maintainer, list_issues_to_cancel,
-            update_repo_escrow_balance,
+            get_repo_by_id, is_maintainer, list_issues_to_cancel, update_repo_escrow_balance,
+            update_repo_escrow_funder_wallet,
         },
     },
     state::AppState,
@@ -95,8 +95,18 @@ pub async fn fund_unsigned(
         ));
     }
 
+    if let Some(existing_funder_wallet) = repo.escrow_funder_wallet.as_deref() {
+        if existing_funder_wallet != body.funder_wallet {
+            return Err(AppError::bad_request(
+                "This escrow must be funded from the original wallet",
+            ));
+        }
+    }
+
     let unsigned_transaction =
         service::create_fund_unsigned(&state, &repo, body.amount, &body.funder_wallet).await?;
+
+    update_repo_escrow_funder_wallet(&state, repo.id, &body.funder_wallet).await?;
 
     Ok(Json(UnsignedTransactionResponse {
         unsigned_transaction,
@@ -145,20 +155,6 @@ pub async fn refund(
         ));
     }
 
-    let maintainer = get_contributor_by_github_id(&state, user.github_id)
-        .await?
-        .ok_or_else(|| {
-            AppError::bad_request("You must link your Stellar wallet before refunding")
-        })?;
-
-    let maintainer_wallet = maintainer
-        .stellar_wallet
-        .as_deref()
-        .or(maintainer.payout_address.as_deref())
-        .ok_or_else(|| {
-            AppError::bad_request("You must link your Stellar wallet before refunding")
-        })?;
-
     let repo = get_repo_by_id(&state, body.repo_id)
         .await?
         .ok_or_else(|| AppError::not_found("Repo or escrow not found"))?;
@@ -167,11 +163,16 @@ pub async fn refund(
         return Err(AppError::not_found("Repo or escrow not found"));
     }
 
+    let funder_wallet = repo
+        .escrow_funder_wallet
+        .as_deref()
+        .ok_or_else(|| AppError::bad_request("This escrow has no recorded funding wallet"))?;
+
     let issues_to_cancel = list_issues_to_cancel(&state, repo.id).await?;
     let contract_id = repo.escrow_contract_id.clone().unwrap_or_default();
 
     let (refunded_amount, cancelled_issues) =
-        service::refund_escrow(&state, &repo, maintainer_wallet).await?;
+        service::refund_escrow(&state, &repo, funder_wallet).await?;
 
     for issue in &issues_to_cancel {
         let comment = format!(

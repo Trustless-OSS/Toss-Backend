@@ -17,6 +17,7 @@ pub struct Repo {
     pub is_fork: Option<bool>,
     pub is_private: Option<bool>,
     pub escrow_contract_id: Option<String>,
+    pub escrow_funder_wallet: Option<String>,
     pub escrow_balance: Decimal,
     pub reward_low: Decimal,
     pub reward_medium: Decimal,

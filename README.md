@@ -33,7 +33,6 @@ The server listens on the `PORT` environment variable and defaults to `5000`.
 ## Health endpoints
 
 - `GET /` — service status
-- `GET /health` — health check
 - `GET /api/health` — API-style health check
 
 ## Useful commands
