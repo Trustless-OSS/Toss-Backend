@@ -10,7 +10,8 @@ services:
       - "5435:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./migrations/0001_initial_schema.sql:/docker-entrypoint-initdb.d/0001_initial_schema.sql:ro
+    # Schema is now managed by Diesel migrations, which the app runs on startup
+    # (see src/main.rs). Run them manually with `diesel migration run`.
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d trustless_oss"]
       interval: 10s

@@ -1,18 +1,17 @@
 use std::sync::Arc;
 
 use reqwest::Client;
-use sqlx::PgPool;
 
 use crate::{
     config::Config,
     error::AppError,
-    infra::{cache::Cache, db, queue::QueueInfra, redis},
+    infra::{cache::Cache, db, db::DbPool, queue::QueueInfra, redis},
 };
 
 #[derive(Clone)]
 pub struct AppState {
     pub config: Arc<Config>,
-    pub db: Option<PgPool>,
+    pub db: Option<DbPool>,
     pub redis: Option<redis::RedisClient>,
     pub http_client: Client,
     pub cache: Cache,
@@ -21,7 +20,7 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(config: Config) -> Result<Self, AppError> {
-        let db = Some(db::connect_lazy(&config.database_url)?);
+        let db = Some(db::connect_lazy(&config.database_url));
         let redis = Some(redis::build_client(&config.redis_url)?);
         let cache = Cache::new(redis.clone());
         let queue = QueueInfra::new(redis.clone());
