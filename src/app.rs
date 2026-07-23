@@ -16,7 +16,7 @@ async fn root_handler() -> Json<RootResponse> {
     Json(RootResponse {
         service: "trustless-oss-backend",
         status: "ok",
-        message: " backend module scaffold is ready for incremental migration.",
+        message: "Trustless-OSS Rust backend is running.",
     })
 }
 

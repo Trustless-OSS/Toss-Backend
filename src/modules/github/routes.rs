@@ -4,9 +4,11 @@ use axum::{
     routing::post,
     Router,
 };
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
 use tracing::{debug, error};
 
-use crate::infra::queue::WebhookJobData;
+use crate::infra::queue::{WebhookEnqueueOutcome, WebhookJobData};
 use crate::{error::AppError, state::AppState};
 
 pub async fn handle_github_webhook(
@@ -22,19 +24,8 @@ pub async fn handle_github_webhook(
 
     let github_secret = &state.config.github_webhook_secret;
 
-    // Verify the signature using HMAC-SHA256
-    use hmac::{Hmac, Mac};
-    use sha2::Sha256;
-
-    type HmacSha256 = Hmac<Sha256>;
-    let mut mac = HmacSha256::new_from_slice(github_secret.as_bytes())
-        .map_err(|_| AppError::internal("Invalid HMAC key"))?;
-    mac.update(body.as_bytes());
-
-    let expected = format!("sha256={}", hex::encode(mac.finalize().into_bytes()));
-
-    if signature != expected {
-        error!(provided = %signature, expected = %expected, "GitHub webhook signature verification failed");
+    if !verify_github_signature(github_secret, body.as_bytes(), signature)? {
+        error!("GitHub webhook signature verification failed");
         return Err(AppError::unauthorized("Invalid webhook signature"));
     }
 
@@ -69,6 +60,7 @@ pub async fn handle_github_webhook(
         event: event.to_string(),
         action,
         payload,
+        attempts: 0,
     };
 
     if matches!(event, "installation" | "installation_repositories") {
@@ -77,18 +69,63 @@ pub async fn handle_github_webhook(
     }
 
     // Enqueue the webhook job
-    state
+    let outcome = state
         .queue
-        .enqueue_webhook(delivery_id, job)
+        .enqueue_webhook(delivery_id, job.clone())
         .await
         .map_err(|e| {
             error!("Failed to enqueue webhook: {}", e);
             e
         })?;
 
+    if outcome == WebhookEnqueueOutcome::Unavailable {
+        crate::modules::github::webhook::process_webhook_job(&state, job).await?;
+    }
+
     Ok(StatusCode::ACCEPTED)
+}
+
+fn verify_github_signature(secret: &str, body: &[u8], signature: &str) -> Result<bool, AppError> {
+    type HmacSha256 = Hmac<Sha256>;
+    let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
+        .map_err(|_| AppError::internal("Invalid HMAC key"))?;
+    mac.update(body);
+
+    let provided = signature
+        .strip_prefix("sha256=")
+        .and_then(|value| hex::decode(value).ok());
+    Ok(provided
+        .as_deref()
+        .is_some_and(|provided| mac.verify_slice(provided).is_ok()))
 }
 
 pub fn router() -> Router<AppState> {
     Router::new().route("/api/webhooks/github", post(handle_github_webhook))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn signature(secret: &str, body: &[u8]) -> String {
+        let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).unwrap();
+        mac.update(body);
+        format!("sha256={}", hex::encode(mac.finalize().into_bytes()))
+    }
+
+    #[test]
+    fn verifies_valid_signature_and_rejects_modified_payload() {
+        let secret = "webhook-secret";
+        let body = br#"{"action":"opened"}"#;
+        let signature = signature(secret, body);
+
+        assert!(verify_github_signature(secret, body, &signature).unwrap());
+        assert!(!verify_github_signature(secret, br#"{"action":"closed"}"#, &signature).unwrap());
+    }
+
+    #[test]
+    fn rejects_missing_prefix_and_invalid_hex() {
+        assert!(!verify_github_signature("secret", b"{}", "abc").unwrap());
+        assert!(!verify_github_signature("secret", b"{}", "sha256=xyz").unwrap());
+    }
 }

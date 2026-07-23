@@ -4,7 +4,7 @@ use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::{
     error::AppError,
@@ -14,6 +14,9 @@ use crate::{
 };
 
 static COMMENT_CACHE: Mutex<Option<(String, Instant)>> = Mutex::const_new(None);
+const GITHUB_ACCEPT: &str = "application/vnd.github+json";
+const GITHUB_API_VERSION: &str = "2022-11-28";
+const GITHUB_USER_AGENT: &str = "Trustless-OSS-Bot";
 
 #[derive(Serialize)]
 struct AppClaims {
@@ -25,6 +28,11 @@ struct AppClaims {
 #[derive(Debug, Deserialize)]
 struct InstallationTokenResponse {
     token: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct InstallationResponse {
+    id: i64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -106,85 +114,126 @@ pub async fn get_installation_token(
         .await?
         .ok_or_else(|| AppError::github("repository not found for installation token"))?;
 
-    let mut installation_id = repo.github_installation_id;
-
-    if installation_id.is_none() {
-        let (owner, name) = repo
-            .full_name
-            .split_once('/')
-            .ok_or_else(|| AppError::github("invalid repository full_name"))?;
-
-        let jwt = create_app_jwt(state).await?;
-        let url = format!("https://api.github.com/repos/{owner}/{name}/installation");
-        let response = state
-            .http_client
-            .get(&url)
-            .header("Authorization", format!("Bearer {jwt}"))
-            .header("Accept", "application/vnd.github.v3+json")
-            .header("User-Agent", "Trustless-OSS-Bot")
-            .send()
-            .await
-            .map_err(|error| AppError::github(error.to_string()))?;
-
-        if !response.status().is_success() {
-            warn!(repo = %repo.full_name, "failed to auto-repair installation id");
-            return Ok(None);
-        }
-
-        let payload: serde_json::Value = response
-            .json()
-            .await
-            .map_err(|error| AppError::github(error.to_string()))?;
-        installation_id = payload.get("id").and_then(|value| value.as_i64());
-        if let Some(installation_id) = installation_id {
-            let pool = crate::error::require_db(&state.db)?;
-            sqlx::query("UPDATE repos SET github_installation_id = $1 WHERE github_repo_id = $2")
-                .bind(installation_id)
-                .bind(github_repo_id)
-                .execute(pool)
-                .await
-                .map_err(|error| AppError::database(error.to_string()))?;
-            invalidate_repo_cache(state, repo.id, Some(github_repo_id)).await;
+    if let Some(installation_id) = repo.github_installation_id {
+        match exchange_installation_token(state, installation_id).await {
+            Ok(token) => {
+                cache_installation_token(state, &cache_key, &token).await;
+                return Ok(Some(token));
+            }
+            Err(error) => {
+                warn!(
+                    %error,
+                    repo = %repo.full_name,
+                    installation_id,
+                    "stored GitHub installation ID failed; attempting auto-repair"
+                );
+            }
         }
     }
 
-    let Some(installation_id) = installation_id else {
-        return Ok(None);
-    };
+    let installation_id = resolve_installation_id(state, &repo.full_name).await?;
+    if repo.github_installation_id != Some(installation_id) {
+        let pool = crate::error::require_db(&state.db)?;
+        sqlx::query("UPDATE repos SET github_installation_id = $1 WHERE github_repo_id = $2")
+            .bind(installation_id)
+            .bind(github_repo_id)
+            .execute(pool)
+            .await
+            .map_err(|error| AppError::database(error.to_string()))?;
+        invalidate_repo_cache(state, repo.id, Some(github_repo_id)).await;
+        info!(
+            repo = %repo.full_name,
+            installation_id,
+            "GitHub installation ID repaired"
+        );
+    }
 
+    let token = exchange_installation_token(state, installation_id).await?;
+    cache_installation_token(state, &cache_key, &token).await;
+    Ok(Some(token))
+}
+
+async fn resolve_installation_id(state: &AppState, full_name: &str) -> Result<i64, AppError> {
+    let (owner, name) = full_name
+        .split_once('/')
+        .ok_or_else(|| AppError::github("invalid repository full_name"))?;
+    let jwt = create_app_jwt(state).await?;
+    let url = format!("https://api.github.com/repos/{owner}/{name}/installation");
+    let response = state
+        .http_client
+        .get(&url)
+        .header("Authorization", format!("Bearer {jwt}"))
+        .header("Accept", "application/vnd.github+json")
+        .header("X-GitHub-Api-Version", "2022-11-28")
+        .header("User-Agent", "Trustless-OSS-Bot")
+        .send()
+        .await
+        .map_err(|error| AppError::github(format!("installation lookup failed: {error}")))?;
+
+    github_json::<InstallationResponse>(response, "installation lookup")
+        .await
+        .map(|installation| installation.id)
+}
+
+async fn exchange_installation_token(
+    state: &AppState,
+    installation_id: i64,
+) -> Result<String, AppError> {
     let jwt = create_app_jwt(state).await?;
     let url = format!("https://api.github.com/app/installations/{installation_id}/access_tokens");
     let response = state
         .http_client
         .post(&url)
         .header("Authorization", format!("Bearer {jwt}"))
-        .header("Accept", "application/vnd.github.v3+json")
+        .header("Accept", "application/vnd.github+json")
+        .header("X-GitHub-Api-Version", "2022-11-28")
         .header("User-Agent", "Trustless-OSS-Bot")
         .send()
         .await
-        .map_err(|error| AppError::github(error.to_string()))?;
+        .map_err(|error| AppError::github(format!("token exchange failed: {error}")))?;
 
-    if !response.status().is_success() {
-        return Ok(None);
-    }
-
-    let payload: serde_json::Value = response
-        .json()
+    github_json::<InstallationTokenResponse>(response, "installation token exchange")
         .await
-        .map_err(|error| AppError::github(error.to_string()))?;
-    let token = payload
-        .get("token")
-        .and_then(|value| value.as_str())
-        .map(str::to_owned);
+        .map(|payload| payload.token)
+}
 
-    if let Some(ref token) = token {
-        state
-            .cache
-            .set(&cache_key, token, Some(cache_keys::GH_TOKEN_TTL))
-            .await;
+async fn github_json<T: serde::de::DeserializeOwned>(
+    response: reqwest::Response,
+    operation: &str,
+) -> Result<T, AppError> {
+    let status = response.status();
+    let text = response
+        .text()
+        .await
+        .map_err(|error| AppError::github(format!("{operation} response failed: {error}")))?;
+    if !status.is_success() {
+        let message = serde_json::from_str::<serde_json::Value>(&text)
+            .ok()
+            .and_then(|payload| {
+                payload
+                    .get("message")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_owned)
+            })
+            .unwrap_or_else(|| text.chars().take(300).collect());
+        return Err(AppError::github(format!(
+            "{operation} failed with {status}: {message}"
+        )));
     }
 
-    Ok(token)
+    serde_json::from_str(&text)
+        .map_err(|error| AppError::github(format!("invalid {operation} response: {error}")))
+}
+
+async fn cache_installation_token(state: &AppState, cache_key: &str, token: &str) {
+    state
+        .cache
+        .set(
+            cache_key,
+            &token.to_string(),
+            Some(cache_keys::GH_TOKEN_TTL),
+        )
+        .await;
 }
 
 pub async fn list_installation_repos(
@@ -241,7 +290,7 @@ pub async fn post_comment(
         &body[..body.len().min(50)]
     );
     {
-        let mut guard = COMMENT_CACHE.lock().await;
+        let guard = COMMENT_CACHE.lock().await;
         if let Some((key, sent_at)) = guard.as_ref() {
             if key == &cache_key && sent_at.elapsed() < Duration::from_secs(10) {
                 debug!(
@@ -252,7 +301,6 @@ pub async fn post_comment(
                 return Ok(());
             }
         }
-        *guard = Some((cache_key, Instant::now()));
     }
 
     let pool = crate::error::require_db(&state.db)?;
@@ -284,21 +332,34 @@ pub async fn post_comment(
         .http_client
         .post(&url)
         .header("Authorization", format!("Bearer {token}"))
-        .header("Accept", "application/vnd.github.v3+json")
+        .header("Accept", GITHUB_ACCEPT)
+        .header("X-GitHub-Api-Version", GITHUB_API_VERSION)
+        .header("User-Agent", GITHUB_USER_AGENT)
         .header("Content-Type", "application/json")
         .json(&serde_json::json!({ "body": body }))
         .send()
         .await
         .map_err(|error| AppError::github(error.to_string()))?;
 
-    if !response.status().is_success() {
-        error!(
-            repo = full_name,
-            issue = issue_number,
-            status = %response.status(),
-            "failed to post comment"
-        );
+    let status = response.status();
+    if !status.is_success() {
+        let text = response.text().await.unwrap_or_default();
+        let message = serde_json::from_str::<serde_json::Value>(&text)
+            .ok()
+            .and_then(|payload| {
+                payload
+                    .get("message")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_owned)
+            })
+            .unwrap_or_else(|| text.chars().take(300).collect());
+        return Err(AppError::github(format!(
+            "failed to post comment to {full_name}#{issue_number} with {status}: {message}"
+        )));
     }
+
+    let mut guard = COMMENT_CACHE.lock().await;
+    *guard = Some((cache_key, Instant::now()));
 
     Ok(())
 }
@@ -316,7 +377,9 @@ pub async fn install_repo_webhook(
         .http_client
         .get(&hooks_url)
         .header("Authorization", format!("Bearer {gh_token}"))
-        .header("Accept", "application/vnd.github.v3+json")
+        .header("Accept", GITHUB_ACCEPT)
+        .header("X-GitHub-Api-Version", GITHUB_API_VERSION)
+        .header("User-Agent", GITHUB_USER_AGENT)
         .send()
         .await
         .map_err(|error| AppError::github(error.to_string()))?;
@@ -343,7 +406,9 @@ pub async fn install_repo_webhook(
         .http_client
         .post(&hooks_url)
         .header("Authorization", format!("Bearer {gh_token}"))
-        .header("Accept", "application/vnd.github.v3+json")
+        .header("Accept", GITHUB_ACCEPT)
+        .header("X-GitHub-Api-Version", GITHUB_API_VERSION)
+        .header("User-Agent", GITHUB_USER_AGENT)
         .header("Content-Type", "application/json")
         .json(&serde_json::json!({
             "name": "web",

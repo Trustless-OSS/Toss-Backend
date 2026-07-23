@@ -20,6 +20,9 @@ pub struct Config {
     pub stellar_network: String,
     pub app_url: String,
     pub webhook_url: Option<String>,
+    pub dev_webhook_proxy_enabled: bool,
+    pub smee_source_url: String,
+    pub smee_target_url: String,
 }
 
 impl Config {
@@ -29,13 +32,18 @@ impl Config {
             let _ = dotenvy::dotenv();
         }
 
+        let port = std::env::var("PORT")
+            .ok()
+            .and_then(|value| value.parse::<u16>().ok())
+            .unwrap_or(5000);
+        let node_env = std::env::var("NODE_ENV").unwrap_or_else(|_| "development".to_string());
+        let dev_webhook_proxy_enabled = node_env.eq_ignore_ascii_case("development")
+            && optional_bool("DEV_WEBHOOK_PROXY_ENABLED").unwrap_or(true);
+
         Ok(Self {
-            port: std::env::var("PORT")
-                .ok()
-                .and_then(|value| value.parse::<u16>().ok())
-                .unwrap_or(5000),
+            port,
             log_level: std::env::var("LOG_LEVEL").unwrap_or_else(|_| "info".to_string()),
-            node_env: std::env::var("NODE_ENV").unwrap_or_else(|_| "development".to_string()),
+            node_env,
             database_url: required_env("DATABASE_URL")?,
             redis_url: required_env("REDIS_URL")?,
             supabase_url: required_env("SUPABASE_URL")?,
@@ -65,12 +73,27 @@ impl Config {
             app_url: std::env::var("APP_URL")
                 .unwrap_or_else(|_| "http://localhost:3000".to_string()),
             webhook_url: std::env::var("WEBHOOK_URL").ok(),
+            dev_webhook_proxy_enabled,
+            smee_source_url: std::env::var("SMEE_SOURCE_URL")
+                .unwrap_or_else(|_| "https://smee.io/trustless-oss-dev-webhook".to_string()),
+            smee_target_url: std::env::var("SMEE_TARGET_URL")
+                .unwrap_or_else(|_| format!("http://127.0.0.1:{port}/api/webhooks/github")),
         })
     }
 
     pub fn is_mainnet(&self) -> bool {
         self.stellar_network.eq_ignore_ascii_case("mainnet")
     }
+}
+
+fn optional_bool(name: &str) -> Option<bool> {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| match value.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => Some(true),
+            "0" | "false" | "no" | "off" => Some(false),
+            _ => None,
+        })
 }
 
 fn required_env(name: &str) -> Result<String, crate::error::AppError> {

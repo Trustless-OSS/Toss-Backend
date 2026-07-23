@@ -670,9 +670,9 @@ fn is_unique_violation(error: &sqlx::Error) -> bool {
         .is_some_and(|code| code == "23505")
 }
 
-pub async fn try_insert_issue(
+pub async fn create_issue_and_reserve_balance(
     state: &AppState,
-    repo_id: Uuid,
+    repo: &Repo,
     github_issue_id: i64,
     github_issue_number: i32,
     title: &str,
@@ -680,41 +680,129 @@ pub async fn try_insert_issue(
     difficulty_label: &str,
 ) -> Result<Option<Issue>, AppError> {
     let pool = require_db(&state.db)?;
-    match sqlx::query_as::<_, Issue>(
+    let mut transaction = pool
+        .begin()
+        .await
+        .map_err(|error| AppError::database(error.to_string()))?;
+
+    let reserved = sqlx::query_scalar::<_, Decimal>(
+        "UPDATE repos
+         SET escrow_balance = ROUND(escrow_balance - $1, 7)
+         WHERE id = $2 AND escrow_balance >= $1
+         RETURNING escrow_balance",
+    )
+    .bind(reward_amount)
+    .bind(repo.id)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(|error| AppError::database(error.to_string()))?;
+
+    if reserved.is_none() {
+        transaction
+            .rollback()
+            .await
+            .map_err(|error| AppError::database(error.to_string()))?;
+        return Err(AppError::bad_request("Insufficient escrow balance"));
+    }
+
+    let issue = sqlx::query_as::<_, Issue>(
         "INSERT INTO issues (repo_id, github_issue_id, github_issue_number, title, reward_amount, difficulty_label, status)
          VALUES ($1, $2, $3, $4, $5, $6, 'pending')
          RETURNING *",
     )
-    .bind(repo_id)
+    .bind(repo.id)
     .bind(github_issue_id)
     .bind(github_issue_number)
     .bind(title)
     .bind(reward_amount)
     .bind(difficulty_label)
-    .fetch_one(pool)
-    .await
-    {
-        Ok(issue) => Ok(Some(issue)),
-        Err(error) if is_unique_violation(&error) => Ok(None),
-        Err(error) => Err(AppError::database(error.to_string())),
-    }
+    .fetch_one(&mut *transaction)
+    .await;
+
+    let issue = match issue {
+        Ok(issue) => issue,
+        Err(error) if is_unique_violation(&error) => {
+            transaction
+                .rollback()
+                .await
+                .map_err(|error| AppError::database(error.to_string()))?;
+            return Ok(None);
+        }
+        Err(error) => return Err(AppError::database(error.to_string())),
+    };
+
+    transaction
+        .commit()
+        .await
+        .map_err(|error| AppError::database(error.to_string()))?;
+    invalidate_repo_cache(state, repo.id, Some(repo.github_repo_id)).await;
+    Ok(Some(issue))
 }
 
-pub async fn update_issue_reward(
+pub async fn update_pending_issue_reward(
     state: &AppState,
+    repo: &Repo,
     issue_id: Uuid,
     reward_amount: Decimal,
     difficulty_label: &str,
-) -> Result<(), AppError> {
+) -> Result<bool, AppError> {
     let pool = require_db(&state.db)?;
+    let mut transaction = pool
+        .begin()
+        .await
+        .map_err(|error| AppError::database(error.to_string()))?;
+
+    let current = sqlx::query_as::<_, (Decimal, String)>(
+        "SELECT reward_amount, status FROM issues WHERE id = $1 AND repo_id = $2 FOR UPDATE",
+    )
+    .bind(issue_id)
+    .bind(repo.id)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(|error| AppError::database(error.to_string()))?;
+
+    let Some((current_amount, status)) = current else {
+        return Ok(false);
+    };
+    if status != "pending" {
+        return Ok(false);
+    }
+
+    let difference = reward_amount - current_amount;
+    let updated = sqlx::query_scalar::<_, Decimal>(
+        "UPDATE repos
+         SET escrow_balance = ROUND(escrow_balance - $1, 7)
+         WHERE id = $2 AND ($1 <= 0 OR escrow_balance >= $1)
+         RETURNING escrow_balance",
+    )
+    .bind(difference)
+    .bind(repo.id)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(|error| AppError::database(error.to_string()))?;
+
+    if updated.is_none() {
+        transaction
+            .rollback()
+            .await
+            .map_err(|error| AppError::database(error.to_string()))?;
+        return Ok(false);
+    }
+
     sqlx::query("UPDATE issues SET reward_amount = $1, difficulty_label = $2 WHERE id = $3")
         .bind(reward_amount)
         .bind(difficulty_label)
         .bind(issue_id)
-        .execute(pool)
+        .execute(&mut *transaction)
         .await
         .map_err(|error| AppError::database(error.to_string()))?;
-    Ok(())
+
+    transaction
+        .commit()
+        .await
+        .map_err(|error| AppError::database(error.to_string()))?;
+    invalidate_repo_cache(state, repo.id, Some(repo.github_repo_id)).await;
+    Ok(true)
 }
 
 pub async fn cancel_issue(state: &AppState, issue_id: Uuid) -> Result<(), AppError> {
@@ -837,16 +925,7 @@ pub async fn refund_repo_balance(
     update_repo_escrow_balance(state, repo.id, new_balance, Some(repo.github_repo_id)).await
 }
 
-pub async fn reserve_repo_balance(
-    state: &AppState,
-    repo: &Repo,
-    amount: Decimal,
-) -> Result<Decimal, AppError> {
-    let new_balance = (repo.escrow_balance - amount).round_dp(7);
-    update_repo_escrow_balance(state, repo.id, new_balance, Some(repo.github_repo_id)).await?;
-    Ok(new_balance)
-}
-
+#[allow(clippy::too_many_arguments)]
 pub async fn upsert_installation_repo(
     state: &AppState,
     github_repo_id: i64,
@@ -860,7 +939,7 @@ pub async fn upsert_installation_repo(
     github_installation_id: i64,
 ) -> Result<(), AppError> {
     let pool = require_db(&state.db)?;
-    sqlx::query(
+    let repo = sqlx::query_as::<_, Repo>(
         "INSERT INTO repos (
             github_repo_id, full_name, owner_github_id, owner_username, owner_type,
             is_fork, is_private, reward_low, reward_medium, reward_high,
@@ -874,7 +953,8 @@ pub async fn upsert_installation_repo(
            is_fork = EXCLUDED.is_fork,
            is_private = EXCLUDED.is_private,
            installer_github_id = EXCLUDED.installer_github_id,
-           github_installation_id = EXCLUDED.github_installation_id",
+           github_installation_id = EXCLUDED.github_installation_id
+         RETURNING *",
     )
     .bind(github_repo_id)
     .bind(full_name)
@@ -885,9 +965,10 @@ pub async fn upsert_installation_repo(
     .bind(is_private)
     .bind(installer_github_id)
     .bind(github_installation_id)
-    .execute(pool)
+    .fetch_one(pool)
     .await
     .map_err(|error| AppError::database(error.to_string()))?;
+    invalidate_repo_cache(state, repo.id, Some(repo.github_repo_id)).await;
     Ok(())
 }
 
@@ -896,11 +977,19 @@ pub async fn delete_repos_by_installation_id(
     installation_id: i64,
 ) -> Result<(), AppError> {
     let pool = require_db(&state.db)?;
+    let repos = sqlx::query_as::<_, Repo>("SELECT * FROM repos WHERE github_installation_id = $1")
+        .bind(installation_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|error| AppError::database(error.to_string()))?;
     sqlx::query("DELETE FROM repos WHERE github_installation_id = $1")
         .bind(installation_id)
         .execute(pool)
         .await
         .map_err(|error| AppError::database(error.to_string()))?;
+    for repo in repos {
+        invalidate_repo_cache(state, repo.id, Some(repo.github_repo_id)).await;
+    }
     Ok(())
 }
 
@@ -910,10 +999,14 @@ pub async fn delete_repo_by_github_id(
     github_repo_id: i64,
 ) -> Result<(), AppError> {
     let pool = require_db(&state.db)?;
+    let repo = get_repo_by_github_id(state, github_repo_id).await?;
     sqlx::query("DELETE FROM repos WHERE github_repo_id = $1")
         .bind(github_repo_id)
         .execute(pool)
         .await
         .map_err(|error| AppError::database(error.to_string()))?;
+    if let Some(repo) = repo {
+        invalidate_repo_cache(state, repo.id, Some(repo.github_repo_id)).await;
+    }
     Ok(())
 }

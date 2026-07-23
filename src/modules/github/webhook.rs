@@ -1,7 +1,18 @@
 use serde::Deserialize;
 use tracing::{error, info};
 
-use crate::{error::AppError, infra::queue::WebhookJobData, state::AppState};
+use crate::{
+    error::AppError,
+    infra::queue::WebhookJobData,
+    modules::github::handlers::{
+        handle_issue_assigned, handle_issue_closed, handle_issue_comment_created,
+        handle_issue_deleted, handle_issue_labeled, handle_issue_unassigned, handle_pr_merged,
+    },
+    modules::repo::repository::{
+        delete_repo_by_github_id, delete_repos_by_installation_id, upsert_installation_repo,
+    },
+    state::AppState,
+};
 
 #[derive(Debug, Deserialize)]
 struct GithubInstallation {
@@ -31,15 +42,62 @@ struct GithubSender {
 }
 
 pub async fn process_webhook_job(state: &AppState, job: WebhookJobData) -> Result<(), AppError> {
+    let action = job.action.as_deref().unwrap_or("");
+    info!(
+        event = %job.event,
+        action,
+        attempt = job.attempts,
+        "processing GitHub webhook"
+    );
+
     match job.event.as_str() {
+        "issues" => match action {
+            "opened" | "labeled" => handle_issue_labeled(state, &job.payload).await?,
+            "assigned" => handle_issue_assigned(state, &job.payload).await?,
+            "unassigned" => handle_issue_unassigned(state, &job.payload).await?,
+            "closed" => handle_issue_closed(state, &job.payload).await?,
+            "deleted" => handle_issue_deleted(state, &job.payload).await?,
+            _ => {
+                info!(event = %job.event, action, "issues action ignored");
+            }
+        },
+        "issue_comment" if action == "created" => {
+            handle_issue_comment_created(state, &job.payload).await?;
+        }
+        "pull_request" => {
+            if action == "closed" {
+                let merged = job
+                    .payload
+                    .get("pull_request")
+                    .and_then(|pr| pr.get("merged"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                if merged {
+                    handle_pr_merged(state, &job.payload).await?;
+                }
+            }
+        }
         "installation" => {
             handle_installation(state, &job.payload, &job.action).await?;
         }
         "installation_repositories" => {
             handle_installation_repositories(state, &job.payload, &job.action).await?;
         }
+        "label" => {
+            let label = job
+                .payload
+                .get("label")
+                .and_then(|value| value.get("name"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unknown");
+            info!(
+                action,
+                label,
+                "repository label definition changed; apply the label to an issue to trigger a bounty"
+            );
+        }
         _ => {
-            info!(event = %job.event, "webhook event not implemented");
+            info!(event = %job.event, action, "unsupported webhook event ignored");
         }
     }
     Ok(())
@@ -88,7 +146,7 @@ async fn handle_installation(
                 continue;
             }
 
-            if let Err(e) = upsert_repo_to_db(
+            if let Err(e) = upsert_installation_repo(
                 state,
                 repo.id,
                 &repo.full_name,
@@ -118,7 +176,7 @@ async fn handle_installation(
         }
     } else if action == "deleted" {
         // Delete all repos for this installation
-        if let Err(e) = delete_repos_for_installation(state, installation.id).await {
+        if let Err(e) = delete_repos_by_installation_id(state, installation.id).await {
             error!(
                 err = %e,
                 installation_id = installation.id,
@@ -178,7 +236,7 @@ async fn handle_installation_repositories(
                 continue;
             }
 
-            if let Err(e) = upsert_repo_to_db(
+            if let Err(e) = upsert_installation_repo(
                 state,
                 repo.id,
                 &repo.full_name,
@@ -216,7 +274,7 @@ async fn handle_installation_repositories(
 
         for repo in repositories_removed {
             info!(full_name = %repo.full_name, repo_id = repo.id, "removed repo from installation");
-            if let Err(e) = delete_repo_from_db(state, repo.id).await {
+            if let Err(e) = delete_repo_by_github_id(state, repo.id).await {
                 error!(
                     err = %e,
                     repo = %repo.full_name,
@@ -227,85 +285,6 @@ async fn handle_installation_repositories(
             }
         }
     }
-
-    Ok(())
-}
-
-async fn upsert_repo_to_db(
-    state: &AppState,
-    github_repo_id: i64,
-    full_name: &str,
-    owner_github_id: i64,
-    owner_username: &str,
-    owner_type: &str,
-    is_fork: bool,
-    is_private: bool,
-    installer_github_id: i64,
-    github_installation_id: i64,
-) -> Result<(), AppError> {
-    let pool = state
-        .db
-        .as_ref()
-        .ok_or_else(|| AppError::internal("Database not available"))?;
-
-    sqlx::query(
-        "INSERT INTO repos (github_repo_id, full_name, owner_github_id, owner_username, owner_type, is_fork, is_private, reward_low, reward_medium, reward_high, installer_github_id, github_installation_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, 1, 2, 3, $8, $9)
-         ON CONFLICT (github_repo_id) DO UPDATE SET
-           full_name = EXCLUDED.full_name,
-           owner_github_id = EXCLUDED.owner_github_id,
-           owner_username = EXCLUDED.owner_username,
-           owner_type = EXCLUDED.owner_type,
-           is_fork = EXCLUDED.is_fork,
-           is_private = EXCLUDED.is_private,
-           installer_github_id = EXCLUDED.installer_github_id,
-           github_installation_id = EXCLUDED.github_installation_id"
-    )
-    .bind(github_repo_id)
-    .bind(full_name)
-    .bind(owner_github_id)
-    .bind(owner_username)
-    .bind(owner_type)
-    .bind(is_fork)
-    .bind(is_private)
-    .bind(installer_github_id)
-    .bind(github_installation_id)
-    .execute(pool)
-    .await
-    .map_err(|e| AppError::database(format!("Failed to upsert repo: {}", e)))?;
-
-    Ok(())
-}
-
-async fn delete_repos_for_installation(
-    state: &AppState,
-    installation_id: i64,
-) -> Result<(), AppError> {
-    let pool = state
-        .db
-        .as_ref()
-        .ok_or_else(|| AppError::internal("Database not available"))?;
-
-    sqlx::query("DELETE FROM repos WHERE github_installation_id = $1")
-        .bind(installation_id)
-        .execute(pool)
-        .await
-        .map_err(|e| AppError::database(format!("Failed to delete repos: {}", e)))?;
-
-    Ok(())
-}
-
-async fn delete_repo_from_db(state: &AppState, github_repo_id: i64) -> Result<(), AppError> {
-    let pool = state
-        .db
-        .as_ref()
-        .ok_or_else(|| AppError::internal("Database not available"))?;
-
-    sqlx::query("DELETE FROM repos WHERE github_repo_id = $1")
-        .bind(github_repo_id)
-        .execute(pool)
-        .await
-        .map_err(|e| AppError::database(format!("Failed to delete repo: {}", e)))?;
 
     Ok(())
 }

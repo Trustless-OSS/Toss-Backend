@@ -4,10 +4,7 @@ use tracing::{error, info};
 use crate::{
     error::AppError,
     modules::{
-        github::{
-            auth::post_comment,
-            handlers::helpers::zero_milestone_on_chain,
-        },
+        github::{auth::post_comment, handlers::helpers::zero_milestone_on_chain},
         repo::repository::{
             delete_assignments_for_issue, get_issue_by_repo_and_github_id, get_repo_by_github_id,
             reset_issue_to_pending,
@@ -17,9 +14,9 @@ use crate::{
 };
 
 pub async fn handle_issue_unassigned(state: &AppState, payload: &Value) -> Result<(), AppError> {
-    let repository = payload.get("repository").ok_or_else(|| {
-        AppError::webhook("issues.unassigned payload missing repository")
-    })?;
+    let repository = payload
+        .get("repository")
+        .ok_or_else(|| AppError::webhook("issues.unassigned payload missing repository"))?;
     let issue = payload
         .get("issue")
         .ok_or_else(|| AppError::webhook("issues.unassigned payload missing issue"))?;

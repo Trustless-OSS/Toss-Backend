@@ -164,8 +164,7 @@ pub async fn sync_repo_escrow_balance(state: &AppState, repo: &Repo) -> Result<D
         .and_then(|items| items.first())
         .and_then(|item| item.get("balance"))
         .and_then(|value| value.as_f64())
-        .map(Decimal::from_f64_retain)
-        .flatten()
+        .and_then(Decimal::from_f64_retain)
         .unwrap_or(repo.escrow_balance);
 
     if on_chain_balance != repo.escrow_balance {
@@ -421,8 +420,7 @@ pub async fn refund_escrow(
             let amount = milestone
                 .get("amount")
                 .and_then(|value| value.as_f64())
-                .map(Decimal::from_f64_retain)
-                .flatten()
+                .and_then(Decimal::from_f64_retain)
                 .unwrap_or(Decimal::ZERO);
 
             for (path, body) in [
@@ -681,10 +679,8 @@ pub async fn release_escrow_milestone(
             let message = error.to_string();
             if message.contains("already been released previously")
                 || message.contains("already been paid")
-            {
-                Ok("success".to_string())
-            } else if message.contains("Only the dispute resolver can execute this function")
-                && issue.reward_amount == Decimal::ZERO
+                || (message.contains("Only the dispute resolver can execute this function")
+                    && issue.reward_amount == Decimal::ZERO)
             {
                 Ok("success".to_string())
             } else {
@@ -696,51 +692,19 @@ pub async fn release_escrow_milestone(
 
 // ── Private helpers ───────────────────────────────────────────────────────────
 
-/// Build a TrustlessWork receiver object for the given chain and address.
+/// Build the receiver accepted by Trustless Work multi-release escrows.
 fn build_receiver(payout_chain: &str, payout_address: &str) -> Result<Value, AppError> {
-    if payout_chain == "stellar" {
-        return Ok(json!({
-            "payout_type": 0,
-            "stellar_address": payout_address,
-            "destination_domain": 0,
-            "recipient": "0000000000000000000000000000000000000000000000000000000000000000",
-        }));
+    if payout_address.trim().is_empty() {
+        return Err(AppError::bad_request("Payout address cannot be empty"));
     }
 
-    let destination_domain = match payout_chain {
-        "base" => 6,
-        "ethereum" => 0,
-        "solana" => 5,
-        _ => 0,
-    };
-
-    let recipient_hex = if payout_chain == "solana" {
-        pad_left(&hex::encode(decode_base58(payout_address)?), 64, '0')
-    } else {
-        let clean = payout_address.strip_prefix("0x").unwrap_or(payout_address);
-        pad_left(&clean.to_ascii_lowercase(), 64, '0')
-    };
-
-    Ok(json!({
-        "payout_type": 1,
-        "stellar_address": Value::Null,
-        "destination_domain": destination_domain,
-        "recipient": recipient_hex,
-    }))
-}
-
-fn decode_base58(input: &str) -> Result<Vec<u8>, AppError> {
-    bs58::decode(input)
-        .into_vec()
-        .map_err(|error| AppError::stellar(format!("invalid base58 address: {error}")))
-}
-
-fn pad_left(value: &str, len: usize, ch: char) -> String {
-    if value.len() >= len {
-        return value.to_string();
+    if payout_chain.eq_ignore_ascii_case("stellar") {
+        return Ok(json!(payout_address));
     }
-    let padding: String = std::iter::repeat(ch).take(len - value.len()).collect();
-    format!("{padding}{value}")
+
+    Err(AppError::bad_request(format!(
+        "Trustless Work multi-release escrows currently support Stellar payout addresses only; unsupported payout chain: {payout_chain}"
+    )))
 }
 
 /// Remove read-only metadata fields before sending an escrow payload to the
@@ -755,8 +719,9 @@ fn strip_escrow_metadata(escrow_data: &Value) -> Value {
             "balance",
             "inconsistencies",
             "contractBaseId",
-            "isActive",
             "receiverMemo",
+            "contractId",
+            "signer",
         ] {
             obj.remove(key);
         }
@@ -835,6 +800,40 @@ mod tests {
 
         assert!(value.is_number());
         assert_eq!(value, json!(12.5));
+    }
+
+    #[test]
+    fn stellar_milestone_receiver_is_a_plain_address() {
+        let address = "GCPZCXSEWARYFZAJQEAJORUHZNGJNMQCDYYCDTYTUDD65H4TKKDF65HS";
+
+        assert_eq!(build_receiver("stellar", address).unwrap(), json!(address));
+    }
+
+    #[test]
+    fn non_stellar_milestone_receiver_is_rejected_before_api_call() {
+        let error = build_receiver("base", "0x1234").unwrap_err();
+
+        assert!(matches!(error, AppError::BadRequest { .. }));
+        assert!(error.to_string().contains("Stellar payout addresses only"));
+    }
+
+    #[test]
+    fn update_payload_removes_indexer_metadata_but_keeps_active_state() {
+        let payload = strip_escrow_metadata(&json!({
+            "contractId": "C123",
+            "signer": "G123",
+            "balance": 10,
+            "type": "multi-release",
+            "createdAt": "now",
+            "updatedAt": "now",
+            "inconsistencies": [],
+            "contractBaseId": "base",
+            "receiverMemo": 12,
+            "isActive": true,
+            "title": "Escrow",
+        }));
+
+        assert_eq!(payload, json!({ "isActive": true, "title": "Escrow" }));
     }
 
     #[test]

@@ -18,12 +18,15 @@ use crate::{
 };
 
 static ISSUE_NUMBER_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)(?:close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)[:\s]*#\s*(\d+)")
-        .expect("valid issue number regex")
+    Regex::new(
+        r"(?i)(?:close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)[:\s]*#\s*(\d+)",
+    )
+    .expect("valid issue number regex")
 });
 
-static CUSTOM_AMOUNT_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)@Trustless-OSS\s+([\d.]+)").expect("valid custom amount regex"));
+static CUSTOM_AMOUNT_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)@Trustless-OSS\s+([\d.]+)").expect("valid custom amount regex")
+});
 
 static WORK_COMPLETION_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)@Trustless-OSS\s+/(pay|split|work|work-completion)\s+(\d+)")
@@ -184,11 +187,7 @@ pub async fn resolve_milestone_dispute(
     milestone_index: i32,
     distributions: Vec<Value>,
 ) -> Result<(), AppError> {
-    let platform_key = state
-        .config
-        .platform_stellar_public_key
-        .as_deref()
-        .ok_or_else(|| AppError::internal("PLATFORM_STELLAR_PUBLIC_KEY is not configured"))?;
+    let platform_key = state.config.platform_stellar_public_key.as_str();
     let contract_id = repo
         .escrow_contract_id
         .as_deref()
@@ -262,8 +261,9 @@ pub fn strip_escrow_metadata(escrow_data: &Value) -> Value {
             "balance",
             "inconsistencies",
             "contractBaseId",
-            "isActive",
             "receiverMemo",
+            "contractId",
+            "signer",
         ] {
             obj.remove(key);
         }
@@ -276,11 +276,7 @@ pub async fn zero_milestone_on_chain(
     repo: &Repo,
     milestone_index: i32,
 ) -> Result<(), AppError> {
-    let platform_key = state
-        .config
-        .platform_stellar_public_key
-        .as_deref()
-        .ok_or_else(|| AppError::internal("PLATFORM_STELLAR_PUBLIC_KEY is not configured"))?;
+    let platform_key = state.config.platform_stellar_public_key.as_str();
     let contract_id = repo
         .escrow_contract_id
         .as_deref()
@@ -378,4 +374,52 @@ pub async fn cancel_bounty_with_refund(
 
 pub fn log_warn_missing_milestone() {
     warn!("missing milestone index for active issue");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extracts_linked_issue_from_supported_closing_phrases() {
+        assert_eq!(extract_issue_number(Some("Closes #42")), Some(42));
+        assert_eq!(extract_issue_number(Some("fixes: # 17")), Some(17));
+        assert_eq!(extract_issue_number(Some("related to #9")), None);
+    }
+
+    #[test]
+    fn parses_positive_custom_amounts_only() {
+        assert_eq!(
+            extract_custom_amount(Some("@Trustless-OSS 12.50 USDC")),
+            Some("12.50".parse().unwrap())
+        );
+        assert_eq!(extract_custom_amount(Some("@Trustless-OSS 0")), None);
+        assert_eq!(extract_custom_amount(Some("@Trustless-OSS nope")), None);
+    }
+
+    #[test]
+    fn recognizes_commands_case_insensitively() {
+        assert_eq!(
+            work_completion_percentage("@trustless-oss /WORK-COMPLETION 75"),
+            Some(75)
+        );
+        assert!(is_reject_command("@Trustless-OSS /rejected"));
+        assert!(is_wallet_command("@Trustless-OSS /change-address"));
+        assert!(is_help_command("@trustless-oss /HELP"));
+    }
+
+    #[test]
+    fn splits_reward_without_losing_precision() {
+        let reward: Decimal = "10.0000001".parse().unwrap();
+        let (contributor, maintainer) = split_amounts(reward, 75);
+        assert_eq!(contributor, "7.5000001".parse().unwrap());
+        assert_eq!(maintainer, "2.5000000".parse().unwrap());
+        assert_eq!(contributor + maintainer, reward);
+    }
+
+    #[test]
+    fn detects_rejected_label_case_insensitively() {
+        assert!(has_rejected_label(&[json!({ "name": "Rejected" })]));
+        assert!(!has_rejected_label(&[json!({ "name": "rewarded" })]));
+    }
 }

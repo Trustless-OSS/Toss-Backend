@@ -14,9 +14,9 @@ use crate::{
 };
 
 pub async fn handle_issue_assigned(state: &AppState, payload: &Value) -> Result<(), AppError> {
-    let repository = payload.get("repository").ok_or_else(|| {
-        AppError::webhook("issues.assigned payload missing repository")
-    })?;
+    let repository = payload
+        .get("repository")
+        .ok_or_else(|| AppError::webhook("issues.assigned payload missing repository"))?;
     let issue = payload
         .get("issue")
         .ok_or_else(|| AppError::webhook("issues.assigned payload missing issue"))?;
@@ -61,14 +61,7 @@ pub async fn handle_issue_assigned(state: &AppState, payload: &Value) -> Result<
 
     if let Some(payout_address) = payout_address {
         let payout_chain = contributor.payout_chain.as_deref().unwrap_or("stellar");
-        push_milestone_on_chain(
-            state,
-            &repo,
-            &issue_record,
-            payout_address,
-            payout_chain,
-        )
-        .await?;
+        push_milestone_on_chain(state, &repo, &issue_record, payout_address, payout_chain).await?;
 
         let contract_id = repo.escrow_contract_id.as_deref().unwrap_or("");
         post_comment(

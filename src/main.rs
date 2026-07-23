@@ -2,6 +2,7 @@
 
 mod app;
 mod config;
+mod dev;
 mod error;
 mod infra;
 mod lifecycle;
@@ -43,6 +44,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("background workers started");
 
     let listener = TcpListener::bind(address).await?;
+    dev::webhook_proxy::start_if_enabled(state.clone());
 
     info!(
         "Trustless-OSS backend module listening on http://{}",

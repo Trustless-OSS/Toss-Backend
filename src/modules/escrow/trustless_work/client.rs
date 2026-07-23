@@ -50,12 +50,12 @@ pub async fn tw_fetch(
 }
 
 pub async fn health_check(config: &Config, client: &reqwest::Client) -> Result<(), AppError> {
-    let api_key = config.trustless_work_api_key.as_str();
-
-    let url = format!("{}/helper/health", config.trustless_work_base_url);
+    let url = format!(
+        "{}/docs",
+        config.trustless_work_base_url.trim_end_matches('/')
+    );
     let response = client
         .get(url)
-        .header("x-api-key", api_key)
         .send()
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
