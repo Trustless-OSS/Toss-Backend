@@ -1,8 +1,10 @@
 use rust_decimal::Decimal;
+use serde_json::Value;
+
 
 use crate::shared::models::{Difficulty, ParsedLabels, Repo};
 
-pub fn parse_labels(labels: &[serde_json::Value]) -> ParsedLabels {
+pub fn parse_labels(labels: &[Value]) -> ParsedLabels {
     let names: Vec<String> = labels
         .iter()
         .filter_map(|label| label.get("name").and_then(|name| name.as_str()))
