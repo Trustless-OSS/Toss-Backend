@@ -1,5 +1,7 @@
 use std::time::{Duration, Instant};
 
+use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
@@ -10,6 +12,7 @@ use crate::{
     error::AppError,
     infra::cache_keys,
     modules::repo::repository::{get_repo_by_github_id, invalidate_repo_cache},
+    schema::repos,
     state::AppState,
 };
 
@@ -133,11 +136,10 @@ pub async fn get_installation_token(
 
     let installation_id = resolve_installation_id(state, &repo.full_name).await?;
     if repo.github_installation_id != Some(installation_id) {
-        let pool = crate::error::require_db(&state.db)?;
-        sqlx::query("UPDATE repos SET github_installation_id = $1 WHERE github_repo_id = $2")
-            .bind(installation_id)
-            .bind(github_repo_id)
-            .execute(pool)
+        let mut conn = crate::error::get_conn(&state.db).await?;
+        diesel::update(repos::table.filter(repos::github_repo_id.eq(github_repo_id)))
+            .set(repos::github_installation_id.eq(installation_id))
+            .execute(&mut conn)
             .await
             .map_err(|error| AppError::database(error.to_string()))?;
         invalidate_repo_cache(state, repo.id, Some(github_repo_id)).await;
@@ -303,13 +305,14 @@ pub async fn post_comment(
         }
     }
 
-    let pool = crate::error::require_db(&state.db)?;
-    let github_repo_id: Option<i64> =
-        sqlx::query_scalar("SELECT github_repo_id FROM repos WHERE full_name = $1")
-            .bind(full_name)
-            .fetch_optional(pool)
-            .await
-            .map_err(|error| AppError::database(error.to_string()))?;
+    let mut conn = crate::error::get_conn(&state.db).await?;
+    let github_repo_id: Option<i64> = repos::table
+        .filter(repos::full_name.eq(full_name))
+        .select(repos::github_repo_id)
+        .first(&mut conn)
+        .await
+        .optional()
+        .map_err(|error| AppError::database(error.to_string()))?;
 
     let Some(github_repo_id) = github_repo_id else {
         error!(

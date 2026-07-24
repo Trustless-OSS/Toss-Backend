@@ -8,9 +8,12 @@ use chrono::Utc;
 use serde::Serialize;
 use serde_json::{json, Value};
 
+use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
+
 use crate::{
-    error::require_db, infra::redis, lifecycle,
-    modules::escrow::trustless_work::client::health_check, state::AppState,
+    error::get_conn, infra::redis, lifecycle,
+    modules::escrow::trustless_work::client::health_check, schema::repos, state::AppState,
 };
 
 #[derive(Serialize)]
@@ -48,11 +51,9 @@ pub async fn health_handler(
     let mut is_healthy = true;
 
     let db_start = std::time::Instant::now();
-    let db_check = match require_db(&state.db) {
-        Ok(pool) => {
-            let result = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM repos")
-                .fetch_one(pool)
-                .await;
+    let db_check = match get_conn(&state.db).await {
+        Ok(mut conn) => {
+            let result: Result<i64, _> = repos::table.count().get_result(&mut conn).await;
             match result {
                 Ok(_) => json!({
                     "status": "ok",

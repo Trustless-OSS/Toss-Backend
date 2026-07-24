@@ -1,10 +1,12 @@
 use chrono::{DateTime, Utc};
+use diesel::prelude::{Queryable, Selectable};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
-use sqlx::FromRow;
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize, Queryable, Selectable)]
+#[diesel(table_name = crate::schema::repos)]
+#[diesel(check_for_backend(diesel::pg::Pg))]
 pub struct Repo {
     pub id: Uuid,
     pub github_repo_id: i64,
@@ -25,7 +27,9 @@ pub struct Repo {
     pub created_at: Option<DateTime<Utc>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize, Queryable, Selectable)]
+#[diesel(table_name = crate::schema::contributors)]
+#[diesel(check_for_backend(diesel::pg::Pg))]
 pub struct Contributor {
     pub id: Uuid,
     pub github_user_id: i64,
@@ -36,7 +40,9 @@ pub struct Contributor {
     pub created_at: Option<DateTime<Utc>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize, Queryable, Selectable)]
+#[diesel(table_name = crate::schema::issues)]
+#[diesel(check_for_backend(diesel::pg::Pg))]
 pub struct Issue {
     pub id: Uuid,
     pub repo_id: Uuid,
@@ -50,7 +56,9 @@ pub struct Issue {
     pub created_at: Option<DateTime<Utc>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize, Queryable, Selectable)]
+#[diesel(table_name = crate::schema::assignments)]
+#[diesel(check_for_backend(diesel::pg::Pg))]
 pub struct Assignment {
     pub id: Uuid,
     pub issue_id: Uuid,

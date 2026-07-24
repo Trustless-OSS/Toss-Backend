@@ -131,7 +131,18 @@ pub fn unauthorized_response() -> Response {
         .into_response()
 }
 
-pub fn require_db(pool: &Option<sqlx::PgPool>) -> Result<&sqlx::PgPool, AppError> {
+use crate::infra::db::{DbConn, DbPool};
+
+pub fn require_db(pool: &Option<DbPool>) -> Result<&DbPool, AppError> {
     pool.as_ref()
         .ok_or_else(|| AppError::internal("Database is not configured"))
+}
+
+/// Check out a pooled connection, returning an [`AppError`] if the database is
+/// not configured or the pool cannot hand out a connection.
+pub async fn get_conn(pool: &Option<DbPool>) -> Result<DbConn<'_>, AppError> {
+    let pool = require_db(pool)?;
+    pool.get()
+        .await
+        .map_err(|error| AppError::database(error.to_string()))
 }

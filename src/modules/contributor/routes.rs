@@ -3,12 +3,15 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    error::{require_db, AppError},
+    error::{get_conn, AppError},
     middleware::auth::AuthedUser,
     modules::repo::repository::{get_contributor_by_github_id, upsert_contributor_wallet},
+    schema::{assignments, issues},
     shared::models::{Assignment, Issue},
     state::AppState,
 };
@@ -69,20 +72,22 @@ async fn get_contributor_me(
         return Ok(Json(ContributorMeResponse { contributor: None }));
     };
 
-    let pool = require_db(&state.db)?;
-    let assignments =
-        sqlx::query_as::<_, Assignment>("SELECT * FROM assignments WHERE contributor_id = $1")
-            .bind(contributor.id)
-            .fetch_all(pool)
-            .await
-            .map_err(|error| AppError::database(error.to_string()))?;
+    let mut conn = get_conn(&state.db).await?;
+    let contributor_assignments = assignments::table
+        .filter(assignments::contributor_id.eq(contributor.id))
+        .select(Assignment::as_select())
+        .load(&mut conn)
+        .await
+        .map_err(|error| AppError::database(error.to_string()))?;
 
-    let mut assignment_rows = Vec::with_capacity(assignments.len());
-    for assignment in assignments {
-        let issue = sqlx::query_as::<_, Issue>("SELECT * FROM issues WHERE id = $1")
-            .bind(assignment.issue_id)
-            .fetch_optional(pool)
+    let mut assignment_rows = Vec::with_capacity(contributor_assignments.len());
+    for assignment in contributor_assignments {
+        let issue = issues::table
+            .filter(issues::id.eq(assignment.issue_id))
+            .select(Issue::as_select())
+            .first(&mut conn)
             .await
+            .optional()
             .map_err(|error| AppError::database(error.to_string()))?;
 
         assignment_rows.push(serde_json::json!({
