@@ -1,11 +1,8 @@
+<img width="4500" height="1100" alt="TOSS-Banner" src="https://github.com/user-attachments/assets/d41757e4-5123-41c1-a8b0-09b53176f6d2" />
+
 <div align="center">
 
-# ⚡ Toss Backend
 
-### The Rust API behind Trustless OSS bounties
-
-Connect GitHub repositories, turn issues into funded bounties, and coordinate
-contributor payouts through Stellar and Trustless Work.
 
 [![Rust CI](https://github.com/Trustless-OSS/Toss-Backend/actions/workflows/rust.yml/badge.svg)](https://github.com/Trustless-OSS/Toss-Backend/actions/workflows/rust.yml)
 ![Rust 2021](https://img.shields.io/badge/Rust-2021-000000?logo=rust&logoColor=white)
