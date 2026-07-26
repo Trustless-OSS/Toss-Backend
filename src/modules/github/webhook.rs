@@ -3,11 +3,12 @@ use tracing::{error, info};
 
 use crate::{
     error::AppError,
-    infra::queue::WebhookJobData,
+    infra::queue::WebhookJobEnvelope,
     modules::github::handlers::{
         handle_issue_assigned, handle_issue_closed, handle_issue_comment_created,
         handle_issue_deleted, handle_issue_labeled, handle_issue_unassigned, handle_pr_merged,
     },
+    modules::github::idempotency::{self, DeliveryClaim},
     modules::repo::repository::{
         delete_repo_by_github_id, delete_repos_by_installation_id, upsert_installation_repo,
     },
@@ -41,51 +42,102 @@ struct GithubSender {
     id: i64,
 }
 
-pub async fn process_webhook_job(state: &AppState, job: WebhookJobData) -> Result<(), AppError> {
-    let action = job.action.as_deref().unwrap_or("");
+/// Entry point for both the queue worker and the synchronous
+/// (`installation*`) fast path. Guards every delivery-id-bearing event
+/// through the Postgres idempotency ledger before dispatching, and records
+/// the outcome back onto it, so a redelivered event never re-runs a
+/// completed handler even if the Redis dedup marker was lost.
+pub async fn process_webhook_job(
+    state: &AppState,
+    envelope: &WebhookJobEnvelope,
+) -> Result<(), AppError> {
+    let action = envelope.action.as_deref().unwrap_or("");
+
+    if let Some(delivery_id) = envelope.delivery_id.as_deref() {
+        match idempotency::claim_delivery(
+            state,
+            delivery_id,
+            &envelope.event,
+            envelope.action.as_deref(),
+            &envelope.correlation_id,
+        )
+        .await
+        {
+            Ok(DeliveryClaim::Duplicate) => {
+                info!(delivery_id, event = %envelope.event, action, "duplicate GitHub delivery skipped");
+                return Ok(());
+            }
+            Ok(DeliveryClaim::Proceed) => {}
+            Err(guard_error) => {
+                // Fail open: Redis-level dedup still protects against most
+                // duplicate execution; don't let a DB hiccup drop webhooks.
+                error!(%guard_error, delivery_id, "idempotency ledger unavailable; proceeding without DB guard");
+            }
+        }
+    }
+
     info!(
-        event = %job.event,
+        delivery_id = ?envelope.delivery_id,
+        event = %envelope.event,
         action,
-        attempt = job.attempts,
+        attempt = envelope.attempts,
+        correlation_id = %envelope.correlation_id,
         "processing GitHub webhook"
     );
 
-    match job.event.as_str() {
+    let result = dispatch(state, envelope).await;
+
+    if let Some(delivery_id) = envelope.delivery_id.as_deref() {
+        let ledger_result = match &result {
+            Ok(()) => idempotency::mark_completed(state, delivery_id).await,
+            Err(handler_error) => idempotency::mark_failed(state, delivery_id, handler_error).await,
+        };
+        if let Err(ledger_error) = ledger_result {
+            error!(%ledger_error, delivery_id, "failed to update webhook idempotency ledger");
+        }
+    }
+
+    result
+}
+
+async fn dispatch(state: &AppState, envelope: &WebhookJobEnvelope) -> Result<(), AppError> {
+    let action = envelope.action.as_deref().unwrap_or("");
+    let payload = &envelope.payload;
+
+    match envelope.event.as_str() {
         "issues" => match action {
-            "opened" | "labeled" => handle_issue_labeled(state, &job.payload).await?,
-            "assigned" => handle_issue_assigned(state, &job.payload).await?,
-            "unassigned" => handle_issue_unassigned(state, &job.payload).await?,
-            "closed" => handle_issue_closed(state, &job.payload).await?,
-            "deleted" => handle_issue_deleted(state, &job.payload).await?,
+            "opened" | "labeled" => handle_issue_labeled(state, payload).await?,
+            "assigned" => handle_issue_assigned(state, payload).await?,
+            "unassigned" => handle_issue_unassigned(state, payload).await?,
+            "closed" => handle_issue_closed(state, payload).await?,
+            "deleted" => handle_issue_deleted(state, payload).await?,
             _ => {
-                info!(event = %job.event, action, "issues action ignored");
+                info!(event = %envelope.event, action, "issues action ignored");
             }
         },
         "issue_comment" if action == "created" => {
-            handle_issue_comment_created(state, &job.payload).await?;
+            handle_issue_comment_created(state, payload).await?;
         }
         "pull_request" => {
             if action == "closed" {
-                let merged = job
-                    .payload
+                let merged = payload
                     .get("pull_request")
                     .and_then(|pr| pr.get("merged"))
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
                 if merged {
-                    handle_pr_merged(state, &job.payload).await?;
+                    handle_pr_merged(state, payload).await?;
                 }
             }
         }
         "installation" => {
-            handle_installation(state, &job.payload, &job.action).await?;
+            handle_installation(state, payload, &envelope.action).await?;
         }
         "installation_repositories" => {
-            handle_installation_repositories(state, &job.payload, &job.action).await?;
+            handle_installation_repositories(state, payload, &envelope.action).await?;
         }
         "label" => {
-            let label = job
-                .payload
+            let label = payload
                 .get("label")
                 .and_then(|value| value.get("name"))
                 .and_then(serde_json::Value::as_str)
@@ -97,7 +149,7 @@ pub async fn process_webhook_job(state: &AppState, job: WebhookJobData) -> Resul
             );
         }
         _ => {
-            info!(event = %job.event, action, "unsupported webhook event ignored");
+            info!(event = %envelope.event, action, "unsupported webhook event ignored");
         }
     }
     Ok(())

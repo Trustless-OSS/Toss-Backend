@@ -8,7 +8,8 @@ use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use tracing::{debug, error};
 
-use crate::infra::queue::{WebhookEnqueueOutcome, WebhookJobData};
+use crate::infra::queue::{NewWebhookJob, WebhookEnqueueOutcome, WebhookJobEnvelope};
+use crate::middleware::request_id::next_request_id;
 use crate::{error::AppError, state::AppState};
 
 pub async fn handle_github_webhook(
@@ -56,19 +57,39 @@ pub async fn handle_github_webhook(
         "received GitHub webhook"
     );
 
-    let job = WebhookJobData {
-        event: event.to_string(),
-        action,
-        payload,
-        attempts: 0,
-    };
+    let correlation_id = next_request_id();
 
     if matches!(event, "installation" | "installation_repositories") {
-        crate::modules::github::webhook::process_webhook_job(&state, job).await?;
+        // These carry no money-moving side effects and must reflect
+        // immediately, so they bypass the queue; they still go through the
+        // same idempotency-guarded dispatch path as queued jobs.
+        let envelope = WebhookJobEnvelope {
+            version: 1,
+            job_id: correlation_id.clone(),
+            delivery_id: delivery_id.map(str::to_string),
+            event: event.to_string(),
+            action,
+            payload,
+            attempts: 0,
+            received_at: chrono::Utc::now(),
+            first_attempt_at: Some(chrono::Utc::now()),
+            next_attempt_at: None,
+            lease_expires_at: None,
+            last_error: None,
+            correlation_id,
+            replay_source: None,
+        };
+        crate::modules::github::webhook::process_webhook_job(&state, &envelope).await?;
         return Ok(StatusCode::ACCEPTED);
     }
 
-    // Enqueue the webhook job
+    let job = NewWebhookJob {
+        event: event.to_string(),
+        action,
+        payload,
+        correlation_id,
+    };
+
     let outcome = state
         .queue
         .enqueue_webhook(delivery_id, job.clone())
@@ -79,7 +100,25 @@ pub async fn handle_github_webhook(
         })?;
 
     if outcome == WebhookEnqueueOutcome::Unavailable {
-        crate::modules::github::webhook::process_webhook_job(&state, job).await?;
+        // Redis is down: fall back to processing inline so the delivery
+        // isn't silently lost, at the cost of blocking the HTTP response.
+        let envelope = WebhookJobEnvelope {
+            version: 1,
+            job_id: uuid::Uuid::new_v4().to_string(),
+            delivery_id: delivery_id.map(str::to_string),
+            event: job.event,
+            action: job.action,
+            payload: job.payload,
+            attempts: 0,
+            received_at: chrono::Utc::now(),
+            first_attempt_at: Some(chrono::Utc::now()),
+            next_attempt_at: None,
+            lease_expires_at: None,
+            last_error: None,
+            correlation_id: job.correlation_id,
+            replay_source: None,
+        };
+        crate::modules::github::webhook::process_webhook_job(&state, &envelope).await?;
     }
 
     Ok(StatusCode::ACCEPTED)

@@ -62,8 +62,33 @@ diesel::table! {
     }
 }
 
+diesel::table! {
+    webhook_deliveries (id) {
+        id -> Uuid,
+        delivery_id -> Text,
+        event -> Text,
+        action -> Nullable<Text>,
+        status -> Text,
+        job_id -> Nullable<Text>,
+        attempts -> Int4,
+        first_attempt_at -> Timestamptz,
+        last_attempt_at -> Timestamptz,
+        completed_at -> Nullable<Timestamptz>,
+        last_error -> Nullable<Text>,
+        correlation_id -> Nullable<Text>,
+        created_at -> Timestamptz,
+        updated_at -> Timestamptz,
+    }
+}
+
 diesel::joinable!(assignments -> contributors (contributor_id));
 diesel::joinable!(assignments -> issues (issue_id));
 diesel::joinable!(issues -> repos (repo_id));
 
-diesel::allow_tables_to_appear_in_same_query!(assignments, contributors, issues, repos,);
+diesel::allow_tables_to_appear_in_same_query!(
+    assignments,
+    contributors,
+    issues,
+    repos,
+    webhook_deliveries,
+);

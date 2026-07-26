@@ -1,7 +1,6 @@
 use rust_decimal::Decimal;
 use serde_json::Value;
 
-
 use crate::shared::models::{Difficulty, ParsedLabels, Repo};
 
 pub fn parse_labels(labels: &[Value]) -> ParsedLabels {

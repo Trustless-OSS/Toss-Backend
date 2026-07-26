@@ -23,7 +23,7 @@ impl AppState {
         let db = Some(db::connect_lazy(&config.database_url));
         let redis = Some(redis::build_client(&config.redis_url)?);
         let cache = Cache::new(redis.clone());
-        let queue = QueueInfra::new(redis.clone());
+        let queue = QueueInfra::new(redis.clone(), &config);
 
         Ok(Self {
             config: Arc::new(config),

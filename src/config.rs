@@ -23,6 +23,22 @@ pub struct Config {
     pub dev_webhook_proxy_enabled: bool,
     pub smee_source_url: String,
     pub smee_target_url: String,
+    /// How many attempts (including the first) a webhook job gets before
+    /// it is moved to the dead-letter queue.
+    pub webhook_max_attempts: u32,
+    /// How long a worker may hold a claimed job before its lease is
+    /// considered expired and eligible for crash recovery.
+    pub webhook_lease_seconds: u64,
+    /// Base delay for exponential backoff between retry attempts.
+    pub webhook_retry_base_ms: u64,
+    /// Ceiling on the exponential backoff delay, before jitter.
+    pub webhook_retry_max_ms: u64,
+    /// How long a completed delivery's dedup marker is retained, so a
+    /// GitHub redelivery of an already-processed event is still rejected.
+    pub webhook_completed_dedup_ttl_seconds: u64,
+    /// Shared-secret header required to call the queue operator APIs
+    /// (dead-letter inspection/replay). Unset disables those routes.
+    pub queue_admin_token: Option<String>,
 }
 
 impl Config {
@@ -78,12 +94,29 @@ impl Config {
                 .unwrap_or_else(|_| "https://smee.io/trustless-oss-dev-webhook".to_string()),
             smee_target_url: std::env::var("SMEE_TARGET_URL")
                 .unwrap_or_else(|_| format!("http://127.0.0.1:{port}/api/webhooks/github")),
+            webhook_max_attempts: optional_u64("WEBHOOK_MAX_ATTEMPTS").unwrap_or(6) as u32,
+            webhook_lease_seconds: optional_u64("WEBHOOK_LEASE_SECONDS").unwrap_or(30),
+            webhook_retry_base_ms: optional_u64("WEBHOOK_RETRY_BASE_MS").unwrap_or(1_000),
+            webhook_retry_max_ms: optional_u64("WEBHOOK_RETRY_MAX_MS").unwrap_or(300_000),
+            webhook_completed_dedup_ttl_seconds: optional_u64(
+                "WEBHOOK_COMPLETED_DEDUP_TTL_SECONDS",
+            )
+            .unwrap_or(604_800),
+            queue_admin_token: std::env::var("QUEUE_ADMIN_TOKEN")
+                .ok()
+                .filter(|v| !v.trim().is_empty()),
         })
     }
 
     pub fn is_mainnet(&self) -> bool {
         self.stellar_network.eq_ignore_ascii_case("mainnet")
     }
+}
+
+fn optional_u64(name: &str) -> Option<u64> {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse().ok())
 }
 
 fn optional_bool(name: &str) -> Option<bool> {
