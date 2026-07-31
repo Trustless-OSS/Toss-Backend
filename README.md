@@ -1,4 +1,4 @@
-<img width="4500" height="1100" alt="TOSS-Banner" src="https://github.com/user-attachments/assets/d41757e4-5123-41c1-a8b0-09b53176f6d2" />
+<img width="4500" height="1100" alt="TOSS-Banner" src="https://github.com/user-attachments/assets/fe3f846b-c68f-41dc-871f-04f82f2b37ef" />
 
 <div align="center">
 
