@@ -1,7 +1,6 @@
-<img width="4500" height="1100" alt="TOSS-Banner" src="https://github.com/user-attachments/assets/fe3f846b-c68f-41dc-871f-04f82f2b37ef" />
-
 <div align="center">
 
+<img width="280" alt="toss" src="https://github.com/user-attachments/assets/eb15200e-c4c5-4405-aca1-bbb692bd3480" />
 
 
 [![Rust CI](https://github.com/Trustless-OSS/Toss-Backend/actions/workflows/rust.yml/badge.svg)](https://github.com/Trustless-OSS/Toss-Backend/actions/workflows/rust.yml)
