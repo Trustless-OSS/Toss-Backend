@@ -11,8 +11,8 @@ pub fn parse_labels(labels: &[Value]) -> ParsedLabels {
         .collect();
 
     let is_rewarded = names.iter().any(|name| name == "rewarded");
-    let difficulty = if names.iter().any(|name| name == "custom") {
-        Some(Difficulty::Custom)
+    let difficulty = if names.iter().any(|name| name == "manual") {
+        Some(Difficulty::Manual)
     } else if names.iter().any(|name| name == "high") {
         Some(Difficulty::High)
     } else if names.iter().any(|name| name == "medium") {
@@ -32,10 +32,10 @@ pub fn parse_labels(labels: &[Value]) -> ParsedLabels {
 pub fn get_reward_amount(
     difficulty: Option<Difficulty>,
     repo: &Repo,
-    custom_amount: Option<Decimal>,
+    manual_amount: Option<Decimal>,
 ) -> Decimal {
     match difficulty {
-        Some(Difficulty::Custom) => custom_amount.unwrap_or(Decimal::ZERO),
+        Some(Difficulty::Manual) => manual_amount.unwrap_or(Decimal::ZERO),
         Some(Difficulty::High) => repo.reward_high,
         Some(Difficulty::Medium) => repo.reward_medium,
         Some(Difficulty::Low) => repo.reward_low,
@@ -48,6 +48,6 @@ pub fn difficulty_label(difficulty: Difficulty) -> &'static str {
         Difficulty::Low => "low",
         Difficulty::Medium => "medium",
         Difficulty::High => "high",
-        Difficulty::Custom => "custom",
+        Difficulty::Manual => "manual",
     }
 }

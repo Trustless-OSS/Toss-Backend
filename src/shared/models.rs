@@ -82,7 +82,7 @@ pub enum Difficulty {
     Low,
     Medium,
     High,
-    Custom,
+    Manual,
 }
 
 #[derive(Debug, Clone, Default)]

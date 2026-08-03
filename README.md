@@ -85,14 +85,15 @@ Open `.env` and replace the placeholder credentials. The application validates
 its required configuration at startup, so all required values must be present.
 Never commit the populated `.env` file.
 
-### 2. Start PostgreSQL and Redis
+### 2. Start PostgreSQL, Redis, and Uptime Kuma
 
 ```bash
 docker compose up -d
 docker compose ps
 ```
 
-This starts PostgreSQL at `localhost:5435` and Redis at `localhost:6379`.
+This starts PostgreSQL at `localhost:5435`, Redis at `localhost:6379`, and
+Uptime Kuma at `http://localhost:3001`.
 
 ### 3. Run the API
 
@@ -112,6 +113,15 @@ curl http://localhost:5000/api/health
 
 The root endpoint confirms that the API is running. The detailed health endpoint
 also reports PostgreSQL, Redis, environment, and Trustless Work status.
+
+For local monitoring, open Uptime Kuma and create an HTTP monitor for:
+
+```text
+http://host.docker.internal:5000/api/health
+```
+
+`host.docker.internal` is mapped in Docker Compose so the Kuma container can
+reach the API you run on your machine with `cargo run`.
 
 > [!TIP]
 > If port `5000` is already in use, change `PORT` in `.env` and use the same
@@ -163,7 +173,7 @@ Toss-Backend/
 │   ├── app.rs          # Axum router assembly
 │   └── main.rs         # Startup and graceful shutdown
 ├── migrations/         # SQLx database migrations
-├── docker-compose.yml  # Local PostgreSQL and Redis
+├── docker-compose.yml  # Local PostgreSQL, Redis, and Uptime Kuma
 └── .env.example        # Safe configuration template
 ```
 

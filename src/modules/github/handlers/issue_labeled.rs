@@ -8,7 +8,7 @@ use crate::{
         bounty::labels::{difficulty_label, get_reward_amount, parse_labels},
         github::{
             auth::post_comment,
-            handlers::helpers::{extract_custom_amount, labels_from_payload, sync_repo_balance},
+            handlers::helpers::{extract_manual_amount, labels_from_payload, sync_repo_balance},
         },
         repo::repository::{
             cancel_issue, create_issue_and_reserve_balance, delete_assignments_for_issue,
@@ -43,7 +43,7 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
         .and_then(|name| name.as_str())
         .map(str::to_ascii_lowercase);
 
-    let difficulty_labels = ["low", "medium", "high", "custom"];
+    let difficulty_labels = ["low", "medium", "high","bonus", "manual"];
     let is_opened = payload.get("action").and_then(Value::as_str) == Some("opened");
     let is_trigger = event_label.as_ref().is_some_and(|label| {
         label == "rewarded" || difficulty_labels.contains(&label.as_str()) || label == "rejected"
@@ -122,7 +122,7 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
             %labels,
             rewarded = parsed.is_rewarded,
             has_difficulty = parsed.difficulty.is_some(),
-            "bounty not created; issue needs `rewarded` and one difficulty label: low, medium, high, or custom"
+            "bounty not created; issue needs `rewarded` and one difficulty label: low, medium, high, or manual"
         );
         return Ok(());
     }
@@ -135,9 +135,9 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
         }
     }
 
-    let custom_amount = if difficulty == Difficulty::Custom {
+    let manual_amount = if difficulty == Difficulty::Manual {
         let body = issue.get("body").and_then(|v| v.as_str());
-        match extract_custom_amount(body) {
+        match extract_manual_amount(body) {
             Some(amount) => Some(amount),
             None => {
                 if existing.is_none() {
@@ -146,7 +146,7 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
                         full_name,
                         issue_number,
                         "### ⚠️ Missing Amount\n\n\
-                         Custom bounties require an amount. Please comment with `@Trustless-OSS <amount>` to set it.",
+                         Manual bounties require an amount. Please comment with `@Trustless-OSS <amount>` to set it.",
                     )
                     .await?;
                 }
@@ -157,7 +157,7 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
         None
     };
 
-    let reward_amount = get_reward_amount(Some(difficulty), &repo, custom_amount);
+    let reward_amount = get_reward_amount(Some(difficulty), &repo, manual_amount);
     let diff_label = difficulty_label(difficulty);
 
     if let Some(ref existing) = existing {

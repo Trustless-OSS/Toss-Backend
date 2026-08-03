@@ -24,8 +24,8 @@ static ISSUE_NUMBER_RE: LazyLock<Regex> = LazyLock::new(|| {
     .expect("valid issue number regex")
 });
 
-static CUSTOM_AMOUNT_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)@Trustless-OSS\s+([\d.]+)").expect("valid custom amount regex")
+static MANUAL_AMOUNT_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)@Trustless-OSS\s+([\d.]+)").expect("valid manual amount regex")
 });
 
 static WORK_COMPLETION_RE: LazyLock<Regex> = LazyLock::new(|| {
@@ -53,9 +53,9 @@ pub fn extract_issue_number(body: Option<&str>) -> Option<i32> {
         .and_then(|m| m.as_str().parse().ok())
 }
 
-pub fn extract_custom_amount(body: Option<&str>) -> Option<Decimal> {
+pub fn extract_manual_amount(body: Option<&str>) -> Option<Decimal> {
     let body = body?;
-    let amount_str = CUSTOM_AMOUNT_RE.captures(body)?.get(1)?.as_str();
+    let amount_str = MANUAL_AMOUNT_RE.captures(body)?.get(1)?.as_str();
     let amount: Decimal = amount_str.parse().ok()?;
     if amount <= Decimal::ZERO {
         return None;
@@ -388,13 +388,13 @@ mod tests {
     }
 
     #[test]
-    fn parses_positive_custom_amounts_only() {
+    fn parses_positive_manual_amounts_only() {
         assert_eq!(
-            extract_custom_amount(Some("@Trustless-OSS 12.50 USDC")),
+            extract_manual_amount(Some("@Trustless-OSS 12.50 USDC")),
             Some("12.50".parse().unwrap())
         );
-        assert_eq!(extract_custom_amount(Some("@Trustless-OSS 0")), None);
-        assert_eq!(extract_custom_amount(Some("@Trustless-OSS nope")), None);
+        assert_eq!(extract_manual_amount(Some("@Trustless-OSS 0")), None);
+        assert_eq!(extract_manual_amount(Some("@Trustless-OSS nope")), None);
     }
 
     #[test]

@@ -10,7 +10,7 @@ services:
       - "5435:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./migrations/0001_initial_schema.sql:/docker-entrypoint-initdb.d/0001_initial_schema.sql:ro
+      - ./migrations/0001_toss.sql:/docker-entrypoint-initdb.d/0001_toss.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d trustless_oss"]
       interval: 10s
@@ -33,6 +33,18 @@ services:
       retries: 5
     restart: unless-stopped
 
+  uptime-kuma:
+    image: louislam/uptime-kuma:2
+    container_name: toss_uptime_kuma
+    ports:
+      - "3001:3001"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - uptime_kuma_data:/app/data
+    restart: unless-stopped
+
 volumes:
   postgres_data:
   redis_data:
+  uptime_kuma_data:
