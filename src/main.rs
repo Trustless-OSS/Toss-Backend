@@ -3,6 +3,7 @@
 mod app;
 mod config;
 mod dev;
+mod docs;
 mod error;
 mod infra;
 mod lifecycle;
@@ -17,8 +18,10 @@ use std::net::SocketAddr;
 
 use tokio::net::TcpListener;
 use tracing::info;
+use utoipa::OpenApi;
+use utoipa_swagger_ui::SwaggerUi;
 
-use crate::{config::Config, state::AppState};
+use crate::{config::Config, docs::openapi::ApiDoc, state::AppState};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -51,7 +54,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         address
     );
 
-    axum::serve(listener, app::build_app(state))
+    let app = app::build_app(state).merge(
+        SwaggerUi::new("/swagger").url("/api-doc/openapi.json", ApiDoc::openapi()),
+    );
+
+    axum::serve(listener, app)
         .with_graceful_shutdown(lifecycle::shutdown_signal())
         .await?;
 

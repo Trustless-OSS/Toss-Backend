@@ -13,21 +13,31 @@ use crate::{
     modules::escrow::trustless_work::client::health_check, state::AppState,
 };
 
-#[derive(Serialize)]
-struct ShuttingDownResponse {
-    status: &'static str,
-    timestamp: String,
-    message: &'static str,
+#[derive(utoipa::ToSchema, Serialize)]
+pub struct ShuttingDownResponse {
+    pub status: &'static str,
+    pub timestamp: String,
+    pub message: &'static str,
 }
 
-#[derive(Serialize)]
-struct HealthResponse {
-    status: String,
-    timestamp: String,
-    env: String,
-    version: &'static str,
-    checks: Value,
+#[derive(utoipa::ToSchema, Serialize)]
+pub struct HealthResponse {
+    pub status: String,
+    pub timestamp: String,
+    pub env: String,
+    pub version: &'static str,
+    pub checks: Value,
 }
+
+#[utoipa::path(
+    get,
+    path = "/health",
+    responses(
+        (status = 200, description = "Health check succeeded", body = HealthResponse),
+        (status = 503, description = "Service unavailable", body = HealthResponse),
+        (status = 503, description = "Server shutting down", body = ShuttingDownResponse)
+    )
+)]
 
 pub async fn health_handler(
     axum::extract::State(state): axum::extract::State<AppState>,
