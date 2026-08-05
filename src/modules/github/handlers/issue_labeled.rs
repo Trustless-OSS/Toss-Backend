@@ -43,7 +43,7 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
         .and_then(|name| name.as_str())
         .map(str::to_ascii_lowercase);
 
-    let difficulty_labels = ["low", "medium", "high","bonus", "manual"];
+    let difficulty_labels = ["low", "medium", "high", "bonus", "manual"];
     let is_opened = payload.get("action").and_then(Value::as_str) == Some("opened");
     let is_trigger = event_label.as_ref().is_some_and(|label| {
         label == "rewarded" || difficulty_labels.contains(&label.as_str()) || label == "rejected"

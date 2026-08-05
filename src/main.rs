@@ -54,9 +54,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         address
     );
 
-    let app = app::build_app(state).merge(
-        SwaggerUi::new("/swagger").url("/api-doc/openapi.json", ApiDoc::openapi()),
-    );
+    let app = app::build_app(state)
+        .merge(SwaggerUi::new("/swagger").url("/api-doc/openapi.json", ApiDoc::openapi()));
 
     axum::serve(listener, app)
         .with_graceful_shutdown(lifecycle::shutdown_signal())
