@@ -19,7 +19,7 @@ pub struct Config {
     pub dispute_resolver_stellar_secret_key: String,
     pub trustless_work_api_key: String,
     pub trustless_work_base_url: String,
-    pub token_address :  String , 
+    pub token_address: String,
     pub stellar_network: String,
     pub app_url: String,
     pub webhook_url: Option<String>,
@@ -95,9 +95,9 @@ fn optional_bool(name: &str) -> Option<bool> {
 }
 
 fn required_bool(name: &str) -> Result<bool, crate::error::AppError> {
-    let value = required_env(name)?;
+    let _value = required_env(name)?;
     optional_bool(name).ok_or_else(|| {
-        crate::error::AppError::EnvVarError(format!(
+        crate::error::AppError::env_var_error(format!(
             "Invalid boolean value for environment variable: {name}"
         ))
     })
@@ -106,7 +106,7 @@ fn required_bool(name: &str) -> Result<bool, crate::error::AppError> {
 fn required_u16(name: &str) -> Result<u16, crate::error::AppError> {
     let value = required_env(name)?;
     value.parse::<u16>().map_err(|_| {
-        crate::error::AppError::EnvVarError(format!(
+        crate::error::AppError::env_var_error(format!(
             "Invalid u16 value for environment variable: {name}"
         ))
     })
@@ -115,7 +115,7 @@ fn required_u16(name: &str) -> Result<u16, crate::error::AppError> {
 fn required_env(name: &str) -> Result<String, crate::error::AppError> {
     match std::env::var(name) {
         Ok(value) if !value.trim().is_empty() => Ok(value),
-        _ => Err(crate::error::AppError::EnvVarError(format!(
+        _ => Err(crate::error::AppError::env_var_error(format!(
             "Missing required environment variable: {name}"
         ))),
     }
@@ -129,7 +129,7 @@ fn first_env(names: &[&str]) -> Result<String, crate::error::AppError> {
             _ => None,
         })
         .ok_or_else(|| {
-            crate::error::AppError::EnvVarError(format!(
+            crate::error::AppError::env_var_error(format!(
                 "Missing required environment variable: {}",
                 names.join(" or ")
             ))

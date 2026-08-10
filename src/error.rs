@@ -5,7 +5,6 @@ use axum::{
 };
 use serde_json::{json, Value};
 use thiserror::Error;
-use utoipa::openapi::ServerBuilder;
 
 #[derive(Debug, Error)]
 pub enum AppError {
@@ -41,7 +40,7 @@ pub enum AppError {
     Internal { message: String },
 
     #[error("{message}")]
-    EnvVarError { message :  String},
+    EnvVarError { message: String },
 }
 
 impl AppError {
@@ -103,8 +102,10 @@ impl AppError {
         }
     }
 
-    pub fn EnvVarError(name : impl Into<String>) -> Self {
-        Self::EnvVarError{message : name.into()}
+    pub fn env_var_error(name: impl Into<String>) -> Self {
+        Self::EnvVarError {
+            message: name.into(),
+        }
     }
 }
 

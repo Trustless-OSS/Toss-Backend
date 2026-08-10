@@ -244,24 +244,6 @@ pub async fn start_workers(state: crate::state::AppState) {
             }
         }
     });
-
-    let sync_state = state.clone();
-    tokio::spawn(async move {
-        loop {
-            match sync_state.queue.pop_sync().await {
-                Ok(Some(job)) if job.name == "escrow-balance-sync" => {
-                    if let Err(error) =
-                        crate::modules::jobs::sync_job::sync_all_escrow_balances(&sync_state).await
-                    {
-                        tracing::error!(%error, "sync job failed");
-                    }
-                }
-                Ok(Some(_)) => {}
-                Ok(None) => sleep(Duration::from_millis(500)).await,
-                Err(error) => tracing::error!(%error, "sync queue pop failed"),
-            }
-        }
-    });
 }
 
 pub fn start_scheduler(state: crate::state::AppState) {
