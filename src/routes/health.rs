@@ -1,4 +1,5 @@
 use axum::{
+    extract::State,
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::get,
@@ -39,9 +40,7 @@ pub struct HealthResponse {
     )
 )]
 
-pub async fn health_handler(
-    axum::extract::State(state): axum::extract::State<AppState>,
-) -> Response {
+pub async fn health_handler(State(state): State<AppState>) -> Response {
     if lifecycle::is_shutting_down() {
         return (
             StatusCode::SERVICE_UNAVAILABLE,

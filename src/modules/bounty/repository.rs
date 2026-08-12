@@ -1,2 +1,4 @@
 #[derive(Debug, Default, Clone)]
-pub struct BountyRepository;
+pub struct Repository;
+
+impl Repository {}
