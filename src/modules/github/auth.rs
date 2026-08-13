@@ -133,13 +133,12 @@ pub async fn get_installation_token(
 
     let installation_id = resolve_installation_id(state, &repo.full_name).await?;
     if repo.github_installation_id != Some(installation_id) {
-        let pool = crate::error::require_db(&state.db)?;
-        sqlx::query("UPDATE repos SET github_installation_id = $1 WHERE github_repo_id = $2")
-            .bind(installation_id)
-            .bind(github_repo_id)
-            .execute(pool)
-            .await
-            .map_err(|error| AppError::database(error.to_string()))?;
+        crate::modules::repo::repository::update_repo_installation_id(
+            state,
+            github_repo_id,
+            installation_id,
+        )
+        .await?;
         invalidate_repo_cache(state, repo.id, Some(github_repo_id)).await;
         info!(
             repo = %repo.full_name,
@@ -303,13 +302,8 @@ pub async fn post_comment(
         }
     }
 
-    let pool = crate::error::require_db(&state.db)?;
-    let github_repo_id: Option<i64> =
-        sqlx::query_scalar("SELECT github_repo_id FROM repos WHERE full_name = $1")
-            .bind(full_name)
-            .fetch_optional(pool)
-            .await
-            .map_err(|error| AppError::database(error.to_string()))?;
+    let github_repo_id =
+        crate::modules::repo::repository::get_github_repo_id_by_full_name(state, full_name).await?;
 
     let Some(github_repo_id) = github_repo_id else {
         error!(

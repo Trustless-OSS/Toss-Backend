@@ -141,7 +141,19 @@ pub fn unauthorized_response() -> Response {
         .into_response()
 }
 
-pub fn require_db(pool: &Option<sqlx::PgPool>) -> Result<&sqlx::PgPool, AppError> {
-    pool.as_ref()
-        .ok_or_else(|| AppError::internal("Database is not configured"))
+/// Cheap clone of the Toasty pool handle (for `let mut db = require_db(&state.db)?;`).
+pub fn require_db(db: &toasty::Db) -> Result<toasty::Db, AppError> {
+    Ok(db.clone())
+}
+
+pub fn map_db_err(error: impl std::fmt::Display) -> AppError {
+    AppError::database(error.to_string())
+}
+
+pub fn is_unique_violation(error: &impl std::fmt::Display) -> bool {
+    let message = error.to_string().to_lowercase();
+    message.contains("23505")
+        || message.contains("unique")
+        || message.contains("duplicate key")
+        || message.contains("already exists")
 }

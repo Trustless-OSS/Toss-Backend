@@ -10,8 +10,8 @@ use serde::Serialize;
 use serde_json::{json, Value};
 
 use crate::{
-    error::require_db, infra::redis, lifecycle,
-    modules::escrow::trustless_work::client::health_check, state::AppState,
+    infra::redis, lifecycle, modules::escrow::trustless_work::client::health_check,
+    modules::repo::repository::ping_db, state::AppState,
 };
 
 #[derive(utoipa::ToSchema, Serialize)]
@@ -57,26 +57,11 @@ pub async fn health_handler(State(state): State<AppState>) -> Response {
     let mut is_healthy = true;
 
     let db_start = std::time::Instant::now();
-    let db_check = match require_db(&state.db) {
-        Ok(pool) => {
-            let result = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM repos")
-                .fetch_one(pool)
-                .await;
-            match result {
-                Ok(_) => json!({
-                    "status": "ok",
-                    "latency": format!("{}ms", db_start.elapsed().as_millis()),
-                }),
-                Err(error) => {
-                    is_healthy = false;
-                    json!({
-                        "status": "error",
-                        "latency": format!("{}ms", db_start.elapsed().as_millis()),
-                        "message": error.to_string(),
-                    })
-                }
-            }
-        }
+    let db_check = match ping_db(&state).await {
+        Ok(()) => json!({
+            "status": "ok",
+            "latency": format!("{}ms", db_start.elapsed().as_millis()),
+        }),
         Err(error) => {
             is_healthy = false;
             json!({

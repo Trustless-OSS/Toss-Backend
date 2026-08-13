@@ -1,0 +1,8 @@
+# Toasty project config — used by `cargo run --bin migrate -- …`
+# See https://github.com/tokio-rs/toasty/tree/main/examples/service-ops
+
+[migration]
+path = "toasty"
+prefix_style = "Sequential"
+checksums = false
+statement_breakpoints = true
