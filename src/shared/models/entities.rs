@@ -12,7 +12,7 @@ use super::schema;
 
 fn timestamp_to_chrono(ts: jiff::Timestamp) -> DateTime<Utc> {
     DateTime::from_timestamp(ts.as_second(), ts.subsec_nanosecond().unsigned_abs())
-        .unwrap_or_else(|| DateTime::UNIX_EPOCH)
+        .unwrap_or(DateTime::UNIX_EPOCH)
 }
 
 fn optional_timestamp(ts: Option<jiff::Timestamp>) -> Option<DateTime<Utc>> {

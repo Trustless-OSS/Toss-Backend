@@ -15,7 +15,7 @@ pub async fn get_repo_by_id(state: &AppState, repo_id: Uuid) -> Result<Option<Re
     }
 
     let mut db = require_db(&state.db)?;
-    let repo = schema::Repo::filter_by_id(&repo_id)
+    let repo = schema::Repo::filter_by_id(repo_id)
         .first()
         .exec(&mut db)
         .await
@@ -220,26 +220,26 @@ pub async fn delete_repo_cascade(state: &AppState, repo_id: Uuid) -> Result<(), 
     let mut db = require_db(&state.db)?;
     let mut tx = db.transaction().await.map_err(map_db_err)?;
 
-    let issues = schema::Issue::filter_by_repo_id(&repo_id)
+    let issues = schema::Issue::filter_by_repo_id(repo_id)
         .exec(&mut tx)
         .await
         .map_err(map_db_err)?;
 
     for issue in issues {
-        schema::Assignment::filter_by_issue_id(&issue.id)
+        schema::Assignment::filter_by_issue_id(issue.id)
             .delete()
             .exec(&mut tx)
             .await
             .map_err(map_db_err)?;
     }
 
-    schema::Issue::filter_by_repo_id(&repo_id)
+    schema::Issue::filter_by_repo_id(repo_id)
         .delete()
         .exec(&mut tx)
         .await
         .map_err(map_db_err)?;
 
-    schema::Repo::filter_by_id(&repo_id)
+    schema::Repo::filter_by_id(repo_id)
         .delete()
         .exec(&mut tx)
         .await
@@ -272,7 +272,7 @@ pub async fn is_maintainer(
     repo_id: Uuid,
 ) -> Result<bool, AppError> {
     let mut db = require_db(&state.db)?;
-    let repo = schema::Repo::filter_by_id(&repo_id)
+    let repo = schema::Repo::filter_by_id(repo_id)
         .first()
         .exec(&mut db)
         .await

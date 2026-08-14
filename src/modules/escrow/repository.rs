@@ -18,7 +18,7 @@ pub async fn update_repo_escrow_contract(
     contract_id: &str,
 ) -> Result<(), AppError> {
     let mut db = require_db(&state.db)?;
-    toasty::update!(schema::Repo::filter_by_id(&repo_id) {
+    toasty::update!(schema::Repo::filter_by_id(repo_id) {
         escrow_contract_id: Some(contract_id.to_string()),
     })
     .exec(&mut db)
@@ -34,7 +34,7 @@ pub async fn update_repo_escrow_funder_wallet(
     funder_wallet: &str,
 ) -> Result<(), AppError> {
     let mut db = require_db(&state.db)?;
-    toasty::update!(schema::Repo::filter_by_id(&repo_id) {
+    toasty::update!(schema::Repo::filter_by_id(repo_id) {
         escrow_funder_wallet: Some(funder_wallet.to_string()),
     })
     .exec(&mut db)
@@ -51,7 +51,7 @@ pub async fn update_repo_escrow_balance(
     github_repo_id: Option<i64>,
 ) -> Result<(), AppError> {
     let mut db = require_db(&state.db)?;
-    toasty::update!(schema::Repo::filter_by_id(&repo_id) {
+    toasty::update!(schema::Repo::filter_by_id(repo_id) {
         escrow_balance: round_balance(balance),
     })
     .exec(&mut db)
@@ -63,7 +63,7 @@ pub async fn update_repo_escrow_balance(
 
 pub async fn clear_repo_escrow(state: &AppState, repo_id: Uuid) -> Result<(), AppError> {
     let mut db = require_db(&state.db)?;
-    toasty::update!(schema::Repo::filter_by_id(&repo_id) {
+    toasty::update!(schema::Repo::filter_by_id(repo_id) {
         escrow_contract_id: Option::<String>::None,
         escrow_funder_wallet: Option::<String>::None,
         escrow_balance: Decimal::ZERO,

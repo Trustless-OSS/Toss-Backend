@@ -113,7 +113,7 @@ pub async fn get_contributor_by_id(
     contributor_id: Uuid,
 ) -> Result<Option<Contributor>, AppError> {
     let mut db = require_db(&state.db)?;
-    Ok(schema::Contributor::filter_by_id(&contributor_id)
+    Ok(schema::Contributor::filter_by_id(contributor_id)
         .first()
         .exec(&mut db)
         .await
@@ -134,7 +134,7 @@ pub async fn list_assignments_for_contributor(
     let mut rows = Vec::with_capacity(assignments.len());
     for assignment in assignments {
         let assignment = Assignment::from(assignment);
-        let issue = schema::Issue::filter_by_id(&assignment.issue_id)
+        let issue = schema::Issue::filter_by_id(assignment.issue_id)
             .first()
             .exec(&mut db)
             .await

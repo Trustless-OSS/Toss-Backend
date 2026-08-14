@@ -23,7 +23,7 @@ pub async fn is_assigned_contributor(
     github_issue_id: i64,
 ) -> Result<bool, AppError> {
     let mut db = require_db(&state.db)?;
-    let issue = schema::Issue::filter_by_repo_id_and_github_issue_id(&repo_id, github_issue_id)
+    let issue = schema::Issue::filter_by_repo_id_and_github_issue_id(repo_id, github_issue_id)
         .first()
         .exec(&mut db)
         .await
@@ -33,7 +33,7 @@ pub async fn is_assigned_contributor(
         return Ok(false);
     };
 
-    let assignment = schema::Assignment::filter_by_issue_id(&issue.id)
+    let assignment = schema::Assignment::filter_by_issue_id(issue.id)
         .first()
         .exec(&mut db)
         .await
@@ -61,13 +61,13 @@ pub async fn list_issues_for_repo(
     let limit = limit.max(0) as usize;
     let offset = offset.max(0) as usize;
 
-    let all = schema::Issue::filter_by_repo_id(&repo_id)
+    let all = schema::Issue::filter_by_repo_id(repo_id)
         .exec(&mut db)
         .await
         .map_err(map_db_err)?;
     let total = all.len() as i64;
 
-    let issues = schema::Issue::filter_by_repo_id(&repo_id)
+    let issues = schema::Issue::filter_by_repo_id(repo_id)
         .order_by(schema::Issue::fields().created_at().desc())
         .limit(limit)
         .offset(offset)
@@ -78,7 +78,7 @@ pub async fn list_issues_for_repo(
     let mut rows = Vec::with_capacity(issues.len());
     for issue in issues {
         let issue_dto = Issue::from(issue);
-        let assignments = schema::Assignment::filter_by_issue_id(&issue_dto.id)
+        let assignments = schema::Assignment::filter_by_issue_id(issue_dto.id)
             .exec(&mut db)
             .await
             .map_err(map_db_err)?;
@@ -125,7 +125,7 @@ pub async fn list_issues_for_repo(
 
 pub async fn get_issue_by_id(state: &AppState, issue_id: Uuid) -> Result<Option<Issue>, AppError> {
     let mut db = require_db(&state.db)?;
-    Ok(schema::Issue::filter_by_id(&issue_id)
+    Ok(schema::Issue::filter_by_id(issue_id)
         .first()
         .exec(&mut db)
         .await
@@ -150,7 +150,7 @@ pub async fn get_assignment_for_issue(
     issue_id: Uuid,
 ) -> Result<Option<(Assignment, Option<Contributor>)>, AppError> {
     let mut db = require_db(&state.db)?;
-    let assignment = schema::Assignment::filter_by_issue_id(&issue_id)
+    let assignment = schema::Assignment::filter_by_issue_id(issue_id)
         .first()
         .exec(&mut db)
         .await
@@ -177,7 +177,7 @@ pub async fn get_issue_by_repo_and_github_id(
 ) -> Result<Option<Issue>, AppError> {
     let mut db = require_db(&state.db)?;
     Ok(
-        schema::Issue::filter_by_repo_id_and_github_issue_id(&repo_id, github_issue_id)
+        schema::Issue::filter_by_repo_id_and_github_issue_id(repo_id, github_issue_id)
             .first()
             .exec(&mut db)
             .await
@@ -214,7 +214,7 @@ pub async fn update_issue_status(
 ) -> Result<(), AppError> {
     let mut db = require_db(&state.db)?;
     if let Some(milestone_index) = milestone_index {
-        toasty::update!(schema::Issue::filter_by_id(&issue_id) {
+        toasty::update!(schema::Issue::filter_by_id(issue_id) {
             status: status.to_string(),
             milestone_index: Some(milestone_index),
         })
@@ -222,7 +222,7 @@ pub async fn update_issue_status(
         .await
         .map_err(map_db_err)?;
     } else {
-        toasty::update!(schema::Issue::filter_by_id(&issue_id) {
+        toasty::update!(schema::Issue::filter_by_id(issue_id) {
             status: status.to_string(),
         })
         .exec(&mut db)
@@ -258,7 +258,7 @@ pub async fn update_assignment_payout_status(
     payout_status: &str,
 ) -> Result<(), AppError> {
     let mut db = require_db(&state.db)?;
-    toasty::update!(schema::Assignment::filter_by_id(&assignment_id) {
+    toasty::update!(schema::Assignment::filter_by_id(assignment_id) {
         payout_status: payout_status.to_string(),
     })
     .exec(&mut db)
@@ -351,7 +351,7 @@ pub async fn update_pending_issue_reward(
     let mut db = require_db(&state.db)?;
     let mut tx = db.transaction().await.map_err(map_db_err)?;
 
-    let mut issue = match schema::Issue::filter_by_id(&issue_id)
+    let mut issue = match schema::Issue::filter_by_id(issue_id)
         .first()
         .exec(&mut tx)
         .await
@@ -405,7 +405,7 @@ pub async fn complete_issue(state: &AppState, issue_id: Uuid) -> Result<(), AppE
 
 pub async fn reset_issue_to_pending(state: &AppState, issue_id: Uuid) -> Result<(), AppError> {
     let mut db = require_db(&state.db)?;
-    toasty::update!(schema::Issue::filter_by_id(&issue_id) {
+    toasty::update!(schema::Issue::filter_by_id(issue_id) {
         status: "pending".to_string(),
         milestone_index: Option::<i32>::None,
     })
@@ -420,7 +420,7 @@ pub async fn delete_assignments_for_issue(
     issue_id: Uuid,
 ) -> Result<(), AppError> {
     let mut db = require_db(&state.db)?;
-    schema::Assignment::filter_by_issue_id(&issue_id)
+    schema::Assignment::filter_by_issue_id(issue_id)
         .delete()
         .exec(&mut db)
         .await
@@ -448,7 +448,7 @@ pub async fn update_assignment_completion_percentage(
     percentage: Decimal,
 ) -> Result<(), AppError> {
     let mut db = require_db(&state.db)?;
-    toasty::update!(schema::Assignment::filter_by_id(&assignment_id) {
+    toasty::update!(schema::Assignment::filter_by_id(assignment_id) {
         completion_percentage: Some(percentage),
     })
     .exec(&mut db)
@@ -463,7 +463,7 @@ pub async fn update_assignment_pr_merge(
     pr_number: i32,
 ) -> Result<(), AppError> {
     let mut db = require_db(&state.db)?;
-    toasty::update!(schema::Assignment::filter_by_id(&assignment_id) {
+    toasty::update!(schema::Assignment::filter_by_id(assignment_id) {
         pr_number: Some(pr_number),
         pr_merged_at: Some(jiff::Timestamp::now()),
     })
