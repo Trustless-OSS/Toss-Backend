@@ -5,6 +5,14 @@ use tracing::{error, info};
 use crate::{
     error::AppError,
     modules::{
+        bounty::repository::{
+            create_issue_and_reserve_balance, get_assignment_for_issue,
+            get_issue_by_repo_and_github_id, get_issue_by_repo_and_number,
+            update_assignment_completion_percentage, update_assignment_payout_status,
+            update_issue_status, update_pending_issue_reward,
+        },
+        contributor::repository::get_contributor_by_github_id,
+        escrow::repository::refund_repo_balance,
         escrow::service::{push_milestone_on_chain, release_escrow_milestone},
         github::{
             auth::post_comment,
@@ -16,13 +24,7 @@ use crate::{
                 sync_repo_balance, work_completion_percentage,
             },
         },
-        repo::repository::{
-            create_issue_and_reserve_balance, get_assignment_for_issue,
-            get_contributor_by_github_id, get_issue_by_repo_and_github_id,
-            get_issue_by_repo_and_number, get_repo_by_github_id, refund_repo_balance,
-            update_assignment_completion_percentage, update_assignment_payout_status,
-            update_issue_status, update_pending_issue_reward,
-        },
+        repo::repository::get_repo_by_github_id,
     },
     shared::models::Issue,
     state::AppState,

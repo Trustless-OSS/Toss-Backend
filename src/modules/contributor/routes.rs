@@ -8,7 +8,7 @@ use crate::{
     error::AppError,
     middleware::auth::AuthedUser,
     modules::contributor::model::{ConnectWalletBody, ContributorMeResponse, OkResponse},
-    modules::repo::repository::{
+    modules::contributor::repository::{
         get_contributor_by_github_id, list_assignments_for_contributor, upsert_contributor_wallet,
     },
     state::AppState,

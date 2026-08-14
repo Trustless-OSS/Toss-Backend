@@ -6,15 +6,16 @@ use crate::{
     error::AppError,
     modules::{
         bounty::labels::{difficulty_label, get_reward_amount, parse_labels},
+        bounty::repository::{
+            cancel_issue, create_issue_and_reserve_balance, delete_assignments_for_issue,
+            get_issue_by_repo_and_github_id, update_pending_issue_reward,
+        },
+        escrow::repository::refund_repo_balance,
         github::{
             auth::post_comment,
             handlers::helpers::{extract_manual_amount, labels_from_payload, sync_repo_balance},
         },
-        repo::repository::{
-            cancel_issue, create_issue_and_reserve_balance, delete_assignments_for_issue,
-            get_issue_by_repo_and_github_id, get_repo_by_github_id, refund_repo_balance,
-            update_pending_issue_reward,
-        },
+        repo::repository::get_repo_by_github_id,
     },
     shared::models::Difficulty,
     state::AppState,

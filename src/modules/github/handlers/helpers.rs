@@ -10,8 +10,8 @@ use crate::{
     error::AppError,
     infra::stellar::signer::sign_and_send_transaction,
     modules::{
-        escrow::trustless_work::client::tw_fetch,
-        repo::repository::{get_repo_by_id, update_repo_escrow_balance},
+        escrow::repository::update_repo_escrow_balance, escrow::trustless_work::client::tw_fetch,
+        repo::repository::get_repo_by_id,
     },
     shared::models::Repo,
     state::AppState,
@@ -363,13 +363,13 @@ pub async fn cancel_bounty_with_refund(
     issue_id: uuid::Uuid,
     reward_amount: Decimal,
 ) -> Result<(), AppError> {
-    use crate::modules::repo::repository::{
-        cancel_issue, delete_assignments_for_issue, refund_repo_balance,
-    };
-
-    cancel_issue(state, issue_id).await?;
-    delete_assignments_for_issue(state, issue_id).await?;
-    refund_repo_balance(state, repo, reward_amount).await
+    crate::modules::bounty::repository::cancel_bounty_with_refund(
+        state,
+        repo,
+        issue_id,
+        reward_amount,
+    )
+    .await
 }
 
 pub fn log_warn_missing_milestone() {

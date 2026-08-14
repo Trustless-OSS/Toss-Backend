@@ -3,12 +3,11 @@ use serde_json::Value;
 use crate::{
     error::AppError,
     modules::{
+        bounty::repository::{get_issue_by_repo_and_github_id, upsert_assignment},
+        contributor::repository::ensure_contributor,
         escrow::service::push_milestone_on_chain,
         github::auth::post_comment,
-        repo::repository::{
-            ensure_contributor, get_issue_by_repo_and_github_id, get_repo_by_github_id,
-            upsert_assignment,
-        },
+        repo::repository::get_repo_by_github_id,
     },
     state::AppState,
 };

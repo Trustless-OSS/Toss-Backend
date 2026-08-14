@@ -9,7 +9,10 @@ use tracing::{debug, error, info, warn};
 use crate::{
     error::AppError,
     infra::cache_keys,
-    modules::repo::repository::{get_repo_by_github_id, invalidate_repo_cache},
+    modules::{
+        github::repository::{get_github_repo_id_by_full_name, update_repo_installation_id},
+        repo::repository::{get_repo_by_github_id, invalidate_repo_cache},
+    },
     state::AppState,
 };
 
@@ -133,12 +136,7 @@ pub async fn get_installation_token(
 
     let installation_id = resolve_installation_id(state, &repo.full_name).await?;
     if repo.github_installation_id != Some(installation_id) {
-        crate::modules::repo::repository::update_repo_installation_id(
-            state,
-            github_repo_id,
-            installation_id,
-        )
-        .await?;
+        update_repo_installation_id(state, github_repo_id, installation_id).await?;
         invalidate_repo_cache(state, repo.id, Some(github_repo_id)).await;
         info!(
             repo = %repo.full_name,
@@ -302,8 +300,7 @@ pub async fn post_comment(
         }
     }
 
-    let github_repo_id =
-        crate::modules::repo::repository::get_github_repo_id_by_full_name(state, full_name).await?;
+    let github_repo_id = get_github_repo_id_by_full_name(state, full_name).await?;
 
     let Some(github_repo_id) = github_repo_id else {
         error!(

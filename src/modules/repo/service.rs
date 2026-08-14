@@ -5,9 +5,13 @@ use uuid::Uuid;
 use crate::{
     error::AppError,
     modules::{
-        github::auth::{
-            delete_github_installation, install_repo_webhook, list_installation_repos,
-            remove_repo_from_installation,
+        bounty::repository::list_issues_for_repo,
+        github::{
+            auth::{
+                delete_github_installation, install_repo_webhook, list_installation_repos,
+                remove_repo_from_installation,
+            },
+            repository::upsert_installation_repo,
         },
         repo::{
             model::{
@@ -16,8 +20,8 @@ use crate::{
             },
             repository::{
                 count_repos_for_installation, delete_repo_cascade, get_repo_by_id,
-                invalidate_repo_cache, is_maintainer, list_issues_for_repo, list_repos_for_user,
-                update_repo_rewards, upsert_installation_repo, upsert_repo,
+                invalidate_repo_cache, is_maintainer, list_repos_for_user, update_repo_rewards,
+                upsert_repo,
             },
         },
     },

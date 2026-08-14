@@ -11,8 +11,9 @@ use crate::{
     error::AppError,
     infra::stellar::signer::sign_and_send_transaction,
     modules::{
-        escrow::trustless_work::client::tw_fetch,
-        repo::repository::{get_repo_by_id, update_issue_status, update_repo_escrow_balance},
+        bounty::repository::update_issue_status,
+        escrow::{repository::update_repo_escrow_balance, trustless_work::client::tw_fetch},
+        repo::repository::get_repo_by_id,
     },
     shared::models::{Issue, Repo},
     state::AppState,
@@ -82,7 +83,7 @@ pub async fn submit_deploy_escrow(
         .and_then(|value| value.as_str())
         .ok_or_else(|| AppError::internal("TrustlessWork response missing contractId"))?;
 
-    crate::modules::repo::repository::update_repo_escrow_contract(state, repo_id, contract_id)
+    crate::modules::escrow::repository::update_repo_escrow_contract(state, repo_id, contract_id)
         .await?;
 
     Ok(contract_id.to_string())
@@ -220,7 +221,7 @@ pub async fn submit_close_escrow(
     )
     .await?;
 
-    crate::modules::repo::repository::clear_repo_escrow(state, repo_id).await
+    crate::modules::escrow::repository::clear_repo_escrow(state, repo_id).await
 }
 
 // ── Refund ────────────────────────────────────────────────────────────────────
@@ -496,9 +497,9 @@ pub async fn refund_escrow(
         }
     }
 
-    let issues = crate::modules::repo::repository::list_issues_to_cancel(state, repo.id).await?;
+    let issues = crate::modules::bounty::repository::list_issues_to_cancel(state, repo.id).await?;
     let issue_ids: Vec<_> = issues.iter().map(|issue| issue.id).collect();
-    crate::modules::repo::repository::fail_assignments_for_issues(state, &issue_ids).await?;
+    crate::modules::bounty::repository::fail_assignments_for_issues(state, &issue_ids).await?;
 
     let mut cancelled_count = 0_i64;
     for issue in &issues {
