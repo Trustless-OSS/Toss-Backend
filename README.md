@@ -173,7 +173,7 @@ GitHub webhooks instead require a valid `X-Hub-Signature-256` signature.
 
 | Area | Main endpoints |
 | --- | --- |
-| System | `GET /`, `GET /health`, `GET /api/health`, `GET /api/queue/stats` |
+| System | `GET /`, `GET /health`, `GET /api/health`, `GET /api/health/database`, `GET /api/health/redis`, `GET /api/health/trustless-work`, `GET /api/queue/stats` |
 | Repositories | `GET /api/repos`, `POST /api/repos/connect`, `POST /api/repos/sync-installation`, `GET/DELETE /api/repos/{repoId}` |
 | Issues and rewards | `GET /api/repos/{repoId}/issues`, `PUT /api/repos/{repoId}/rewards`, `POST /api/issues/{issueId}/retry` |
 | Contributors | `POST /api/wallet/connect`, `GET /api/contributor/me` |

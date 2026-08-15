@@ -30,6 +30,54 @@ pub struct HealthResponse {
     pub checks: Value,
 }
 
+#[derive(utoipa::ToSchema, Serialize)]
+pub struct DependencyHealthResponse {
+    pub service: &'static str,
+    pub status: &'static str,
+    pub timestamp: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+fn shutting_down_response() -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(ShuttingDownResponse {
+            status: "shutting_down",
+            timestamp: Utc::now().to_rfc3339(),
+            message: "Server is shutting down",
+        }),
+    )
+        .into_response()
+}
+
+fn dependency_response(
+    service: &'static str,
+    ok: bool,
+    latency_ms: u128,
+    message: Option<String>,
+) -> Response {
+    let (status_code, status) = if ok {
+        (StatusCode::OK, "ok")
+    } else {
+        (StatusCode::SERVICE_UNAVAILABLE, "error")
+    };
+
+    (
+        status_code,
+        Json(DependencyHealthResponse {
+            service,
+            status,
+            timestamp: Utc::now().to_rfc3339(),
+            latency: Some(format!("{latency_ms}ms")),
+            message,
+        }),
+    )
+        .into_response()
+}
+
 #[utoipa::path(
     get,
     path = "/health",
@@ -39,18 +87,9 @@ pub struct HealthResponse {
         (status = 503, description = "Server shutting down", body = ShuttingDownResponse)
     )
 )]
-
 pub async fn health_handler(State(state): State<AppState>) -> Response {
     if lifecycle::is_shutting_down() {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(ShuttingDownResponse {
-                status: "shutting_down",
-                timestamp: Utc::now().to_rfc3339(),
-                message: "Server is shutting down",
-            }),
-        )
-            .into_response();
+        return shutting_down_response();
     }
 
     let mut checks = json!({});
@@ -92,11 +131,14 @@ pub async fn health_handler(State(state): State<AppState>) -> Response {
             "status": "ok",
             "latency": format!("{}ms", redis_start.elapsed().as_millis()),
         }),
-        redis::RedisHealthStatus::Error => json!({
-            "status": "error",
-            "message": "Redis unavailable",
-            "latency": format!("{}ms", redis_start.elapsed().as_millis()),
-        }),
+        redis::RedisHealthStatus::Error => {
+            is_healthy = false;
+            json!({
+                "status": "error",
+                "message": "Redis unavailable",
+                "latency": format!("{}ms", redis_start.elapsed().as_millis()),
+            })
+        }
     };
 
     let missing: Vec<&str> = [
@@ -154,9 +196,92 @@ pub async fn health_handler(State(state): State<AppState>) -> Response {
         .into_response()
 }
 
-// Health Router
+#[utoipa::path(
+    get,
+    path = "/api/health/database",
+    responses(
+        (status = 200, description = "Database is reachable", body = DependencyHealthResponse),
+        (status = 503, description = "Database unavailable", body = DependencyHealthResponse)
+    )
+)]
+pub async fn database_health_handler(State(state): State<AppState>) -> Response {
+    if lifecycle::is_shutting_down() {
+        return shutting_down_response();
+    }
+
+    let start = std::time::Instant::now();
+    match ping_db(&state).await {
+        Ok(()) => dependency_response("database", true, start.elapsed().as_millis(), None),
+        Err(error) => dependency_response(
+            "database",
+            false,
+            start.elapsed().as_millis(),
+            Some(error.to_string()),
+        ),
+    }
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/health/redis",
+    responses(
+        (status = 200, description = "Redis is reachable", body = DependencyHealthResponse),
+        (status = 503, description = "Redis unavailable", body = DependencyHealthResponse)
+    )
+)]
+pub async fn redis_health_handler(State(state): State<AppState>) -> Response {
+    if lifecycle::is_shutting_down() {
+        return shutting_down_response();
+    }
+
+    let start = std::time::Instant::now();
+    let health = redis::check_health(state.redis.as_ref()).await;
+    match health.status {
+        redis::RedisHealthStatus::Ok => {
+            dependency_response("redis", true, start.elapsed().as_millis(), None)
+        }
+        redis::RedisHealthStatus::Error => dependency_response(
+            "redis",
+            false,
+            start.elapsed().as_millis(),
+            Some("Redis unavailable".to_string()),
+        ),
+    }
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/health/trustless-work",
+    responses(
+        (status = 200, description = "Trustless Work is reachable", body = DependencyHealthResponse),
+        (status = 503, description = "Trustless Work unavailable", body = DependencyHealthResponse)
+    )
+)]
+pub async fn trustless_work_health_handler(State(state): State<AppState>) -> Response {
+    if lifecycle::is_shutting_down() {
+        return shutting_down_response();
+    }
+
+    let start = std::time::Instant::now();
+    match health_check(&state.config, &state.http_client).await {
+        Ok(()) => dependency_response("trustless_work", true, start.elapsed().as_millis(), None),
+        Err(error) => dependency_response(
+            "trustless_work",
+            false,
+            start.elapsed().as_millis(),
+            Some(error.to_string()),
+        ),
+    }
+}
+
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/health", get(health_handler))
         .route("/api/health", get(health_handler))
+        .route("/api/health/database", get(database_health_handler))
+        .route("/api/health/redis", get(redis_health_handler))
+        .route(
+            "/api/health/trustless-work",
+            get(trustless_work_health_handler),
+        )
 }
