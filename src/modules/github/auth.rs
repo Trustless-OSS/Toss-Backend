@@ -25,7 +25,9 @@ const GITHUB_USER_AGENT: &str = "Trustless-OSS-Bot";
 struct AppClaims {
     iat: i64,
     exp: i64,
-    iss: String,
+    /// GitHub requires a numeric App ID. A string `iss` makes
+    /// `POST /app/installations/{id}/access_tokens` return 404.
+    iss: serde_json::Value,
 }
 
 #[derive(Debug, Deserialize)]
@@ -83,15 +85,23 @@ fn normalize_private_key(private_key: &str) -> String {
     }
 }
 
+fn github_app_issuer(app_id: &str) -> serde_json::Value {
+    let trimmed = app_id.trim();
+    trimmed
+        .parse::<u64>()
+        .map(serde_json::Value::from)
+        .unwrap_or_else(|_| serde_json::Value::String(trimmed.to_string()))
+}
+
 async fn create_app_jwt(state: &AppState) -> Result<String, AppError> {
     let app_id = state.config.github_app_id.as_str();
     let private_key = state.config.github_app_private_key.as_str();
 
     let now = chrono::Utc::now().timestamp();
     let claims = AppClaims {
-        iat: now - 60,
-        exp: now + 600,
-        iss: app_id.to_string(),
+        iat: now - 30,
+        exp: now + 540,
+        iss: github_app_issuer(app_id),
     };
 
     encode(
@@ -213,8 +223,13 @@ async fn github_json<T: serde::de::DeserializeOwned>(
                     .map(str::to_owned)
             })
             .unwrap_or_else(|| text.chars().take(300).collect());
+        let hint = if status.as_u16() == 404 && operation.contains("installation") {
+            " GitHub App ID/private key likely do not match the installed app, or the JWT iss claim is not a numeric App ID."
+        } else {
+            ""
+        };
         return Err(AppError::github(format!(
-            "{operation} failed with {status}: {message}"
+            "{operation} failed with {status}: {message}.{hint}"
         )));
     }
 
@@ -237,41 +252,21 @@ pub async fn list_installation_repos(
     state: &AppState,
     installation_id: i64,
 ) -> Result<Vec<InstallationRepo>, AppError> {
-    let jwt = create_app_jwt(state).await?;
-    let token_url =
-        format!("https://api.github.com/app/installations/{installation_id}/access_tokens");
-    let token = state
-        .http_client
-        .post(&token_url)
-        .header("Authorization", format!("Bearer {jwt}"))
-        .header("Accept", "application/vnd.github.v3+json")
-        .header("User-Agent", "Trustless-OSS-Bot")
-        .send()
-        .await
-        .map_err(|error| AppError::github(error.to_string()))?
-        .error_for_status()
-        .map_err(|error| AppError::github(error.to_string()))?
-        .json::<InstallationTokenResponse>()
-        .await
-        .map_err(|error| AppError::github(error.to_string()))?
-        .token;
-
+    let token = exchange_installation_token(state, installation_id).await?;
     let response = state
         .http_client
         .get("https://api.github.com/installation/repositories?per_page=100")
         .header("Authorization", format!("Bearer {token}"))
-        .header("Accept", "application/vnd.github.v3+json")
-        .header("User-Agent", "Trustless-OSS-Bot")
+        .header("Accept", GITHUB_ACCEPT)
+        .header("X-GitHub-Api-Version", GITHUB_API_VERSION)
+        .header("User-Agent", GITHUB_USER_AGENT)
         .send()
-        .await
-        .map_err(|error| AppError::github(error.to_string()))?
-        .error_for_status()
-        .map_err(|error| AppError::github(error.to_string()))?
-        .json::<InstallationReposResponse>()
         .await
         .map_err(|error| AppError::github(error.to_string()))?;
 
-    Ok(response.repositories)
+    github_json::<InstallationReposResponse>(response, "installation repository listing")
+        .await
+        .map(|payload| payload.repositories)
 }
 
 pub async fn post_comment(
@@ -494,4 +489,43 @@ pub async fn remove_repo_from_installation(
         .await
         .map_err(|error| AppError::github(error.to_string()))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{github_app_issuer, normalize_private_key, AppClaims};
+
+    #[test]
+    fn github_app_jwt_iss_is_numeric_for_app_id() {
+        let claims = AppClaims {
+            iat: 1,
+            exp: 2,
+            iss: github_app_issuer(" 153860735 "),
+        };
+        let json = serde_json::to_value(&claims).expect("claims should serialize");
+        assert!(
+            json["iss"].is_number(),
+            "GitHub rejects a string iss App ID"
+        );
+        assert_eq!(json["iss"], 153860735);
+    }
+
+    #[test]
+    fn github_app_jwt_iss_keeps_client_id_as_string() {
+        let claims = AppClaims {
+            iat: 1,
+            exp: 2,
+            iss: github_app_issuer("Iv1.abcd1234"),
+        };
+        let json = serde_json::to_value(&claims).expect("claims should serialize");
+        assert_eq!(json["iss"], "Iv1.abcd1234");
+    }
+
+    #[test]
+    fn normalize_private_key_unescapes_newlines() {
+        let pem = "-----BEGIN PRIVATE KEY-----\\nABC\\n-----END PRIVATE KEY-----";
+        let normalized = normalize_private_key(pem);
+        assert!(normalized.contains('\n'));
+        assert!(!normalized.contains("\\n"));
+    }
 }
