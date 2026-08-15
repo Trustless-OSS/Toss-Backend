@@ -18,8 +18,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let address = SocketAddr::from(([0, 0, 0, 0], config.port));
     let state = AppState::new(config).await?;
 
-    // Schema is managed by: cargo run --bin migrate -- migration apply
-    // (see src/bin/migrate.rs and Toasty.toml)
+    // Apply SQL from `toasty/migrations` (embedded at compile time) on every boot.
+    info!("running database migrations");
+    infra::db::apply_migrations(&state.db).await?;
 
     infra::queue::start_workers(state.clone()).await;
     infra::queue::start_scheduler(state.clone());

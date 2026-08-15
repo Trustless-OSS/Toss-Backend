@@ -103,30 +103,24 @@ This starts PostgreSQL on `localhost:5435` and Redis on `localhost:6379`.
 
 ### 3. Apply database migrations
 
-Schema is managed with Toasty (not applied automatically on server startup):
+On **every server start** (`cargo run` / deploy), the app applies pending SQL from
+`toasty/migrations` (embedded into the binary). Already-applied migrations are skipped.
 
-```bash
-# First time / after a clean database
-cargo run --bin migrate -- migration generate --name initial   # only if toasty/ is missing
-cargo run --bin migrate -- migration apply
-```
-
-After model changes under `src/shared/models/schema/`:
+Generate new migration files after you change models under `src/shared/models/schema/`:
 
 ```bash
 cargo run --bin migrate -- migration generate --name describe_your_change
-cargo run --bin migrate -- migration apply
 ```
 
-Useful extras:
+Then restart the server (or run apply manually):
 
 ```bash
-cargo run --bin migrate -- migration --help
-cargo run --bin migrate -- migration reset   # drops all tables (destructive)
+cargo run --bin migrate -- migration apply
+# or just:
+cargo run
 ```
 
-Run migrate commands from the crate root so `Toasty.toml` is found. Migration
-files live under `toasty/` — commit that folder.
+Commit the updated `toasty/` folder so deploys include the new SQL.
 
 ### 4. Run the API
 

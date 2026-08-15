@@ -1,4 +1,9 @@
+use tracing::info;
+
 use crate::error::AppError;
+
+/// SQL migrations from `toasty/` (history.toml + migrations/*.sql), baked into the binary.
+static MIGRATIONS: toasty::migration::MigrationSet = toasty::embed_migrations!("toasty");
 
 /// Normalize common Postgres URL schemes to what Toasty accepts.
 ///
@@ -38,4 +43,21 @@ pub async fn connect(database_url: &str) -> Result<toasty::Db, AppError> {
         .connect(&url)
         .await
         .map_err(|error| AppError::database(error.to_string()))
+}
+
+/// Apply pending migrations from the embedded `toasty/` set.
+///
+/// Safe to call on every deploy/startup: already-applied IDs are skipped.
+pub async fn apply_migrations(db: &toasty::Db) -> Result<(), AppError> {
+    let report = MIGRATIONS
+        .apply(db)
+        .await
+        .map_err(|error| AppError::database(error.to_string()))?;
+
+    info!(
+        applied = report.applied(),
+        skipped = report.skipped(),
+        "database migrations ready"
+    );
+    Ok(())
 }
