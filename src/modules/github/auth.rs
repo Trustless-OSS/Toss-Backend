@@ -25,9 +25,10 @@ const GITHUB_USER_AGENT: &str = "Trustless-OSS-Bot";
 struct AppClaims {
     iat: i64,
     exp: i64,
-    /// GitHub requires a numeric App ID. A string `iss` makes
-    /// `POST /app/installations/{id}/access_tokens` return 404.
-    iss: serde_json::Value,
+    /// JWT RFC 7519 requires `iss` to be a string. GitHub accepts the App ID
+    /// as a decimal string (e.g. "4084634"). A JSON number makes GitHub return
+    /// 401 "A JSON web token could not be decoded."
+    iss: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -64,33 +65,57 @@ pub struct InstallationRepoOwner {
 
 fn normalize_private_key(private_key: &str) -> String {
     let mut normalized = private_key.trim().to_string();
-    if normalized.starts_with('"') && normalized.ends_with('"') {
+    if (normalized.starts_with('"') && normalized.ends_with('"'))
+        || (normalized.starts_with('\'') && normalized.ends_with('\''))
+    {
         normalized = normalized[1..normalized.len() - 1].to_string();
     }
 
+    normalized = normalized
+        .replace("\\n", "\n")
+        .replace("\r\n", "\n")
+        .replace('\r', "\n");
+
     if normalized.contains("-----BEGIN") {
-        normalized.replace("\\n", "\n")
-    } else {
-        let b64_body: String = normalized
-            .chars()
-            .filter(|ch| !ch.is_whitespace())
-            .collect();
-        let wrapped = b64_body
-            .as_bytes()
-            .chunks(64)
-            .map(|chunk| std::str::from_utf8(chunk).unwrap_or(""))
-            .collect::<Vec<_>>()
-            .join("\n");
-        format!("-----BEGIN RSA PRIVATE KEY-----\n{wrapped}\n-----END RSA PRIVATE KEY-----")
+        return rewrap_pem(&normalized);
     }
+
+    let b64_body: String = normalized.chars().filter(|ch| !ch.is_whitespace()).collect();
+    rewrap_pem(&format!(
+        "-----BEGIN RSA PRIVATE KEY-----\n{b64_body}\n-----END RSA PRIVATE KEY-----"
+    ))
 }
 
-fn github_app_issuer(app_id: &str) -> serde_json::Value {
-    let trimmed = app_id.trim();
-    trimmed
-        .parse::<u64>()
-        .map(serde_json::Value::from)
-        .unwrap_or_else(|_| serde_json::Value::String(trimmed.to_string()))
+fn rewrap_pem(pem: &str) -> String {
+    let (begin, end) = if pem.contains("BEGIN RSA PRIVATE KEY") {
+        (
+            "-----BEGIN RSA PRIVATE KEY-----",
+            "-----END RSA PRIVATE KEY-----",
+        )
+    } else if pem.contains("BEGIN PRIVATE KEY") {
+        ("-----BEGIN PRIVATE KEY-----", "-----END PRIVATE KEY-----")
+    } else {
+        return pem.trim().to_string();
+    };
+
+    let body: String = pem
+        .replace(begin, "")
+        .replace(end, "")
+        .chars()
+        .filter(|ch| !ch.is_whitespace())
+        .collect();
+    let wrapped = body
+        .as_bytes()
+        .chunks(64)
+        .map(|chunk| std::str::from_utf8(chunk).unwrap_or(""))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    format!("{begin}\n{wrapped}\n{end}")
+}
+
+fn github_app_issuer(app_id: &str) -> String {
+    app_id.trim().trim_matches('"').trim().to_string()
 }
 
 async fn create_app_jwt(state: &AppState) -> Result<String, AppError> {
@@ -223,8 +248,10 @@ async fn github_json<T: serde::de::DeserializeOwned>(
                     .map(str::to_owned)
             })
             .unwrap_or_else(|| text.chars().take(300).collect());
-        let hint = if status.as_u16() == 404 && operation.contains("installation") {
-            " GitHub App ID/private key likely do not match the installed app, or the JWT iss claim is not a numeric App ID."
+        let hint = if status.as_u16() == 401 && message.contains("could not be decoded") {
+            " GitHub rejected the App JWT. The iss claim must be a string App ID, and GITHUB_APP_PRIVATE_KEY must be the matching PEM."
+        } else if status.as_u16() == 404 && operation.contains("installation") {
+            " GitHub App ID or private key does not match the installed app, or the PEM key is malformed."
         } else {
             ""
         };
@@ -496,18 +523,15 @@ mod tests {
     use super::{github_app_issuer, normalize_private_key, AppClaims};
 
     #[test]
-    fn github_app_jwt_iss_is_numeric_for_app_id() {
+    fn github_app_jwt_iss_is_string_app_id() {
         let claims = AppClaims {
             iat: 1,
             exp: 2,
-            iss: github_app_issuer(" 153860735 "),
+            iss: github_app_issuer(" 4084634 "),
         };
         let json = serde_json::to_value(&claims).expect("claims should serialize");
-        assert!(
-            json["iss"].is_number(),
-            "GitHub rejects a string iss App ID"
-        );
-        assert_eq!(json["iss"], 153860735);
+        assert!(json["iss"].is_string(), "GitHub cannot decode a numeric iss");
+        assert_eq!(json["iss"], "4084634");
     }
 
     #[test]
@@ -527,5 +551,17 @@ mod tests {
         let normalized = normalize_private_key(pem);
         assert!(normalized.contains('\n'));
         assert!(!normalized.contains("\\n"));
+        assert!(normalized.starts_with("-----BEGIN PRIVATE KEY-----"));
+        assert!(normalized.ends_with("-----END PRIVATE KEY-----"));
+    }
+
+    #[test]
+    fn normalize_private_key_rewrapping_one_line_pem() {
+        let pem = "-----BEGIN RSA PRIVATE KEY-----ABCDEFGHIJKLMNOP-----END RSA PRIVATE KEY-----";
+        let normalized = normalize_private_key(pem);
+        assert_eq!(
+            normalized,
+            "-----BEGIN RSA PRIVATE KEY-----\nABCDEFGHIJKLMNOP\n-----END RSA PRIVATE KEY-----"
+        );
     }
 }
