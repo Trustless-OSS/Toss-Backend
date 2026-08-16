@@ -4,6 +4,7 @@
 
 use rust_decimal::Decimal;
 use serde::Serialize;
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::shared::models::Repo;
@@ -39,12 +40,12 @@ pub(crate) struct RepoAccessInput {
     pub(crate) github_id: i64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub(crate) struct RepoResponse {
     pub(crate) repo: Repo,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RepoDetails {
     pub(crate) repo: Repo,
@@ -78,12 +79,12 @@ impl RepoDetails {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub(crate) struct SyncInstallationResult {
     pub(crate) synced: usize,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub(crate) struct OkResponse {
     pub(crate) ok: bool,
 }

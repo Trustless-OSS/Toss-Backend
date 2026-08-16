@@ -3,8 +3,16 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
+use serde::Serialize;
 use serde_json::{json, Value};
 use thiserror::Error;
+use utoipa::ToSchema;
+
+/// JSON error body returned by [`AppError`] and auth extractors.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ErrorResponse {
+    pub error: String,
+}
 
 #[derive(Debug, Error)]
 pub enum AppError {

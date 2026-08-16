@@ -1,24 +1,25 @@
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 // ── Request bodies ────────────────────────────────────────────────────────────
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateEscrowBody {
     pub repo_id: Uuid,
     pub maintainer_wallet: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SubmitDeployBody {
     pub repo_id: Uuid,
     pub signed_xdr: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct FundEscrowBody {
     pub repo_id: Uuid,
@@ -26,7 +27,7 @@ pub struct FundEscrowBody {
     pub funder_wallet: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SubmitFundBody {
     pub repo_id: Uuid,
@@ -34,20 +35,20 @@ pub struct SubmitFundBody {
     pub signed_xdr: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct RefundEscrowBody {
     pub repo_id: Uuid,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct CloseEscrowBody {
     pub repo_id: Uuid,
     pub maintainer_wallet: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SubmitCloseBody {
     pub repo_id: Uuid,
@@ -56,19 +57,19 @@ pub struct SubmitCloseBody {
 
 // ── Response structs ──────────────────────────────────────────────────────────
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct UnsignedTransactionResponse {
     pub unsigned_transaction: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ContractIdResponse {
     pub contract_id: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SubmitFundResponse {
     pub ok: bool,
@@ -76,14 +77,14 @@ pub struct SubmitFundResponse {
     pub new_balance: Option<Decimal>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct RefundResponse {
     pub refunded_amount: Decimal,
     pub cancelled_issues: i64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct OkResponse {
     pub ok: bool,
 }

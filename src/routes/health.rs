@@ -81,6 +81,7 @@ fn dependency_response(
 #[utoipa::path(
     get,
     path = "/health",
+    tag = "Health",
     responses(
         (status = 200, description = "Health check succeeded", body = HealthResponse),
         (status = 503, description = "Service unavailable", body = HealthResponse),
@@ -196,9 +197,24 @@ pub async fn health_handler(State(state): State<AppState>) -> Response {
         .into_response()
 }
 
+/// OpenAPI entry for `GET /api/health` (same handler as [`health_handler`]).
+#[utoipa::path(
+    get,
+    path = "/api/health",
+    tag = "Health",
+    operation_id = "api_health",
+    responses(
+        (status = 200, description = "Health check succeeded", body = HealthResponse),
+        (status = 503, description = "Service unavailable", body = HealthResponse),
+        (status = 503, description = "Server shutting down", body = ShuttingDownResponse)
+    )
+)]
+pub fn api_health() {}
+
 #[utoipa::path(
     get,
     path = "/api/health/database",
+    tag = "Health",
     responses(
         (status = 200, description = "Database is reachable", body = DependencyHealthResponse),
         (status = 503, description = "Database unavailable", body = DependencyHealthResponse)
@@ -224,6 +240,7 @@ pub async fn database_health_handler(State(state): State<AppState>) -> Response 
 #[utoipa::path(
     get,
     path = "/api/health/redis",
+    tag = "Health",
     responses(
         (status = 200, description = "Redis is reachable", body = DependencyHealthResponse),
         (status = 503, description = "Redis unavailable", body = DependencyHealthResponse)
@@ -252,6 +269,7 @@ pub async fn redis_health_handler(State(state): State<AppState>) -> Response {
 #[utoipa::path(
     get,
     path = "/api/health/trustless-work",
+    tag = "Health",
     responses(
         (status = 200, description = "Trustless Work is reachable", body = DependencyHealthResponse),
         (status = 503, description = "Trustless Work unavailable", body = DependencyHealthResponse)

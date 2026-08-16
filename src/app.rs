@@ -2,17 +2,26 @@ use axum::{routing::get, Json, Router};
 use serde::Serialize;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
+use utoipa::ToSchema;
 
 use crate::{routes, state::AppState};
 
-#[derive(Serialize)]
-struct RootResponse {
-    service: &'static str,
-    status: &'static str,
-    message: &'static str,
+#[derive(Serialize, ToSchema)]
+pub(crate) struct RootResponse {
+    pub service: &'static str,
+    pub status: &'static str,
+    pub message: &'static str,
 }
 
-async fn root_handler() -> Json<RootResponse> {
+#[utoipa::path(
+    get,
+    path = "/",
+    tag = "Root",
+    responses(
+        (status = 200, description = "Service is running", body = RootResponse)
+    )
+)]
+pub(crate) async fn root_handler() -> Json<RootResponse> {
     Json(RootResponse {
         service: "trustless-oss-backend",
         status: "ok",
