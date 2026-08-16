@@ -80,7 +80,10 @@ fn normalize_private_key(private_key: &str) -> String {
         return rewrap_pem(&normalized);
     }
 
-    let b64_body: String = normalized.chars().filter(|ch| !ch.is_whitespace()).collect();
+    let b64_body: String = normalized
+        .chars()
+        .filter(|ch| !ch.is_whitespace())
+        .collect();
     rewrap_pem(&format!(
         "-----BEGIN RSA PRIVATE KEY-----\n{b64_body}\n-----END RSA PRIVATE KEY-----"
     ))
@@ -530,7 +533,10 @@ mod tests {
             iss: github_app_issuer(" 4084634 "),
         };
         let json = serde_json::to_value(&claims).expect("claims should serialize");
-        assert!(json["iss"].is_string(), "GitHub cannot decode a numeric iss");
+        assert!(
+            json["iss"].is_string(),
+            "GitHub cannot decode a numeric iss"
+        );
         assert_eq!(json["iss"], "4084634");
     }
 

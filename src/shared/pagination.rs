@@ -1,9 +1,13 @@
 use axum::extract::Query;
 use serde::{Deserialize, Serialize};
+use utoipa::{IntoParams, ToSchema};
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, IntoParams, ToSchema)]
+#[into_params(parameter_in = Query)]
 pub struct PaginationQuery {
+    /// Page size. Defaults to 100, clamped to 1–200.
     pub limit: Option<i64>,
+    /// Number of items to skip. Defaults to 0.
     pub offset: Option<i64>,
 }
 
@@ -15,8 +19,8 @@ impl PaginationQuery {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct PaginatedResponse<T> {
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct PaginatedResponse<T: ToSchema> {
     pub data: Vec<T>,
     pub total_count: i64,
     pub limit: i64,

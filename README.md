@@ -139,7 +139,9 @@ curl http://localhost:5000/api/health
 ```
 
 The root endpoint confirms that the API is running. The detailed health endpoint
-also reports PostgreSQL, Redis, environment, and Trustless Work status.
+also reports PostgreSQL, Redis, environment, and Trustless Work status. Browse
+the full API (repos, contributor, bounty, escrow, GitHub webhooks, and health)
+at `http://localhost:5000/swagger`.
 
 > [!TIP]
 > If port `5000` is already in use, change `PORT` in `.env` and use the same
@@ -180,7 +182,9 @@ GitHub webhooks instead require a valid `X-Hub-Signature-256` signature.
 | Milestones | `POST /api/milestones/push` |
 | Escrow | `POST /api/escrow/create-unsigned`, `/submit-deploy`, `/fund-unsigned`, `/submit-fund`, `/refund`, `/close-unsigned`, `/submit-close` |
 | GitHub | `POST /api/webhooks/github` |
-| Docs | `GET /swagger` |
+| Docs | `GET /swagger` (full OpenAPI UI), `GET /api-doc/openapi.json` |
+
+Interactive docs for every public endpoint live at [`/swagger`](http://localhost:5000/swagger). Request/response schemas and bearer-auth requirements are included in the spec.
 
 ## 🗂️ Project structure
 

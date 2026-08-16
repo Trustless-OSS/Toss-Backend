@@ -6,6 +6,7 @@
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 use super::schema;
@@ -19,7 +20,7 @@ fn optional_timestamp(ts: Option<jiff::Timestamp>) -> Option<DateTime<Utc>> {
     ts.map(timestamp_to_chrono)
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Repo {
     pub id: Uuid,
     pub github_repo_id: i64,
@@ -40,7 +41,7 @@ pub struct Repo {
     pub created_at: Option<DateTime<Utc>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Contributor {
     pub id: Uuid,
     pub github_user_id: i64,
@@ -51,7 +52,7 @@ pub struct Contributor {
     pub created_at: Option<DateTime<Utc>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Issue {
     pub id: Uuid,
     pub repo_id: Uuid,
@@ -65,7 +66,7 @@ pub struct Issue {
     pub created_at: Option<DateTime<Utc>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Assignment {
     pub id: Uuid,
     pub issue_id: Uuid,

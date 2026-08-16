@@ -5,7 +5,7 @@ use axum::{
 };
 
 use crate::{
-    error::AppError,
+    error::{AppError, ErrorResponse},
     middleware::auth::AuthedUser,
     modules::contributor::model::{ConnectWalletBody, ContributorMeResponse, OkResponse},
     modules::contributor::repository::{
@@ -14,7 +14,19 @@ use crate::{
     state::AppState,
 };
 
-async fn connect_wallet(
+#[utoipa::path(
+    post,
+    path = "/api/wallet/connect",
+    tag = "Contributor",
+    security(("bearer_auth" = [])),
+    request_body = ConnectWalletBody,
+    responses(
+        (status = 200, description = "Payout wallet saved for the authenticated contributor", body = OkResponse),
+        (status = 401, description = "Missing or invalid bearer token", body = ErrorResponse),
+        (status = 500, description = "Failed to save wallet", body = ErrorResponse)
+    )
+)]
+pub(crate) async fn connect_wallet(
     State(state): State<AppState>,
     user: AuthedUser,
     Json(body): Json<ConnectWalletBody>,
@@ -42,7 +54,18 @@ async fn connect_wallet(
     Ok(Json(OkResponse { ok: true }))
 }
 
-async fn get_contributor_me(
+#[utoipa::path(
+    get,
+    path = "/api/contributor/me",
+    tag = "Contributor",
+    security(("bearer_auth" = [])),
+    responses(
+        (status = 200, description = "Authenticated contributor profile and assignments", body = ContributorMeResponse),
+        (status = 401, description = "Missing or invalid bearer token", body = ErrorResponse),
+        (status = 500, description = "Failed to load contributor", body = ErrorResponse)
+    )
+)]
+pub(crate) async fn get_contributor_me(
     State(state): State<AppState>,
     user: AuthedUser,
 ) -> Result<Json<ContributorMeResponse>, AppError> {
