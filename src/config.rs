@@ -1,3 +1,5 @@
+use crate::error::AppError;
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub port: u16,
@@ -17,6 +19,7 @@ pub struct Config {
     pub dispute_resolver_stellar_secret_key: String,
     pub trustless_work_api_key: String,
     pub trustless_work_base_url: String,
+    pub token_address: String,
     pub stellar_network: String,
     pub app_url: String,
     pub webhook_url: Option<String>,
@@ -26,23 +29,22 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn from_env() -> Result<Self, crate::error::AppError> {
+    pub fn from_env() -> Result<Self, AppError> {
         let manifest_env = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".env");
         if dotenvy::from_path(&manifest_env).is_err() {
             let _ = dotenvy::dotenv();
         }
 
-        let port = std::env::var("PORT")
-            .ok()
-            .and_then(|value| value.parse::<u16>().ok())
-            .unwrap_or(5000);
-        let node_env = std::env::var("NODE_ENV").unwrap_or_else(|_| "development".to_string());
+        let port = required_u16("PORT")?;
+
+        let node_env = required_env("NODE_ENV")?;
+
         let dev_webhook_proxy_enabled = node_env.eq_ignore_ascii_case("development")
-            && optional_bool("DEV_WEBHOOK_PROXY_ENABLED").unwrap_or(true);
+            && required_bool("DEV_WEBHOOK_PROXY_ENABLED")?;
 
         Ok(Self {
             port,
-            log_level: std::env::var("LOG_LEVEL").unwrap_or_else(|_| "info".to_string()),
+            log_level: required_env("LOG_LEVEL")?,
             node_env,
             database_url: required_env("DATABASE_URL")?,
             redis_url: required_env("REDIS_URL")?,
@@ -66,18 +68,14 @@ impl Config {
                 "DISPUTE_RESOLVER_STELLAR_SECRET_KEY",
             )?,
             trustless_work_api_key: required_env("TRUSTLESS_WORK_API_KEY")?,
-            trustless_work_base_url: std::env::var("TRUSTLESS_WORK_BASE_URL")
-                .unwrap_or_else(|_| "https://dev.api.trustlesswork.com".to_string()),
-            stellar_network: std::env::var("STELLAR_NETWORK")
-                .unwrap_or_else(|_| "testnet".to_string()),
-            app_url: std::env::var("APP_URL")
-                .unwrap_or_else(|_| "http://localhost:3000".to_string()),
+            trustless_work_base_url: required_env("TRUSTLESS_WORK_BASE_URL")?,
+            token_address: required_env("TOKEN_ADDRESS")?,
+            stellar_network: required_env("STELLAR_NETWORK")?,
+            app_url: required_env("APP_URL")?,
             webhook_url: std::env::var("WEBHOOK_URL").ok(),
             dev_webhook_proxy_enabled,
-            smee_source_url: std::env::var("SMEE_SOURCE_URL")
-                .unwrap_or_else(|_| "https://smee.io/trustless-oss-dev-webhook".to_string()),
-            smee_target_url: std::env::var("SMEE_TARGET_URL")
-                .unwrap_or_else(|_| format!("http://127.0.0.1:{port}/api/webhooks/github")),
+            smee_source_url: required_env("SMEE_SOURCE_URL")?,
+            smee_target_url: required_env("SMEE_TARGET_URL")?,
         })
     }
 
@@ -96,10 +94,28 @@ fn optional_bool(name: &str) -> Option<bool> {
         })
 }
 
+fn required_bool(name: &str) -> Result<bool, crate::error::AppError> {
+    let _value = required_env(name)?;
+    optional_bool(name).ok_or_else(|| {
+        crate::error::AppError::env_var_error(format!(
+            "Invalid boolean value for environment variable: {name}"
+        ))
+    })
+}
+
+fn required_u16(name: &str) -> Result<u16, crate::error::AppError> {
+    let value = required_env(name)?;
+    value.parse::<u16>().map_err(|_| {
+        crate::error::AppError::env_var_error(format!(
+            "Invalid u16 value for environment variable: {name}"
+        ))
+    })
+}
+
 fn required_env(name: &str) -> Result<String, crate::error::AppError> {
     match std::env::var(name) {
         Ok(value) if !value.trim().is_empty() => Ok(value),
-        _ => Err(crate::error::AppError::internal(format!(
+        _ => Err(crate::error::AppError::env_var_error(format!(
             "Missing required environment variable: {name}"
         ))),
     }
@@ -113,7 +129,7 @@ fn first_env(names: &[&str]) -> Result<String, crate::error::AppError> {
             _ => None,
         })
         .ok_or_else(|| {
-            crate::error::AppError::internal(format!(
+            crate::error::AppError::env_var_error(format!(
                 "Missing required environment variable: {}",
                 names.join(" or ")
             ))

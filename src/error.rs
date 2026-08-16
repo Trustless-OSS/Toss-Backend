@@ -38,6 +38,9 @@ pub enum AppError {
     },
     #[error("{message}")]
     Internal { message: String },
+
+    #[error("{message}")]
+    EnvVarError { message: String },
 }
 
 impl AppError {
@@ -98,6 +101,12 @@ impl AppError {
             message: message.into(),
         }
     }
+
+    pub fn env_var_error(name: impl Into<String>) -> Self {
+        Self::EnvVarError {
+            message: name.into(),
+        }
+    }
 }
 
 impl IntoResponse for AppError {
@@ -111,7 +120,8 @@ impl IntoResponse for AppError {
             | Self::StellarError { .. }
             | Self::GitHubError { .. }
             | Self::DatabaseError { .. }
-            | Self::Internal { .. } => StatusCode::INTERNAL_SERVER_ERROR,
+            | Self::Internal { .. }
+            | Self::EnvVarError { .. } => StatusCode::INTERNAL_SERVER_ERROR,
         };
 
         let message = self.to_string();
@@ -131,7 +141,19 @@ pub fn unauthorized_response() -> Response {
         .into_response()
 }
 
-pub fn require_db(pool: &Option<sqlx::PgPool>) -> Result<&sqlx::PgPool, AppError> {
-    pool.as_ref()
-        .ok_or_else(|| AppError::internal("Database is not configured"))
+/// Cheap clone of the Toasty pool handle (for `let mut db = require_db(&state.db)?;`).
+pub fn require_db(db: &toasty::Db) -> Result<toasty::Db, AppError> {
+    Ok(db.clone())
+}
+
+pub fn map_db_err(error: impl std::fmt::Display) -> AppError {
+    AppError::database(error.to_string())
+}
+
+pub fn is_unique_violation(error: &impl std::fmt::Display) -> bool {
+    let message = error.to_string().to_lowercase();
+    message.contains("23505")
+        || message.contains("unique")
+        || message.contains("duplicate key")
+        || message.contains("already exists")
 }

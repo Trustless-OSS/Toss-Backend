@@ -1,17 +1,13 @@
 <div align="center">
 
-# ⚡ Toss Backend
+<img width="280" alt="toss" src="https://github.com/user-attachments/assets/eb15200e-c4c5-4405-aca1-bbb692bd3480" />
 
-### The Rust API behind Trustless OSS bounties
-
-Connect GitHub repositories, turn issues into funded bounties, and coordinate
-contributor payouts through Stellar and Trustless Work.
 
 [![Rust CI](https://github.com/Trustless-OSS/Toss-Backend/actions/workflows/rust.yml/badge.svg)](https://github.com/Trustless-OSS/Toss-Backend/actions/workflows/rust.yml)
 ![Rust 2021](https://img.shields.io/badge/Rust-2021-000000?logo=rust&logoColor=white)
 ![Axum](https://img.shields.io/badge/Axum-0.8-7C3AED)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql&logoColor=white)
-![Diesel ORM](https://img.shields.io/badge/Diesel_ORM-2.2-EF5B25)
+![Toasty](https://img.shields.io/badge/Toasty-0.10-EF5B25)
 ![Redis](https://img.shields.io/badge/Redis-7-DC382D?logo=redis&logoColor=white)
 
 [Overview](#-overview) • [How it works](#-how-it-works) • [Quick start](#-quick-start) • [API map](#-api-map) • [Development](#-development)
@@ -33,7 +29,7 @@ operations while keeping slow or retryable work in background jobs.
 | 🔐 **Authentication** | Supabase bearer-token verification with GitHub identity extraction |
 | 💸 **Escrow operations** | Unsigned transaction creation, deployment, funding, refunds, closure, and submission through Trustless Work |
 | ⚙️ **Background processing** | Redis-backed webhook jobs, scheduled work, retries, and queue statistics |
-| 🩺 **Operations** | PostgreSQL migrations, dependency-aware health checks, request tracing, and graceful shutdown |
+| 🩺 **Operations** | Toasty migrations, dependency-aware health checks, request tracing, and graceful shutdown |
 
 ## 🔄 How it works
 
@@ -64,17 +60,17 @@ The common bounty journey is:
 | Layer | Technology |
 | --- | --- |
 | API | Rust 2021, Axum 0.8, Tokio |
-| Data | PostgreSQL, SQLx, Diesel ORM 2.2, Redis |
+| Data | PostgreSQL 16, [Toasty](https://github.com/tokio-rs/toasty) 0.10 ORM, Redis 7 |
 | Authentication | Supabase Auth, GitHub identity |
 | Integrations | GitHub App API, Trustless Work, Stellar |
 | Observability | `tracing`, dependency-aware health checks |
-| Local infrastructure | Docker Compose |
+| Local infrastructure | Docker Compose (PostgreSQL + Redis only) |
 
 ## 🚀 Quick start
 
 ### Prerequisites
 
-- [Rust](https://www.rust-lang.org/tools/install) stable toolchain
+- [Rust](https://www.rust-lang.org/tools/install) stable toolchain (MSRV for Toasty is ~1.95+)
 - [Docker](https://docs.docker.com/get-docker/) with Docker Compose
 - GitHub App, Supabase, Stellar, and Trustless Work credentials for the
   integration flows you want to exercise
@@ -89,6 +85,13 @@ Open `.env` and replace the placeholder credentials. The application validates
 its required configuration at startup, so all required values must be present.
 Never commit the populated `.env` file.
 
+Local defaults match Docker Compose:
+
+| Service | URL |
+| --- | --- |
+| PostgreSQL | `postgres://postgres:postgres@localhost:5435/trustless_oss` |
+| Redis | `redis://localhost:6379` |
+
 ### 2. Start PostgreSQL and Redis
 
 ```bash
@@ -96,18 +99,39 @@ docker compose up -d
 docker compose ps
 ```
 
-This starts PostgreSQL at `localhost:5435` and Redis at `localhost:6379`.
+This starts PostgreSQL on `localhost:5435` and Redis on `localhost:6379`.
 
-### 3. Run the API
+### 3. Apply database migrations
+
+On **every server start** (`cargo run` / deploy), the app applies pending SQL from
+`toasty/migrations` (embedded into the binary). Already-applied migrations are skipped.
+
+Generate new migration files after you change models under `src/shared/models/schema/`:
+
+```bash
+cargo run --bin migrate -- migration generate --name describe_your_change
+```
+
+Then restart the server (or run apply manually):
+
+```bash
+cargo run --bin migrate -- migration apply
+# or just:
+cargo run
+```
+
+Commit the updated `toasty/` folder so deploys include the new SQL.
+
+### 4. Run the API
 
 ```bash
 cargo run
 ```
 
-The server starts at `http://localhost:5000` by default. Database migrations
-run automatically during startup.
+`cargo run` starts the `toss-backend` server (default binary). It listens at
+`http://localhost:5000` by default.
 
-### 4. Verify the service
+### 5. Verify the service
 
 ```bash
 curl http://localhost:5000/
@@ -139,6 +163,9 @@ The complete template lives in [`.env.example`](.env.example).
 `GITHUB_BOT_TOKEN` is optional and is only needed by paths that fetch GitHub
 issue state directly.
 
+The migrate binary also accepts `TOASTY_CONNECTION_URL` as an override for
+`DATABASE_URL`.
+
 ## 🗺️ API map
 
 Protected application routes use `Authorization: Bearer <supabase-access-token>`.
@@ -146,28 +173,33 @@ GitHub webhooks instead require a valid `X-Hub-Signature-256` signature.
 
 | Area | Main endpoints |
 | --- | --- |
-| System | `GET /`, `GET /health`, `GET /api/health`, `GET /api/queue/stats` |
+| System | `GET /`, `GET /health`, `GET /api/health`, `GET /api/health/database`, `GET /api/health/redis`, `GET /api/health/trustless-work`, `GET /api/queue/stats` |
 | Repositories | `GET /api/repos`, `POST /api/repos/connect`, `POST /api/repos/sync-installation`, `GET/DELETE /api/repos/{repoId}` |
 | Issues and rewards | `GET /api/repos/{repoId}/issues`, `PUT /api/repos/{repoId}/rewards`, `POST /api/issues/{issueId}/retry` |
 | Contributors | `POST /api/wallet/connect`, `GET /api/contributor/me` |
 | Milestones | `POST /api/milestones/push` |
 | Escrow | `POST /api/escrow/create-unsigned`, `/submit-deploy`, `/fund-unsigned`, `/submit-fund`, `/refund`, `/close-unsigned`, `/submit-close` |
 | GitHub | `POST /api/webhooks/github` |
+| Docs | `GET /swagger` |
 
 ## 🗂️ Project structure
 
 ```text
 Toss-Backend/
 ├── src/
+│   ├── bin/migrate.rs  # Toasty migration CLI
 │   ├── modules/        # Repo, GitHub, bounty, contributor, and escrow domains
-│   ├── infra/          # PostgreSQL, Redis, queue, cache, and Stellar adapters
+│   ├── shared/models/  # Entity DTOs + Toasty schema models
+│   ├── infra/          # PostgreSQL (Toasty), Redis, queue, cache, Stellar
 │   ├── middleware/     # Authentication and request middleware
 │   ├── routes/         # Health and operational routes
+│   ├── lib.rs          # Shared library crate
 │   ├── config.rs       # Environment configuration
 │   ├── app.rs          # Axum router assembly
-│   └── main.rs         # Startup and graceful shutdown
-├── migrations/         # SQLx database migrations
-├── docker-compose.yml  # Local PostgreSQL and Redis
+│   └── main.rs         # Server startup and graceful shutdown
+├── toasty/             # Generated SQL migrations, snapshots, history
+├── Toasty.toml         # Toasty migration config
+├── docker-compose.yml  # Local PostgreSQL + Redis
 └── .env.example        # Safe configuration template
 ```
 
@@ -184,19 +216,27 @@ cargo test
 Useful local commands:
 
 ```bash
-# Follow service logs
+# API server (default binary)
+cargo run
+
+# Migrations
+cargo run --bin migrate -- migration generate --name my_change
+cargo run --bin migrate -- migration apply
+
+# Follow infrastructure logs
 docker compose logs -f postgres redis
 
 # Stop local infrastructure
 docker compose down
 
-# Stop it and remove local database/cache volumes
+# Stop and remove local database/cache volumes
 docker compose down -v
 ```
 
 > [!WARNING]
-> `docker compose down -v` deletes the local PostgreSQL and Redis volumes. Use
-> it only when you intentionally want a clean local data reset.
+> `docker compose down -v` deletes the local PostgreSQL and Redis volumes.
+> `migration reset` drops all tables in the connected database. Use either only
+> when you intentionally want a clean local data reset.
 
 ## 🤝 Contributing
 
@@ -206,6 +246,7 @@ Issues and pull requests are welcome. Before submitting a change:
 2. Add or update tests for changed behavior.
 3. Run the formatting, build, and test commands above.
 4. Explain any configuration or migration changes in the pull request.
+5. Commit updated files under `toasty/` when you change schema models.
 
 Have an idea or found a bug? [Open an issue](https://github.com/Trustless-OSS/Toss-Backend/issues).
 

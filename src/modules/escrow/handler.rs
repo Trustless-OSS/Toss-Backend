@@ -14,6 +14,8 @@ use crate::{
     error::AppError,
     middleware::auth::AuthedUser,
     modules::{
+        bounty::repository::list_issues_to_cancel,
+        escrow::repository::{update_repo_escrow_balance, update_repo_escrow_funder_wallet},
         escrow::{
             dto::{
                 CloseEscrowBody, ContractIdResponse, CreateEscrowBody, FundEscrowBody, OkResponse,
@@ -23,10 +25,7 @@ use crate::{
             service,
         },
         github::auth::post_comment,
-        repo::repository::{
-            get_repo_by_id, is_maintainer, list_issues_to_cancel, update_repo_escrow_balance,
-            update_repo_escrow_funder_wallet,
-        },
+        repo::repository::{get_repo_by_id, is_maintainer},
     },
     state::AppState,
 };

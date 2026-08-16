@@ -5,24 +5,26 @@ use tracing::{error, info};
 use crate::{
     error::AppError,
     modules::{
+        bounty::repository::{
+            create_issue_and_reserve_balance, get_assignment_for_issue,
+            get_issue_by_repo_and_github_id, get_issue_by_repo_and_number,
+            update_assignment_completion_percentage, update_assignment_payout_status,
+            update_issue_status, update_pending_issue_reward,
+        },
+        contributor::repository::get_contributor_by_github_id,
+        escrow::repository::refund_repo_balance,
         escrow::service::{push_milestone_on_chain, release_escrow_milestone},
         github::{
             auth::post_comment,
             handlers::helpers::{
                 cancel_bounty_with_refund, dispute_milestone, explorer_tx_url,
-                extract_custom_amount, extract_issue_number, is_help_command,
+                extract_issue_number, extract_manual_amount, is_help_command,
                 is_privileged_association, is_reject_command, is_retry_command, is_wallet_command,
                 maintainer_github_id, refresh_repo, resolve_milestone_dispute, split_amounts,
                 sync_repo_balance, work_completion_percentage,
             },
         },
-        repo::repository::{
-            create_issue_and_reserve_balance, get_assignment_for_issue,
-            get_contributor_by_github_id, get_issue_by_repo_and_github_id,
-            get_issue_by_repo_and_number, get_repo_by_github_id, refund_repo_balance,
-            update_assignment_completion_percentage, update_assignment_payout_status,
-            update_issue_status, update_pending_issue_reward,
-        },
+        repo::repository::get_repo_by_github_id,
     },
     shared::models::Issue,
     state::AppState,
@@ -96,7 +98,7 @@ pub async fn handle_issue_comment_created(
             issue_number,
             "🤖 **Trustless-OSS Bot Commands**\n\n\
              **For Maintainers:**\n\
-             - `@Trustless-OSS <amount>`: Set a custom bounty\n\
+             - `@Trustless-OSS <amount>`: Set a manual bounty\n\
              - `@Trustless-OSS /pay <percentage>`: Split bounty on merge\n\
              - `@Trustless-OSS /reject`: Reject work and refund the escrow\n\
              - `@Trustless-OSS /retry`: Retry a failed payout\n\n\
@@ -126,11 +128,11 @@ pub async fn handle_issue_comment_created(
         return Ok(());
     }
 
-    let Some(custom_amount) = extract_custom_amount(Some(body)) else {
+    let Some(manual_amount) = extract_manual_amount(Some(body)) else {
         return Ok(());
     };
 
-    create_or_update_custom_bounty(
+    create_or_update_manual_bounty(
         state,
         repo_github_id,
         full_name,
@@ -138,7 +140,7 @@ pub async fn handle_issue_comment_created(
         issue_number,
         issue_title,
         commenter_login,
-        custom_amount,
+        manual_amount,
     )
     .await
 }
@@ -452,7 +454,7 @@ async fn retry_bounty(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn create_or_update_custom_bounty(
+async fn create_or_update_manual_bounty(
     state: &AppState,
     repo_github_id: i64,
     full_name: &str,
@@ -460,7 +462,7 @@ async fn create_or_update_custom_bounty(
     issue_number: i32,
     issue_title: &str,
     commenter_login: &str,
-    custom_amount: Decimal,
+    manual_amount: Decimal,
 ) -> Result<(), AppError> {
     let Some(mut repo) = get_repo_by_github_id(state, repo_github_id).await? else {
         return Ok(());
@@ -472,7 +474,7 @@ async fn create_or_update_custom_bounty(
     let existing = get_issue_by_repo_and_github_id(state, repo.id, github_issue_id).await?;
     if let Some(existing) = existing {
         if existing.status == "pending" {
-            if !update_pending_issue_reward(state, &repo, existing.id, custom_amount, "custom")
+            if !update_pending_issue_reward(state, &repo, existing.id, manual_amount, "manual")
                 .await?
             {
                 post_comment(
@@ -488,7 +490,7 @@ async fn create_or_update_custom_bounty(
                 state,
                 full_name,
                 issue_number,
-                &format!("🔄 Bounty updated to **{custom_amount} USDC**!"),
+                &format!("🔄 Bounty updated to **{manual_amount} USDC**!"),
             )
             .await?;
         }
@@ -496,15 +498,15 @@ async fn create_or_update_custom_bounty(
     }
 
     if let Err(error) = sync_repo_balance(state, &mut repo).await {
-        error!(%error, "failed to sync escrow balance before custom bounty creation");
+        error!(%error, "failed to sync escrow balance before manual bounty creation");
     }
-    if repo.escrow_balance < custom_amount {
+    if repo.escrow_balance < manual_amount {
         post_comment(
             state,
             full_name,
             issue_number,
             &format!(
-                "⚠️ Insufficient escrow balance (**{} USDC**). Need **{custom_amount} USDC**.\n\n[Top up your escrow →]({}/dashboard)",
+                "⚠️ Insufficient escrow balance (**{} USDC**). Need **{manual_amount} USDC**.\n\n[Top up your escrow →]({}/dashboard)",
                 repo.escrow_balance, state.config.app_url
             ),
         )
@@ -518,8 +520,8 @@ async fn create_or_update_custom_bounty(
         github_issue_id,
         issue_number,
         issue_title,
-        custom_amount,
-        "custom",
+        manual_amount,
+        "manual",
     )
     .await?
     .is_none()
@@ -532,10 +534,10 @@ async fn create_or_update_custom_bounty(
         full_name,
         issue_number,
         &format!(
-            "🎯 Bounty of **{custom_amount} USDC** created by @{commenter_login}!\n\n\
+            "🎯 Bounty of **{manual_amount} USDC** created by @{commenter_login}!\n\n\
              | Detail | Value |\n|---|---|\n\
-             | 💰 Reward | **{custom_amount} USDC** |\n\
-             | 📊 Level | `custom` |\n\
+             | 💰 Reward | **{manual_amount} USDC** |\n\
+             | 📊 Level | `manual` |\n\
              | 📋 Escrow | [View on-chain →](https://viewer.trustlesswork.com/{contract_id}) |\n\n\
              Assign a contributor to get started."
         ),

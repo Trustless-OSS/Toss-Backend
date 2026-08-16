@@ -5,6 +5,12 @@ use tracing::{error, info, warn};
 use crate::{
     error::AppError,
     modules::{
+        bounty::repository::{
+            get_assignment_for_issue, get_issue_by_repo_and_github_id,
+            get_issue_by_repo_and_number, update_assignment_payout_status,
+            update_assignment_pr_merge, update_issue_status,
+        },
+        contributor::repository::get_contributor_by_github_id,
         escrow::service::{push_milestone_on_chain, release_escrow_milestone},
         github::{
             auth::post_comment,
@@ -14,11 +20,7 @@ use crate::{
                 split_amounts,
             },
         },
-        repo::repository::{
-            get_assignment_for_issue, get_contributor_by_github_id,
-            get_issue_by_repo_and_github_id, get_issue_by_repo_and_number, get_repo_by_github_id,
-            update_assignment_payout_status, update_assignment_pr_merge, update_issue_status,
-        },
+        repo::repository::get_repo_by_github_id,
     },
     state::AppState,
 };

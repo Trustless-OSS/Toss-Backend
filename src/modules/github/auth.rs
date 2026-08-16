@@ -9,7 +9,10 @@ use tracing::{debug, error, info, warn};
 use crate::{
     error::AppError,
     infra::cache_keys,
-    modules::repo::repository::{get_repo_by_github_id, invalidate_repo_cache},
+    modules::{
+        github::repository::{get_github_repo_id_by_full_name, update_repo_installation_id},
+        repo::repository::{get_repo_by_github_id, invalidate_repo_cache},
+    },
     state::AppState,
 };
 
@@ -22,6 +25,9 @@ const GITHUB_USER_AGENT: &str = "Trustless-OSS-Bot";
 struct AppClaims {
     iat: i64,
     exp: i64,
+    /// JWT RFC 7519 requires `iss` to be a string. GitHub accepts the App ID
+    /// as a decimal string (e.g. "4084634"). A JSON number makes GitHub return
+    /// 401 "A JSON web token could not be decoded."
     iss: String,
 }
 
@@ -59,25 +65,57 @@ pub struct InstallationRepoOwner {
 
 fn normalize_private_key(private_key: &str) -> String {
     let mut normalized = private_key.trim().to_string();
-    if normalized.starts_with('"') && normalized.ends_with('"') {
+    if (normalized.starts_with('"') && normalized.ends_with('"'))
+        || (normalized.starts_with('\'') && normalized.ends_with('\''))
+    {
         normalized = normalized[1..normalized.len() - 1].to_string();
     }
 
+    normalized = normalized
+        .replace("\\n", "\n")
+        .replace("\r\n", "\n")
+        .replace('\r', "\n");
+
     if normalized.contains("-----BEGIN") {
-        normalized.replace("\\n", "\n")
-    } else {
-        let b64_body: String = normalized
-            .chars()
-            .filter(|ch| !ch.is_whitespace())
-            .collect();
-        let wrapped = b64_body
-            .as_bytes()
-            .chunks(64)
-            .map(|chunk| std::str::from_utf8(chunk).unwrap_or(""))
-            .collect::<Vec<_>>()
-            .join("\n");
-        format!("-----BEGIN RSA PRIVATE KEY-----\n{wrapped}\n-----END RSA PRIVATE KEY-----")
+        return rewrap_pem(&normalized);
     }
+
+    let b64_body: String = normalized.chars().filter(|ch| !ch.is_whitespace()).collect();
+    rewrap_pem(&format!(
+        "-----BEGIN RSA PRIVATE KEY-----\n{b64_body}\n-----END RSA PRIVATE KEY-----"
+    ))
+}
+
+fn rewrap_pem(pem: &str) -> String {
+    let (begin, end) = if pem.contains("BEGIN RSA PRIVATE KEY") {
+        (
+            "-----BEGIN RSA PRIVATE KEY-----",
+            "-----END RSA PRIVATE KEY-----",
+        )
+    } else if pem.contains("BEGIN PRIVATE KEY") {
+        ("-----BEGIN PRIVATE KEY-----", "-----END PRIVATE KEY-----")
+    } else {
+        return pem.trim().to_string();
+    };
+
+    let body: String = pem
+        .replace(begin, "")
+        .replace(end, "")
+        .chars()
+        .filter(|ch| !ch.is_whitespace())
+        .collect();
+    let wrapped = body
+        .as_bytes()
+        .chunks(64)
+        .map(|chunk| std::str::from_utf8(chunk).unwrap_or(""))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    format!("{begin}\n{wrapped}\n{end}")
+}
+
+fn github_app_issuer(app_id: &str) -> String {
+    app_id.trim().trim_matches('"').trim().to_string()
 }
 
 async fn create_app_jwt(state: &AppState) -> Result<String, AppError> {
@@ -86,9 +124,9 @@ async fn create_app_jwt(state: &AppState) -> Result<String, AppError> {
 
     let now = chrono::Utc::now().timestamp();
     let claims = AppClaims {
-        iat: now - 60,
-        exp: now + 600,
-        iss: app_id.to_string(),
+        iat: now - 30,
+        exp: now + 540,
+        iss: github_app_issuer(app_id),
     };
 
     encode(
@@ -133,13 +171,7 @@ pub async fn get_installation_token(
 
     let installation_id = resolve_installation_id(state, &repo.full_name).await?;
     if repo.github_installation_id != Some(installation_id) {
-        let pool = crate::error::require_db(&state.db)?;
-        sqlx::query("UPDATE repos SET github_installation_id = $1 WHERE github_repo_id = $2")
-            .bind(installation_id)
-            .bind(github_repo_id)
-            .execute(pool)
-            .await
-            .map_err(|error| AppError::database(error.to_string()))?;
+        update_repo_installation_id(state, github_repo_id, installation_id).await?;
         invalidate_repo_cache(state, repo.id, Some(github_repo_id)).await;
         info!(
             repo = %repo.full_name,
@@ -216,8 +248,15 @@ async fn github_json<T: serde::de::DeserializeOwned>(
                     .map(str::to_owned)
             })
             .unwrap_or_else(|| text.chars().take(300).collect());
+        let hint = if status.as_u16() == 401 && message.contains("could not be decoded") {
+            " GitHub rejected the App JWT. The iss claim must be a string App ID, and GITHUB_APP_PRIVATE_KEY must be the matching PEM."
+        } else if status.as_u16() == 404 && operation.contains("installation") {
+            " GitHub App ID or private key does not match the installed app, or the PEM key is malformed."
+        } else {
+            ""
+        };
         return Err(AppError::github(format!(
-            "{operation} failed with {status}: {message}"
+            "{operation} failed with {status}: {message}.{hint}"
         )));
     }
 
@@ -240,41 +279,21 @@ pub async fn list_installation_repos(
     state: &AppState,
     installation_id: i64,
 ) -> Result<Vec<InstallationRepo>, AppError> {
-    let jwt = create_app_jwt(state).await?;
-    let token_url =
-        format!("https://api.github.com/app/installations/{installation_id}/access_tokens");
-    let token = state
-        .http_client
-        .post(&token_url)
-        .header("Authorization", format!("Bearer {jwt}"))
-        .header("Accept", "application/vnd.github.v3+json")
-        .header("User-Agent", "Trustless-OSS-Bot")
-        .send()
-        .await
-        .map_err(|error| AppError::github(error.to_string()))?
-        .error_for_status()
-        .map_err(|error| AppError::github(error.to_string()))?
-        .json::<InstallationTokenResponse>()
-        .await
-        .map_err(|error| AppError::github(error.to_string()))?
-        .token;
-
+    let token = exchange_installation_token(state, installation_id).await?;
     let response = state
         .http_client
         .get("https://api.github.com/installation/repositories?per_page=100")
         .header("Authorization", format!("Bearer {token}"))
-        .header("Accept", "application/vnd.github.v3+json")
-        .header("User-Agent", "Trustless-OSS-Bot")
+        .header("Accept", GITHUB_ACCEPT)
+        .header("X-GitHub-Api-Version", GITHUB_API_VERSION)
+        .header("User-Agent", GITHUB_USER_AGENT)
         .send()
-        .await
-        .map_err(|error| AppError::github(error.to_string()))?
-        .error_for_status()
-        .map_err(|error| AppError::github(error.to_string()))?
-        .json::<InstallationReposResponse>()
         .await
         .map_err(|error| AppError::github(error.to_string()))?;
 
-    Ok(response.repositories)
+    github_json::<InstallationReposResponse>(response, "installation repository listing")
+        .await
+        .map(|payload| payload.repositories)
 }
 
 pub async fn post_comment(
@@ -303,13 +322,7 @@ pub async fn post_comment(
         }
     }
 
-    let pool = crate::error::require_db(&state.db)?;
-    let github_repo_id: Option<i64> =
-        sqlx::query_scalar("SELECT github_repo_id FROM repos WHERE full_name = $1")
-            .bind(full_name)
-            .fetch_optional(pool)
-            .await
-            .map_err(|error| AppError::database(error.to_string()))?;
+    let github_repo_id = get_github_repo_id_by_full_name(state, full_name).await?;
 
     let Some(github_repo_id) = github_repo_id else {
         error!(
@@ -503,4 +516,52 @@ pub async fn remove_repo_from_installation(
         .await
         .map_err(|error| AppError::github(error.to_string()))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{github_app_issuer, normalize_private_key, AppClaims};
+
+    #[test]
+    fn github_app_jwt_iss_is_string_app_id() {
+        let claims = AppClaims {
+            iat: 1,
+            exp: 2,
+            iss: github_app_issuer(" 4084634 "),
+        };
+        let json = serde_json::to_value(&claims).expect("claims should serialize");
+        assert!(json["iss"].is_string(), "GitHub cannot decode a numeric iss");
+        assert_eq!(json["iss"], "4084634");
+    }
+
+    #[test]
+    fn github_app_jwt_iss_keeps_client_id_as_string() {
+        let claims = AppClaims {
+            iat: 1,
+            exp: 2,
+            iss: github_app_issuer("Iv1.abcd1234"),
+        };
+        let json = serde_json::to_value(&claims).expect("claims should serialize");
+        assert_eq!(json["iss"], "Iv1.abcd1234");
+    }
+
+    #[test]
+    fn normalize_private_key_unescapes_newlines() {
+        let pem = "-----BEGIN PRIVATE KEY-----\\nABC\\n-----END PRIVATE KEY-----";
+        let normalized = normalize_private_key(pem);
+        assert!(normalized.contains('\n'));
+        assert!(!normalized.contains("\\n"));
+        assert!(normalized.starts_with("-----BEGIN PRIVATE KEY-----"));
+        assert!(normalized.ends_with("-----END PRIVATE KEY-----"));
+    }
+
+    #[test]
+    fn normalize_private_key_rewrapping_one_line_pem() {
+        let pem = "-----BEGIN RSA PRIVATE KEY-----ABCDEFGHIJKLMNOP-----END RSA PRIVATE KEY-----";
+        let normalized = normalize_private_key(pem);
+        assert_eq!(
+            normalized,
+            "-----BEGIN RSA PRIVATE KEY-----\nABCDEFGHIJKLMNOP\n-----END RSA PRIVATE KEY-----"
+        );
+    }
 }

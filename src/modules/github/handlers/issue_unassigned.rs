@@ -4,11 +4,11 @@ use tracing::{error, info};
 use crate::{
     error::AppError,
     modules::{
-        github::{auth::post_comment, handlers::helpers::zero_milestone_on_chain},
-        repo::repository::{
-            delete_assignments_for_issue, get_issue_by_repo_and_github_id, get_repo_by_github_id,
-            reset_issue_to_pending,
+        bounty::repository::{
+            delete_assignments_for_issue, get_issue_by_repo_and_github_id, reset_issue_to_pending,
         },
+        github::{auth::post_comment, handlers::helpers::zero_milestone_on_chain},
+        repo::repository::get_repo_by_github_id,
     },
     state::AppState,
 };

@@ -10,7 +10,6 @@ services:
       - "5435:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./migrations/0001_initial_schema.sql:/docker-entrypoint-initdb.d/0001_initial_schema.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d trustless_oss"]
       interval: 10s
@@ -25,7 +24,7 @@ services:
       - "6379:6379"
     volumes:
       - redis_data:/data
-    command: redis-server --appendonly yes
+    command: ["redis-server", "--appendonly", "yes"]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s

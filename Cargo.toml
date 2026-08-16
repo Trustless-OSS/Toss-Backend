@@ -3,29 +3,46 @@ name = "toss-backend"
 description="This backend is made for Trustless-OSS  by using Rust axum to make Blazzing Fast server !!"
 version = "0.1.0"
 edition = "2021"
+default-run = "toss-backend"
+
+[[bin]]
+name = "toss-backend"
+path = "src/main.rs"
+
+[[bin]]
+name = "migrate"
+path = "src/bin/migrate.rs"
 
 [dependencies]
+anyhow = "1"
 axum = { version = "0.8", features = ["json", "macros"] }
 base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
 dotenvy = "0.15"
 hex = "0.4"
 hmac = "0.12"
+jiff = "0.2"
 jsonwebtoken = { version = "9", features = ["use_pem"] }
 redis = { version = "0.29", features = ["aio", "tokio-rustls-comp"] }
 regex = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
-rust_decimal = { version = "1", features = ["serde-with-str", "db-postgres"] }
+rust_decimal = { version = "1", features = ["serde-with-str"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
-sqlx = { version = "0.8", features = ["postgres", "runtime-tokio-rustls", "macros", "uuid", "chrono", "rust_decimal", "migrate"] }
 stellar-base = "0.7"
 stellar-xdr = { version = "27.0.0", features = ["base64"] }
 thiserror = "2"
+toasty = { version = "0.10", default-features = false, features = ["postgresql", "rustls", "rust_decimal", "jiff", "serde", "migration"] }
+toasty-cli = "0.10"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "net", "time"] }
 tower-http = { version = "0.6", features = ["trace", "cors"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
-uuid = { version = "1", features = ["serde", "v4"] }
-diesel={version = "2.2.0" , features = ["postgres"]}
+uuid = { version = "1", features = ["serde", "v4", "v7"] }
+utoipa = { version = "5.5.0", features = ["axum_extras"] }
+utoipa-axum = "0.2.0"
+utoipa-swagger-ui = { version = "9.0.2", features = ["axum"] }
+
+[features]
+default = []

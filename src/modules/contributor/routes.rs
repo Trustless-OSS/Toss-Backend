@@ -3,33 +3,16 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use serde::{Deserialize, Serialize};
 
 use crate::{
-    error::{require_db, AppError},
+    error::AppError,
     middleware::auth::AuthedUser,
-    modules::repo::repository::{get_contributor_by_github_id, upsert_contributor_wallet},
-    shared::models::{Assignment, Issue},
+    modules::contributor::model::{ConnectWalletBody, ContributorMeResponse, OkResponse},
+    modules::contributor::repository::{
+        get_contributor_by_github_id, list_assignments_for_contributor, upsert_contributor_wallet,
+    },
     state::AppState,
 };
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ConnectWalletBody {
-    wallet: String,
-    payout_chain: Option<String>,
-    payout_address: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-struct OkResponse {
-    ok: bool,
-}
-
-#[derive(Debug, Serialize)]
-struct ContributorMeResponse {
-    contributor: Option<serde_json::Value>,
-}
 
 async fn connect_wallet(
     State(state): State<AppState>,
@@ -69,22 +52,10 @@ async fn get_contributor_me(
         return Ok(Json(ContributorMeResponse { contributor: None }));
     };
 
-    let pool = require_db(&state.db)?;
-    let assignments =
-        sqlx::query_as::<_, Assignment>("SELECT * FROM assignments WHERE contributor_id = $1")
-            .bind(contributor.id)
-            .fetch_all(pool)
-            .await
-            .map_err(|error| AppError::database(error.to_string()))?;
+    let assignments = list_assignments_for_contributor(&state, contributor.id).await?;
 
     let mut assignment_rows = Vec::with_capacity(assignments.len());
-    for assignment in assignments {
-        let issue = sqlx::query_as::<_, Issue>("SELECT * FROM issues WHERE id = $1")
-            .bind(assignment.issue_id)
-            .fetch_optional(pool)
-            .await
-            .map_err(|error| AppError::database(error.to_string()))?;
-
+    for (assignment, issue) in assignments {
         assignment_rows.push(serde_json::json!({
             "id": assignment.id,
             "issue_id": assignment.issue_id,

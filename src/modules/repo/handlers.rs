@@ -44,6 +44,7 @@ pub(crate) struct UpdateRewardsBody {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SyncInstallationBody {
+    #[serde(alias = "installation_id")]
     installation_id: i64,
 }
 
@@ -167,4 +168,19 @@ pub(crate) async fn delete_repo(
     )
     .await?;
     Ok(Json(response))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SyncInstallationBody;
+
+    #[test]
+    fn sync_installation_body_accepts_camel_and_snake_case() {
+        let camel: SyncInstallationBody =
+            serde_json::from_str(r#"{"installationId": 153860735}"#).unwrap();
+        let snake: SyncInstallationBody =
+            serde_json::from_str(r#"{"installation_id": 153860735}"#).unwrap();
+        assert_eq!(camel.installation_id, 153860735);
+        assert_eq!(snake.installation_id, 153860735);
+    }
 }

@@ -8,7 +8,7 @@ use crate::{
         handle_issue_assigned, handle_issue_closed, handle_issue_comment_created,
         handle_issue_deleted, handle_issue_labeled, handle_issue_unassigned, handle_pr_merged,
     },
-    modules::repo::repository::{
+    modules::github::repository::{
         delete_repo_by_github_id, delete_repos_by_installation_id, upsert_installation_repo,
     },
     state::AppState,

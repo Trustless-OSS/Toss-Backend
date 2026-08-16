@@ -4,8 +4,9 @@ use tracing::info;
 use crate::{
     error::AppError,
     modules::{
+        bounty::repository::get_issue_by_repo_and_github_id,
         github::handlers::helpers::{cancel_bounty_with_refund, zero_milestone_on_chain},
-        repo::repository::{get_issue_by_repo_and_github_id, get_repo_by_github_id},
+        repo::repository::get_repo_by_github_id,
     },
     state::AppState,
 };
