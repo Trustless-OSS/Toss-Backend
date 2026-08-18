@@ -11,6 +11,31 @@ use tracing::{debug, error};
 use crate::infra::queue::{WebhookEnqueueOutcome, WebhookJobData};
 use crate::{error::AppError, state::AppState};
 
+/// Free-form GitHub webhook JSON payload.
+#[derive(utoipa::ToSchema)]
+pub struct GitHubWebhookPayload(serde_json::Value);
+
+#[utoipa::path(
+    post,
+    path = "/api/webhooks/github",
+    tag = "GitHub",
+    params(
+        ("X-Hub-Signature-256" = String, Header, description = "HMAC SHA-256 signature (`sha256=<hex>`) of the raw body using `GITHUB_WEBHOOK_SECRET`"),
+        ("X-GitHub-Event" = String, Header, description = "GitHub event name, e.g. `issues`, `pull_request`, `installation`"),
+        ("X-GitHub-Delivery" = Option<String>, Header, description = "Unique delivery ID used for enqueue deduplication")
+    ),
+    request_body(
+        content = GitHubWebhookPayload,
+        description = "Raw GitHub webhook JSON payload",
+        content_type = "application/json"
+    ),
+    responses(
+        (status = 202, description = "Webhook accepted (queued or processed inline)"),
+        (status = 400, description = "Invalid JSON body", body = crate::error::ErrorResponse),
+        (status = 401, description = "Invalid webhook signature", body = crate::error::ErrorResponse),
+        (status = 500, description = "Failed to enqueue or process webhook", body = crate::error::ErrorResponse)
+    )
+)]
 pub async fn handle_github_webhook(
     State(state): State<AppState>,
     headers: HeaderMap,

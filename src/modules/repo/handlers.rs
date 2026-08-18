@@ -5,10 +5,11 @@ use axum::{
 };
 use rust_decimal::Decimal;
 use serde::Deserialize;
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::{
-    error::AppError,
+    error::{AppError, ErrorResponse},
     middleware::auth::AuthedUser,
     modules::repo::{
         model::{
@@ -18,13 +19,13 @@ use crate::{
         service,
     },
     shared::{
-        models::Repo,
+        models::{domain::IssueWithRelations, Repo},
         pagination::{PaginatedQuery, PaginatedResponse, PaginationQuery},
     },
     state::AppState,
 };
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ConnectRepoBody {
     github_repo_id: i64,
@@ -34,14 +35,14 @@ pub(crate) struct ConnectRepoBody {
     gh_token: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub(crate) struct UpdateRewardsBody {
     reward_low: Decimal,
     reward_medium: Decimal,
     reward_high: Decimal,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SyncInstallationBody {
     #[serde(alias = "installation_id")]
@@ -63,6 +64,18 @@ fn resolve_webhook_url(state: &AppState, headers: &HeaderMap) -> String {
         .unwrap_or_else(|| "https://smee.io/trustless-oss-dev-webhook".to_string())
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/repos",
+    tag = "Repos",
+    security(("bearer_auth" = [])),
+    params(PaginationQuery),
+    responses(
+        (status = 200, description = "Repositories visible to the authenticated GitHub user", body = PaginatedResponse<Repo>),
+        (status = 401, description = "Missing or invalid bearer token", body = ErrorResponse),
+        (status = 500, description = "Failed to list repositories", body = ErrorResponse)
+    )
+)]
 pub(crate) async fn list_repos(
     State(state): State<AppState>,
     user: AuthedUser,
@@ -81,6 +94,18 @@ pub(crate) async fn list_repos(
     Ok(Json(response))
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/repos/connect",
+    tag = "Repos",
+    security(("bearer_auth" = [])),
+    request_body = ConnectRepoBody,
+    responses(
+        (status = 200, description = "Repository connected (webhook install attempted)", body = RepoResponse),
+        (status = 401, description = "Missing or invalid bearer token", body = ErrorResponse),
+        (status = 500, description = "Failed to connect repository", body = ErrorResponse)
+    )
+)]
 pub(crate) async fn connect_repo(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -99,6 +124,18 @@ pub(crate) async fn connect_repo(
     Ok(Json(response))
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/repos/sync-installation",
+    tag = "Repos",
+    security(("bearer_auth" = [])),
+    request_body = SyncInstallationBody,
+    responses(
+        (status = 200, description = "GitHub App installation repositories synced", body = SyncInstallationResult),
+        (status = 401, description = "Missing or invalid bearer token", body = ErrorResponse),
+        (status = 500, description = "Failed to sync installation", body = ErrorResponse)
+    )
+)]
 pub(crate) async fn sync_installation(
     State(state): State<AppState>,
     user: AuthedUser,
@@ -112,6 +149,19 @@ pub(crate) async fn sync_installation(
     Ok(Json(response))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/repos/{repoId}/issues",
+    tag = "Repos",
+    params(
+        ("repoId" = Uuid, Path, description = "Repository UUID"),
+        PaginationQuery
+    ),
+    responses(
+        (status = 200, description = "Paginated issues for the repository", body = PaginatedResponse<IssueWithRelations>),
+        (status = 500, description = "Failed to list issues", body = ErrorResponse)
+    )
+)]
 pub(crate) async fn list_issues(
     State(state): State<AppState>,
     Path(repo_id): Path<Uuid>,
@@ -121,6 +171,19 @@ pub(crate) async fn list_issues(
     Ok(Json(response))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/repos/{repoId}",
+    tag = "Repos",
+    security(("bearer_auth" = [])),
+    params(("repoId" = Uuid, Path, description = "Repository UUID")),
+    responses(
+        (status = 200, description = "Repository details and escrow capability flags", body = RepoDetails),
+        (status = 401, description = "Missing or invalid bearer token", body = ErrorResponse),
+        (status = 404, description = "Repository not found", body = ErrorResponse),
+        (status = 500, description = "Failed to load repository", body = ErrorResponse)
+    )
+)]
 pub(crate) async fn repo_details(
     State(state): State<AppState>,
     user: AuthedUser,
@@ -137,6 +200,22 @@ pub(crate) async fn repo_details(
     Ok(Json(response))
 }
 
+#[utoipa::path(
+    put,
+    path = "/api/repos/{repoId}/rewards",
+    tag = "Repos",
+    security(("bearer_auth" = [])),
+    params(("repoId" = Uuid, Path, description = "Repository UUID")),
+    request_body = UpdateRewardsBody,
+    responses(
+        (status = 200, description = "Reward tiers updated", body = RepoResponse),
+        (status = 400, description = "Invalid reward amounts", body = ErrorResponse),
+        (status = 401, description = "Missing or invalid bearer token", body = ErrorResponse),
+        (status = 403, description = "Caller is not a maintainer", body = ErrorResponse),
+        (status = 404, description = "Repository not found", body = ErrorResponse),
+        (status = 500, description = "Failed to update rewards", body = ErrorResponse)
+    )
+)]
 pub(crate) async fn update_rewards(
     State(state): State<AppState>,
     user: AuthedUser,
@@ -154,6 +233,20 @@ pub(crate) async fn update_rewards(
     Ok(Json(response))
 }
 
+#[utoipa::path(
+    delete,
+    path = "/api/repos/{repoId}",
+    tag = "Repos",
+    security(("bearer_auth" = [])),
+    params(("repoId" = Uuid, Path, description = "Repository UUID")),
+    responses(
+        (status = 200, description = "Repository disconnected", body = OkResponse),
+        (status = 401, description = "Missing or invalid bearer token", body = ErrorResponse),
+        (status = 403, description = "Caller is not a maintainer", body = ErrorResponse),
+        (status = 404, description = "Repository not found", body = ErrorResponse),
+        (status = 500, description = "Failed to delete repository", body = ErrorResponse)
+    )
+)]
 pub(crate) async fn delete_repo(
     State(state): State<AppState>,
     user: AuthedUser,

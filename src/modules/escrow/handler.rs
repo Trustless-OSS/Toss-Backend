@@ -11,7 +11,7 @@ use rust_decimal::Decimal;
 use tracing::error;
 
 use crate::{
-    error::AppError,
+    error::{AppError, ErrorResponse},
     middleware::auth::AuthedUser,
     modules::{
         bounty::repository::list_issues_to_cancel,
@@ -30,6 +30,20 @@ use crate::{
     state::AppState,
 };
 
+#[utoipa::path(
+    post,
+    path = "/api/escrow/create-unsigned",
+    tag = "Escrow",
+    security(("bearer_auth" = [])),
+    request_body = CreateEscrowBody,
+    responses(
+        (status = 200, description = "Unsigned escrow deploy transaction", body = UnsignedTransactionResponse),
+        (status = 401, description = "Missing or invalid bearer token", body = ErrorResponse),
+        (status = 403, description = "Caller is not a maintainer", body = ErrorResponse),
+        (status = 404, description = "Repository not found", body = ErrorResponse),
+        (status = 500, description = "Failed to create unsigned deploy transaction", body = ErrorResponse)
+    )
+)]
 pub async fn create_escrow_unsigned(
     State(state): State<AppState>,
     user: AuthedUser,
@@ -53,6 +67,19 @@ pub async fn create_escrow_unsigned(
     }))
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/escrow/submit-deploy",
+    tag = "Escrow",
+    security(("bearer_auth" = [])),
+    request_body = SubmitDeployBody,
+    responses(
+        (status = 200, description = "Escrow contract deployed", body = ContractIdResponse),
+        (status = 401, description = "Missing or invalid bearer token", body = ErrorResponse),
+        (status = 403, description = "Caller is not a maintainer", body = ErrorResponse),
+        (status = 500, description = "Failed to submit deploy transaction", body = ErrorResponse)
+    )
+)]
 pub async fn submit_deploy(
     State(state): State<AppState>,
     user: AuthedUser,
@@ -69,6 +96,20 @@ pub async fn submit_deploy(
     Ok(Json(ContractIdResponse { contract_id }))
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/escrow/fund-unsigned",
+    tag = "Escrow",
+    security(("bearer_auth" = [])),
+    request_body = FundEscrowBody,
+    responses(
+        (status = 200, description = "Unsigned escrow fund transaction", body = UnsignedTransactionResponse),
+        (status = 400, description = "Invalid amount, wallet, or escrow state", body = ErrorResponse),
+        (status = 401, description = "Missing or invalid bearer token", body = ErrorResponse),
+        (status = 403, description = "Caller is not a maintainer", body = ErrorResponse),
+        (status = 500, description = "Failed to create unsigned fund transaction", body = ErrorResponse)
+    )
+)]
 pub async fn fund_unsigned(
     State(state): State<AppState>,
     user: AuthedUser,
@@ -112,6 +153,18 @@ pub async fn fund_unsigned(
     }))
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/escrow/submit-fund",
+    tag = "Escrow",
+    security(("bearer_auth" = [])),
+    request_body = SubmitFundBody,
+    responses(
+        (status = 200, description = "Fund transaction submitted and local balance updated", body = SubmitFundResponse),
+        (status = 401, description = "Missing or invalid bearer token", body = ErrorResponse),
+        (status = 500, description = "Failed to submit fund transaction", body = ErrorResponse)
+    )
+)]
 pub async fn submit_fund(
     State(state): State<AppState>,
     _user: AuthedUser,
@@ -143,6 +196,21 @@ pub async fn submit_fund(
     }
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/escrow/refund",
+    tag = "Escrow",
+    security(("bearer_auth" = [])),
+    request_body = RefundEscrowBody,
+    responses(
+        (status = 200, description = "Escrow refunded and open bounties cancelled", body = RefundResponse),
+        (status = 400, description = "Escrow has no recorded funding wallet", body = ErrorResponse),
+        (status = 401, description = "Missing or invalid bearer token", body = ErrorResponse),
+        (status = 403, description = "Caller is not a maintainer", body = ErrorResponse),
+        (status = 404, description = "Repository or escrow not found", body = ErrorResponse),
+        (status = 500, description = "Failed to refund escrow", body = ErrorResponse)
+    )
+)]
 pub async fn refund(
     State(state): State<AppState>,
     user: AuthedUser,
@@ -190,6 +258,20 @@ pub async fn refund(
     }))
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/escrow/close-unsigned",
+    tag = "Escrow",
+    security(("bearer_auth" = [])),
+    request_body = CloseEscrowBody,
+    responses(
+        (status = 200, description = "Unsigned escrow close transaction", body = UnsignedTransactionResponse),
+        (status = 400, description = "No escrow deployed for this repository", body = ErrorResponse),
+        (status = 401, description = "Missing or invalid bearer token", body = ErrorResponse),
+        (status = 403, description = "Caller is not a maintainer", body = ErrorResponse),
+        (status = 500, description = "Failed to create unsigned close transaction", body = ErrorResponse)
+    )
+)]
 pub async fn close_unsigned(
     State(state): State<AppState>,
     user: AuthedUser,
@@ -217,6 +299,19 @@ pub async fn close_unsigned(
     }))
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/escrow/submit-close",
+    tag = "Escrow",
+    security(("bearer_auth" = [])),
+    request_body = SubmitCloseBody,
+    responses(
+        (status = 200, description = "Escrow close transaction submitted", body = OkResponse),
+        (status = 401, description = "Missing or invalid bearer token", body = ErrorResponse),
+        (status = 403, description = "Caller is not a maintainer", body = ErrorResponse),
+        (status = 500, description = "Failed to submit close transaction", body = ErrorResponse)
+    )
+)]
 pub async fn submit_close(
     State(state): State<AppState>,
     user: AuthedUser,
