@@ -1,5 +1,7 @@
 use crate::error::AppError;
 
+const DEFAULT_ALLOWED_ORIGINS: [&str; 1] = ["http://localhost:3000"];
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub port: u16,
@@ -134,4 +136,57 @@ fn first_env(names: &[&str]) -> Result<String, crate::error::AppError> {
                 names.join(" or ")
             ))
         })
+}
+
+pub fn parse_cors_allowed_origins(raw: &str) -> Vec<String> {
+    let values: Vec<String> = raw
+        .split(',')
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+        .map(|entry| entry.to_string())
+        .collect();
+
+    if values.is_empty() {
+        DEFAULT_ALLOWED_ORIGINS
+            .into_iter()
+            .map(str::to_string)
+            .collect()
+    } else {
+        values
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_cors_allowed_origins;
+
+    #[test]
+    fn parses_comma_separated_allowed_origins() {
+        let origins = parse_cors_allowed_origins(
+            "https://trustless-oss.vercel.app, https://www.trustless-oss.vercel.app, http://localhost:3000",
+        );
+
+        assert_eq!(
+            origins,
+            vec![
+                "https://trustless-oss.vercel.app".to_string(),
+                "https://www.trustless-oss.vercel.app".to_string(),
+                "http://localhost:3000".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn falls_back_to_default_frontend_origins_when_env_missing() {
+        let origins = parse_cors_allowed_origins("");
+
+        assert_eq!(origins, vec!["http://localhost:3000".to_string()]);
+    }
+
+    #[test]
+    fn uses_app_url_when_cors_env_is_missing() {
+        let origins = parse_cors_allowed_origins("http://localhost:3000");
+
+        assert_eq!(origins, vec!["http://localhost:3000".to_string()]);
+    }
 }
