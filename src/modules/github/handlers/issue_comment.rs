@@ -4,6 +4,7 @@ use tracing::{error, info};
 
 use crate::{
     error::AppError,
+    infra::queue::BountyJobData,
     modules::{
         bounty::repository::{
             create_issue_and_reserve_balance, get_assignment_for_issue,
@@ -13,15 +14,14 @@ use crate::{
         },
         contributor::repository::get_contributor_by_github_id,
         escrow::repository::refund_repo_balance,
-        escrow::service::{push_milestone_on_chain, release_escrow_milestone},
         github::{
             auth::post_comment,
             handlers::helpers::{
-                cancel_bounty_with_refund, dispute_milestone, explorer_tx_url,
-                extract_issue_number, extract_manual_amount, is_help_command,
-                is_privileged_association, is_reject_command, is_retry_command, is_wallet_command,
-                maintainer_github_id, refresh_repo, resolve_milestone_dispute, split_amounts,
-                sync_repo_balance, work_completion_percentage,
+                cancel_bounty_with_refund, dispute_milestone, extract_issue_number,
+                extract_manual_amount, is_help_command, is_privileged_association,
+                is_reject_command, is_retry_command, is_wallet_command, maintainer_github_id,
+                refresh_repo, resolve_milestone_dispute, split_amounts, sync_repo_balance,
+                work_completion_percentage,
             },
         },
         repo::repository::get_repo_by_github_id,
@@ -101,7 +101,7 @@ pub async fn handle_issue_comment_created(
              - `@Trustless-OSS <amount>`: Set a manual bounty\n\
              - `@Trustless-OSS /pay <percentage>`: Split bounty on merge\n\
              - `@Trustless-OSS /reject`: Reject work and refund the escrow\n\
-             - `@Trustless-OSS /retry`: Retry a failed payout\n\n\
+             - `@Trustless-OSS /retry`: Force a re-check (rarely needed — payouts continue automatically)\n\n\
              **For Contributors:**\n\
              - `@Trustless-OSS /wallet`: Connect or update your wallet\n\n\
              **General:**\n\
@@ -118,7 +118,6 @@ pub async fn handle_issue_comment_created(
             full_name,
             github_issue_id,
             issue_number,
-            issue_payload.get("state").and_then(Value::as_str),
         )
         .await?;
         return Ok(());
@@ -329,126 +328,46 @@ async fn handle_payout_command(
     Ok(())
 }
 
+/// Emergency `@Trustless-OSS /retry` command.
+///
+/// Automation no longer depends on this: every documented step advances on its
+/// own and transient failures retry with backoff. The command survives as a
+/// maintainer escape hatch, and all it does is ask the state machine to run now
+/// against live rules.
 async fn retry_bounty(
     state: &AppState,
     repo_github_id: i64,
     full_name: &str,
     github_issue_id: i64,
     issue_number: i32,
-    github_state: Option<&str>,
 ) -> Result<(), AppError> {
     let Some(repo) = get_repo_by_github_id(state, repo_github_id).await? else {
         return Ok(());
     };
-    let Some(mut issue) = get_issue_by_repo_and_github_id(state, repo.id, github_issue_id).await?
+    let Some(issue) = get_issue_by_repo_and_github_id(state, repo.id, github_issue_id).await?
     else {
         return Ok(());
     };
-    let Some((assignment, contributor)) = get_assignment_for_issue(state, issue.id).await? else {
-        post_comment(
-            state,
-            full_name,
-            issue_number,
-            "⚠️ Cannot retry: No contributor is assigned.",
-        )
+
+    let outcome = state
+        .queue
+        .enqueue_advance_issue(BountyJobData::new(issue.id, "comment-retry").notifying())
         .await?;
-        return Ok(());
-    };
 
-    if issue.status == "completed" && assignment.payout_status == "released" {
-        post_comment(
-            state,
-            full_name,
-            issue_number,
-            "ℹ️ The bounty has already been successfully released.",
-        )
-        .await?;
-        return Ok(());
-    }
+    info!(
+        issue = issue_number,
+        outcome = outcome.label(),
+        "manual retry command received"
+    );
 
-    if issue.status == "pending" {
-        let Some(contributor) = contributor.as_ref() else {
-            return Ok(());
-        };
-        let Some(payout_address) = contributor
-            .payout_address
-            .as_deref()
-            .or(contributor.stellar_wallet.as_deref())
-        else {
-            post_comment(
-                state,
-                full_name,
-                issue_number,
-                "⚠️ Cannot retry: Contributor has not connected a wallet yet.",
-            )
-            .await?;
-            return Ok(());
-        };
-        let payout_chain = contributor.payout_chain.as_deref().unwrap_or("stellar");
-        if let Err(error) =
-            push_milestone_on_chain(state, &repo, &issue, payout_address, payout_chain).await
-        {
-            post_comment(
-                state,
-                full_name,
-                issue_number,
-                &format!("⚠️ Failed to push milestone on-chain: {error}"),
-            )
-            .await?;
-            return Ok(());
-        }
-        let Some(updated) = refresh_repo_issue(state, &issue).await? else {
-            return Ok(());
-        };
-        issue = updated;
-    }
-
-    if issue.status != "active" {
-        return Ok(());
-    }
-    if github_state != Some("closed") {
-        post_comment(
-            state,
-            full_name,
-            issue_number,
-            "⚠️ Cannot release funds: Issue or PR is not closed yet.",
-        )
-        .await?;
-        return Ok(());
-    }
-
-    match release_escrow_milestone(state, &repo, &issue).await {
-        Ok(tx_hash) => {
-            update_assignment_payout_status(state, assignment.id, "released").await?;
-            update_issue_status(state, issue.id, "completed", None).await?;
-            let username = contributor
-                .as_ref()
-                .map(|value| value.github_username.as_str())
-                .unwrap_or("contributor");
-            let contract_id = repo.escrow_contract_id.as_deref().unwrap_or("");
-            let explorer_url = explorer_tx_url(state, &tx_hash, contract_id);
-            post_comment(
-                state,
-                full_name,
-                issue_number,
-                &format!(
-                    "🎉 **Bounty Released (Retry Successful)!**\n\n**{} USDC** has been sent to @{username}.\n\n[View on Stellar Explorer →]({explorer_url})",
-                    issue.reward_amount
-                ),
-            )
-            .await?;
-        }
-        Err(error) => {
-            update_assignment_payout_status(state, assignment.id, "failed").await?;
-            post_comment(
-                state,
-                full_name,
-                issue_number,
-                &format!("⚠️ Retry failed: {error}"),
-            )
-            .await?;
-        }
-    }
+    post_comment(
+        state,
+        full_name,
+        issue_number,
+        "🔄 Re-checking this bounty now. Note that you should not normally need this — \
+         the payout continues by itself once its conditions are met.",
+    )
+    .await?;
 
     Ok(())
 }

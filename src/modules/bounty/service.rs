@@ -2,23 +2,22 @@ use axum::{
     extract::{Path, State},
     Json,
 };
-use tracing::error;
+use tracing::info;
 use uuid::Uuid;
 
 use crate::{
     error::AppError,
+    infra::queue::{BountyJobData, EnqueueOutcome},
     middleware::auth::AuthedUser,
     modules::{
         bounty::{
+            automation,
             model::{Milestone, MilestoneResponse, RetryIssueResponse},
             repository::{
-                get_assignment_for_issue, get_issue_by_repo_and_github_id, get_issue_with_repo,
-                is_assigned_contributor, update_assignment_payout_status, update_issue_status,
+                get_issue_by_repo_and_github_id, get_issue_with_repo, is_assigned_contributor,
             },
         },
         contributor::repository::upsert_contributor_wallet,
-        escrow::service::{push_milestone_on_chain, release_escrow_milestone},
-        github::auth::{fetch_github_issue_state, post_comment},
         repo::repository::{get_repo_by_github_id, is_maintainer},
     },
     state::AppState,
@@ -28,6 +27,11 @@ use crate::{
 pub struct BountyService;
 
 impl BountyService {
+    /// Save the contributor's payout wallet and let the automation take over.
+    ///
+    /// The on-chain milestone is pushed by the `push-milestone` worker, which
+    /// re-checks the rules first. When no queue is available the push happens
+    /// inline so the endpoint keeps working in a degraded deployment.
     pub async fn push_milestone(
         State(state): State<AppState>,
         user: AuthedUser,
@@ -75,17 +79,20 @@ impl BountyService {
             ));
         }
 
-        push_milestone_on_chain(&state, &repo, &issue, &payout_address, &payout_chain).await?;
+        let outcome = state
+            .queue
+            .enqueue_advance_issue(BountyJobData::new(issue.id, "milestone-push-requested"))
+            .await?;
 
-        let comment = format!(
-        "✅ **Wallet Connected!** Bounty of **{} USDC** is now locked in escrow. Merge the PR to release the funds.",
-        issue.reward_amount
-    );
-        if let Err(error) =
-            post_comment(&state, &repo.full_name, issue.github_issue_number, &comment).await
-        {
-            error!(%error, "failed to post comment after wallet connect");
+        if outcome == EnqueueOutcome::Unavailable {
+            advance_inline(&state, issue.id).await?;
         }
+
+        info!(
+            issue = issue.github_issue_number,
+            outcome = outcome.label(),
+            "wallet connected; bounty automation queued"
+        );
 
         Ok(Json(MilestoneResponse {
             ok: true,
@@ -94,6 +101,12 @@ impl BountyService {
         }))
     }
 
+    /// Emergency maintainer override.
+    ///
+    /// The documented happy path never needs this: every step advances by itself
+    /// and transient failures retry with backoff. It stays as an admin escape
+    /// hatch, and it does nothing more than ask the state machine to run now —
+    /// the same rules still gate any movement of funds.
     pub async fn retry_issue(
         State(state): State<AppState>,
         user: AuthedUser,
@@ -109,65 +122,73 @@ impl BountyService {
             ));
         }
 
-        let (assignment, contributor) = get_assignment_for_issue(&state, issue.id)
-            .await?
-            .ok_or_else(|| AppError::bad_request("No assignment found"))?;
+        let outcome = state
+            .queue
+            .enqueue_advance_issue(BountyJobData::new(issue.id, "manual-retry"))
+            .await?;
 
-        if issue.status == "pending" {
-            let contributor = contributor.ok_or_else(|| {
-                AppError::bad_request("Contributor has not connected a wallet yet")
-            })?;
-
-            let payout_address = contributor
-                .payout_address
-                .as_deref()
-                .or(contributor.stellar_wallet.as_deref())
-                .ok_or_else(|| {
-                    AppError::bad_request("Contributor has not connected a wallet yet")
-                })?;
-            let payout_chain = contributor.payout_chain.as_deref().unwrap_or("stellar");
-
-            push_milestone_on_chain(&state, &repo, &issue, payout_address, payout_chain).await?;
-
+        if outcome == EnqueueOutcome::Unavailable {
+            advance_inline(&state, issue.id).await?;
             return Ok(Json(RetryIssueResponse {
                 ok: true,
-                step: Some("pushed"),
-                status: Some("active"),
-                tx_hash: None,
-                message: None,
-            }));
-        }
-
-        if issue.status == "active" {
-            let gh_state =
-                fetch_github_issue_state(&state, &repo.full_name, issue.github_issue_number)
-                    .await?;
-
-            if gh_state != "closed" {
-                return Err(AppError::bad_request(
-                    "This issue is still open on GitHub. Please close it or merge the PR first.",
-                ));
-            }
-
-            let tx_hash = release_escrow_milestone(&state, &repo, &issue).await?;
-            update_assignment_payout_status(&state, assignment.id, "released").await?;
-            update_issue_status(&state, issue.id, "completed", None).await?;
-
-            return Ok(Json(RetryIssueResponse {
-                ok: true,
-                step: Some("released"),
+                step: Some("applied"),
                 status: None,
-                tx_hash: Some(tx_hash),
-                message: None,
+                tx_hash: None,
+                message: Some("Queue unavailable; the next step was applied inline"),
             }));
         }
+
+        info!(
+            issue = issue.github_issue_number,
+            outcome = outcome.label(),
+            "manual retry requested"
+        );
 
         Ok(Json(RetryIssueResponse {
             ok: true,
-            step: None,
+            step: Some("queued"),
             status: None,
             tx_hash: None,
-            message: Some("Process is already up to date"),
+            message: Some("The bounty state machine will run shortly"),
         }))
     }
+}
+
+/// Run one state-machine step without a queue.
+///
+/// Only reached when Redis is unreachable. The rules are identical to the ones
+/// the workers apply, so this cannot pay out anything the queue would not.
+async fn advance_inline(state: &AppState, issue_id: Uuid) -> Result<(), AppError> {
+    use automation::Decision;
+
+    let Some(ctx) = automation::load_context(state, issue_id).await? else {
+        return Ok(());
+    };
+
+    match automation::evaluate(state, &ctx).await? {
+        Decision::PushMilestone {
+            payout_address,
+            payout_chain,
+        } => {
+            automation::push_milestone(state, &ctx, &payout_address, &payout_chain).await?;
+        }
+        Decision::ReleasePayout {
+            milestone_index,
+            split_percentage,
+        } => {
+            automation::release_payout(state, &ctx, milestone_index, split_percentage).await?;
+        }
+        Decision::RepairDatabase { milestone_index } => {
+            automation::repair_database(state, &ctx, milestone_index).await?;
+        }
+        decision => {
+            info!(
+                issue = ctx.issue.github_issue_number,
+                decision = decision.label(),
+                "inline advance had nothing to do"
+            );
+        }
+    }
+
+    Ok(())
 }
