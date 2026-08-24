@@ -9,6 +9,12 @@ pub struct Config {
     pub node_env: String,
     pub database_url: String,
     pub redis_url: String,
+    /// Redis key prefix for every BullMQ queue (`bull` matches the BullMQ default).
+    pub bullmq_prefix: String,
+    /// How many jobs each BullMQ worker processes concurrently.
+    pub bullmq_concurrency: usize,
+    /// Interval of the repeating `escrow-balance-sync` job scheduler.
+    pub escrow_sync_interval_secs: u64,
     pub supabase_url: String,
     pub supabase_auth_api_key: String,
     pub github_app_id: String,
@@ -50,6 +56,9 @@ impl Config {
             node_env,
             database_url: required_env("DATABASE_URL")?,
             redis_url: required_env("REDIS_URL")?,
+            bullmq_prefix: optional_env("BULLMQ_PREFIX").unwrap_or_else(|| "bull".to_string()),
+            bullmq_concurrency: optional_parsed("BULLMQ_CONCURRENCY")?.unwrap_or(4),
+            escrow_sync_interval_secs: optional_parsed("ESCROW_SYNC_INTERVAL_SECS")?.unwrap_or(60),
             supabase_url: required_env("SUPABASE_URL")?,
             supabase_auth_api_key: first_env(&[
                 "SUPABASE_PUBLISHABLE_KEY",
@@ -83,6 +92,29 @@ impl Config {
 
     pub fn is_mainnet(&self) -> bool {
         self.stellar_network.eq_ignore_ascii_case("mainnet")
+    }
+}
+
+fn optional_env(name: &str) -> Option<String> {
+    match std::env::var(name) {
+        Ok(value) if !value.trim().is_empty() => Some(value.trim().to_string()),
+        _ => None,
+    }
+}
+
+/// Read an optional environment variable and parse it, rejecting malformed values
+/// instead of silently falling back to the default.
+fn optional_parsed<T>(name: &str) -> Result<Option<T>, crate::error::AppError>
+where
+    T: std::str::FromStr,
+{
+    match optional_env(name) {
+        None => Ok(None),
+        Some(value) => value.parse::<T>().map(Some).map_err(|_| {
+            crate::error::AppError::env_var_error(format!(
+                "Invalid value for environment variable: {name}"
+            ))
+        }),
     }
 }
 
