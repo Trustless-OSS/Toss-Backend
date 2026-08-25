@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 
 use tokio::net::TcpListener;
-use tracing::info;
+use tracing::{error, info};
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
@@ -22,8 +22,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("running database migrations");
     infra::db::apply_migrations(&state.db).await?;
 
-    infra::queue::start_workers(state.clone()).await;
-    infra::queue::start_scheduler(state.clone());
+    // Workers start only after migrations, so a job never runs against a schema
+    // that has not been brought up to date yet.
+    let workers = infra::queue::start_workers(state.clone()).await?;
+    if let Err(error) = infra::queue::start_scheduler(&state).await {
+        error!(%error, "failed to register repeating jobs");
+    }
     info!("background workers started");
 
     let listener = TcpListener::bind(address).await?;
@@ -34,12 +38,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         address
     );
 
-    let app = app::build_app(state)
+    let app = app::build_app(state.clone())
         .merge(SwaggerUi::new("/swagger").url("/api-doc/openapi.json", ApiDoc::openapi()));
 
     axum::serve(listener, app)
         .with_graceful_shutdown(lifecycle::shutdown_signal())
         .await?;
+
+    // Drain in-flight jobs before the process exits; anything still queued is
+    // picked up on the next boot.
+    workers.shutdown().await;
+    state.queue.close().await;
 
     Ok(())
 }

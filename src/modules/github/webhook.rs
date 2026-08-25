@@ -46,7 +46,6 @@ pub async fn process_webhook_job(state: &AppState, job: WebhookJobData) -> Resul
     info!(
         event = %job.event,
         action,
-        attempt = job.attempts,
         "processing GitHub webhook"
     );
 

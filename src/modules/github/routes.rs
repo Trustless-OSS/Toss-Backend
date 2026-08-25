@@ -85,7 +85,6 @@ pub async fn handle_github_webhook(
         event: event.to_string(),
         action,
         payload,
-        attempts: 0,
     };
 
     if matches!(event, "installation" | "installation_repositories") {

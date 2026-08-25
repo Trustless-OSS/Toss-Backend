@@ -1,3 +1,4 @@
+pub mod automation;
 pub mod labels;
 pub mod model;
 pub mod repository;
