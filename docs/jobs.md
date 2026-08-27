@@ -65,12 +65,14 @@ Enqueueing is *ensure* semantics, not a blind `add`:
 | `completed` / `failed` | Remove it, then add — a permanently failed job must never wedge an issue shut |
 | `delayed` | **Promote** it, so a real event runs the parked re-check now instead of waiting out its delay |
 | `waiting` / `prioritized` | Nothing; a pass is already coming |
-| `active` | Set a dirty flag; the running worker re-evaluates before finishing |
+| `active` | Set a dirty flag; the running worker re-evaluates before finishing. After the job leaves `active`, a still-set flag is drained into another `advance-issue` so the event cannot vanish with the completed job. |
 
-That last row is what stops an event landing mid-job from being lost. The
+`get_job_state` and the matching `add` / `remove` / `promote` / `mark_dirty` run under a per-job Redis lock, so two producers cannot observe different states for the same id.
+
+That `active` row is what stops an event landing mid-job from being lost. The
 `advance-issue` worker clears the flag *before* reading state and re-checks it
 after acting, so anything that arrives during the pass earns another one (up to
-3 passes per job).
+3 passes per job). A late event that misses that loop is recovered by the drain.
 
 Completed webhook jobs are kept for 24 hours, so a GitHub redelivery of the same
 delivery id is recognised as a duplicate rather than reprocessed. A delivery that
@@ -102,7 +104,9 @@ Errors are classified in [`src/infra/jobs/mod.rs`](../src/infra/jobs/mod.rs):
 
 Failed jobs are kept for 7 days: `failed` *is* the dead-letter queue.
 
-BullMQ also recovers stalled jobs, so a worker killed mid-job does not strand it.
+BullMQ recovers stalled jobs: workers take a lock (`BULLMQ_LOCK_DURATION_MS`)
+and scan for expired locks (`BULLMQ_STALLED_INTERVAL_MS`). A killed worker stops
+renewing its lock, so the job cannot sit in `active` indefinitely.
 
 ---
 
@@ -240,8 +244,11 @@ completed bounty jobs are removed to free their per-issue id.
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `REDIS_URL` | — | Shared by the cache and every queue |
-| `BULLMQ_PREFIX` | `bull` | Redis key prefix for all queues |
+| `BULLMQ_PREFIX` | `bull` | Redis key prefix for all queues **and** dirty-flag keys |
 | `BULLMQ_CONCURRENCY` | `4` | Webhook worker concurrency (bounty is always 1) |
+| `BULLMQ_LOCK_DURATION_MS` | `30000` | How long a worker holds a job lock |
+| `BULLMQ_STALLED_INTERVAL_MS` | `30000` | How often workers scan for stalled `active` jobs |
+| `BULLMQ_MAX_STALLED_COUNT` | `1` | Stall recoveries before the job is failed |
 | `ESCROW_SYNC_INTERVAL_SECS` | `60` | Interval of the repeating sync job |
 
 If Redis is unreachable at boot the API still starts: the hub is disabled,
@@ -267,6 +274,11 @@ picked up on the next boot.
 - a delivery that failed permanently can still be revived by a redelivery, and an
   unrecoverable error reaches `failed` without burning its retry budget;
 - a burst of five events for one issue collapses to a single job;
+- concurrent enqueues for one issue still leave exactly one job;
+- dirty-flag keys include the BullMQ prefix, so two hubs do not share flags;
+- a dirty flag set while a job is completing is drained into a follow-up job;
+- a worker killed while a job is `active` does not leave it `active` past the
+  stall window;
 - separate issues do not share a job;
 - a real event promotes a parked re-check instead of waiting out its delay;
 - a job that parks *itself* via `move_to_delayed` keeps its id, consumes no

@@ -26,6 +26,14 @@
 //! - a job is *running* → set a dirty flag so the running worker re-evaluates
 //!   before it finishes, which is what stops an event that lands mid-job from
 //!   being silently lost.
+//! - after that job leaves `active`, the dirty flag is drained into a fresh
+//!   `advance-issue` so an event that arrived on the last `is_dirty` check
+//!   cannot disappear with the completed job.
+//!
+//! Enqueueing a bounty job takes a per-id Redis lock so `get_job_state` and the
+//! matching `add` / `remove` / `promote` / `mark_dirty` cannot interleave.
+//!
+//! Dirty-flag keys are namespaced with the same BullMQ prefix as the queues.
 //!
 //! [BullMQ for Rust]: https://docs.bullmq.io/rust/introduction
 
@@ -74,8 +82,12 @@ const WEBHOOK_KEEP_COMPLETED_MS: u64 = 24 * 60 * 60 * 1_000;
 /// Failed jobs are the dead-letter record; keep them long enough to inspect.
 const KEEP_FAILED_MS: u64 = 7 * 24 * 60 * 60 * 1_000;
 
-const DIRTY_FLAG_PREFIX: &str = "toss:advance:dirty:";
+const DIRTY_FLAG_SUFFIX: &str = "toss:advance:dirty:";
 const DIRTY_FLAG_TTL_SECS: u64 = 3_600;
+const ENQUEUE_LOCK_SUFFIX: &str = "toss:enqueue:";
+const ENQUEUE_LOCK_TTL_MS: u64 = 5_000;
+const ENQUEUE_LOCK_RETRIES: u32 = 40;
+const ENQUEUE_LOCK_WAIT: Duration = Duration::from_millis(25);
 
 /// How long a worker is given to finish in-flight jobs during shutdown.
 const WORKER_CLOSE_TIMEOUT_MS: u64 = 10_000;
@@ -207,6 +219,7 @@ struct Queues {
 pub struct QueueInfra {
     queues: Option<Arc<Queues>>,
     redis: Option<RedisClient>,
+    prefix: String,
 }
 
 impl QueueInfra {
@@ -218,6 +231,7 @@ impl QueueInfra {
         Self {
             queues: None,
             redis: None,
+            prefix: String::new(),
         }
     }
 
@@ -249,6 +263,7 @@ impl QueueInfra {
                     .map_err(queue_error)?,
             })),
             redis,
+            prefix: prefix.to_string(),
         })
     }
 
@@ -372,6 +387,23 @@ impl QueueInfra {
         data: BountyJobData,
         delay: Option<Duration>,
     ) -> Result<EnqueueOutcome, AppError> {
+        if self.queues.is_none() {
+            return Ok(EnqueueOutcome::Unavailable);
+        }
+
+        let job_id = format!("{job_name}:{}", data.issue_id);
+        self.with_enqueue_lock(&job_id, || {
+            self.enqueue_bounty_job_locked(job_name, data, delay)
+        })
+        .await
+    }
+
+    async fn enqueue_bounty_job_locked(
+        &self,
+        job_name: &str,
+        data: BountyJobData,
+        delay: Option<Duration>,
+    ) -> Result<EnqueueOutcome, AppError> {
         let Some(queues) = self.queues.as_ref() else {
             return Ok(EnqueueOutcome::Unavailable);
         };
@@ -434,10 +466,85 @@ impl QueueInfra {
         Ok(EnqueueOutcome::Enqueued)
     }
 
+    /// Serialise `get_job_state` with the matching mutate so two producers
+    /// cannot observe different states for the same job id.
+    async fn with_enqueue_lock<F, Fut>(
+        &self,
+        job_id: &str,
+        action: F,
+    ) -> Result<EnqueueOutcome, AppError>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Result<EnqueueOutcome, AppError>>,
+    {
+        let Some(token) = self.acquire_enqueue_lock(job_id).await? else {
+            return action().await;
+        };
+        let result = action().await;
+        self.release_enqueue_lock(job_id, &token).await?;
+        result
+    }
+
+    async fn acquire_enqueue_lock(&self, job_id: &str) -> Result<Option<String>, AppError> {
+        let Some(client) = self.redis.as_ref() else {
+            return Ok(None);
+        };
+        let key = self.enqueue_lock_key(job_id);
+        let token = Uuid::now_v7().to_string();
+
+        for _ in 0..ENQUEUE_LOCK_RETRIES {
+            let mut connection = client
+                .get_multiplexed_async_connection()
+                .await
+                .map_err(|error| AppError::internal(error.to_string()))?;
+            let acquired: Option<String> = redis::cmd("SET")
+                .arg(&key)
+                .arg(&token)
+                .arg("NX")
+                .arg("PX")
+                .arg(ENQUEUE_LOCK_TTL_MS)
+                .query_async(&mut connection)
+                .await
+                .map_err(|error| AppError::internal(error.to_string()))?;
+            if acquired.is_some() {
+                return Ok(Some(token));
+            }
+            tokio::time::sleep(ENQUEUE_LOCK_WAIT).await;
+        }
+
+        // Prefer sending the event without the lock over dropping it.
+        Ok(None)
+    }
+
+    async fn release_enqueue_lock(&self, job_id: &str, token: &str) -> Result<(), AppError> {
+        let Some(client) = self.redis.as_ref() else {
+            return Ok(());
+        };
+        let mut connection = client
+            .get_multiplexed_async_connection()
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        let _: () = redis::cmd("EVAL")
+            .arg(
+                "if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) else return 0 end",
+            )
+            .arg(1)
+            .arg(self.enqueue_lock_key(job_id))
+            .arg(token)
+            .query_async(&mut connection)
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        Ok(())
+    }
+
+    fn enqueue_lock_key(&self, job_id: &str) -> String {
+        format!("{}:{ENQUEUE_LOCK_SUFFIX}{job_id}", self.prefix)
+    }
+
     // ── Coalescing flag ──────────────────────────────────────────────────────
 
     /// Record that an issue changed while its job was running.
-    async fn mark_dirty(&self, issue_id: Uuid) -> Result<(), AppError> {
+    pub async fn mark_dirty(&self, issue_id: Uuid) -> Result<(), AppError> {
         let Some(client) = self.redis.as_ref() else {
             return Ok(());
         };
@@ -446,7 +553,7 @@ impl QueueInfra {
             .await
             .map_err(|error| AppError::internal(error.to_string()))?;
         connection
-            .set_ex::<_, _, ()>(dirty_key(issue_id), 1, DIRTY_FLAG_TTL_SECS)
+            .set_ex::<_, _, ()>(self.dirty_key(issue_id), 1, DIRTY_FLAG_TTL_SECS)
             .await
             .map_err(|error| AppError::internal(error.to_string()))
     }
@@ -462,7 +569,7 @@ impl QueueInfra {
             .await
             .map_err(|error| AppError::internal(error.to_string()))?;
         connection
-            .del::<_, ()>(dirty_key(issue_id))
+            .del::<_, ()>(self.dirty_key(issue_id))
             .await
             .map_err(|error| AppError::internal(error.to_string()))
     }
@@ -477,9 +584,69 @@ impl QueueInfra {
             .await
             .map_err(|error| AppError::internal(error.to_string()))?;
         connection
-            .exists::<_, bool>(dirty_key(issue_id))
+            .exists::<_, bool>(self.dirty_key(issue_id))
             .await
             .map_err(|error| AppError::internal(error.to_string()))
+    }
+
+    /// Atomically read and clear the dirty flag.
+    pub async fn take_dirty(&self, issue_id: Uuid) -> Result<bool, AppError> {
+        let Some(client) = self.redis.as_ref() else {
+            return Ok(false);
+        };
+        let mut connection = client
+            .get_multiplexed_async_connection()
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        let value: Option<String> = redis::cmd("GETDEL")
+            .arg(self.dirty_key(issue_id))
+            .query_async(&mut connection)
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        Ok(value.is_some())
+    }
+
+    /// If events landed while an `advance-issue` job was leaving `active`,
+    /// enqueue another pass so they are not lost.
+    pub async fn drain_dirty_advance(&self, issue_id: Uuid) -> Result<EnqueueOutcome, AppError> {
+        if !self.take_dirty(issue_id).await? {
+            return Ok(EnqueueOutcome::AlreadyPending);
+        }
+        self.enqueue_advance_issue(BountyJobData::new(issue_id, "dirty-drain"))
+            .await
+    }
+
+    /// Wait until `advance-issue:<id>` is no longer `active`, then drain.
+    ///
+    /// Called after the processor returns `Done` or `Delayed`. The job is still
+    /// `active` until BullMQ records the result, so this runs in the background.
+    pub fn schedule_dirty_drain(&self, issue_id: Uuid) {
+        let queue = self.clone();
+        tokio::spawn(async move {
+            queue.wait_until_advance_idle(issue_id).await;
+            if let Err(error) = queue.drain_dirty_advance(issue_id).await {
+                tracing::warn!(%error, %issue_id, "failed to drain dirty advance flag");
+            }
+        });
+    }
+
+    async fn wait_until_advance_idle(&self, issue_id: Uuid) {
+        let Some(queues) = self.queues.as_ref() else {
+            return;
+        };
+        let job_id = format!("{JOB_ADVANCE_ISSUE}:{issue_id}");
+        for _ in 0..100 {
+            match queues.bounty.get_job_state(&job_id).await {
+                Ok(bullmq::JobState::Active) => {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                _ => return,
+            }
+        }
+    }
+
+    pub fn dirty_key(&self, issue_id: Uuid) -> String {
+        dirty_key(&self.prefix, issue_id)
     }
 
     // ── Observability ────────────────────────────────────────────────────────
@@ -552,8 +719,8 @@ impl QueueInfra {
     }
 }
 
-fn dirty_key(issue_id: Uuid) -> String {
-    format!("{DIRTY_FLAG_PREFIX}{issue_id}")
+fn dirty_key(prefix: &str, issue_id: Uuid) -> String {
+    format!("{prefix}:{DIRTY_FLAG_SUFFIX}{issue_id}")
 }
 
 fn empty_counts() -> serde_json::Value {
@@ -614,12 +781,18 @@ pub async fn start_workers(state: AppState) -> Result<Workers, AppError> {
     let redis_url = state.config.redis_url.clone();
     let prefix = state.config.bullmq_prefix.clone();
     let concurrency = state.config.bullmq_concurrency.max(1);
+    let lock_duration = Duration::from_millis(state.config.bullmq_lock_duration_ms.max(1));
+    let stalled_interval = Duration::from_millis(state.config.bullmq_stalled_interval_ms.max(1));
+    let max_stalled_count = state.config.bullmq_max_stalled_count.max(1);
 
     let worker_options = |name: &str, concurrency: usize| {
         WorkerOptions::new()
             .name(name)
             .prefix(&prefix)
             .concurrency(concurrency)
+            .lock_duration(lock_duration)
+            .stalled_interval(stalled_interval)
+            .max_stalled_count(max_stalled_count)
             .connection(RedisConnectionOptions {
                 url: redis_url.clone(),
                 ..Default::default()
@@ -669,6 +842,9 @@ pub async fn start_workers(state: AppState) -> Result<Workers, AppError> {
         bounty = BOUNTY_QUEUE,
         sync = SYNC_QUEUE,
         concurrency,
+        lock_duration_ms = lock_duration.as_millis() as u64,
+        stalled_interval_ms = stalled_interval.as_millis() as u64,
+        max_stalled_count,
         "BullMQ workers started"
     );
 
@@ -779,5 +955,15 @@ mod tests {
         assert_eq!(data.recheck, 0);
         assert_eq!(data.hops, 0);
         assert!(!data.notify);
+    }
+
+    #[test]
+    fn dirty_keys_include_the_bullmq_prefix() {
+        let issue_id = Uuid::nil();
+        assert_eq!(
+            dirty_key("bull", issue_id),
+            format!("bull:toss:advance:dirty:{issue_id}")
+        );
+        assert_ne!(dirty_key("alpha", issue_id), dirty_key("beta", issue_id));
     }
 }

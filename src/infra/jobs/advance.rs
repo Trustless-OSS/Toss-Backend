@@ -47,6 +47,7 @@ pub(crate) async fn run_advance(
             hops = data.hops,
             "handoff budget exhausted; stopping instead of looping"
         );
+        state.queue.schedule_dirty_drain(issue_id);
         return Ok(JobOutcome::Done(
             serde_json::json!({ "skipped": "hop-budget-exhausted" }),
         ));
@@ -63,6 +64,7 @@ pub(crate) async fn run_advance(
 
         let Some(ctx) = automation::load_context(state, issue_id).await? else {
             info!(%issue_id, "issue no longer exists; advance job is a no-op");
+            state.queue.schedule_dirty_drain(issue_id);
             return Ok(JobOutcome::Done(
                 serde_json::json!({ "skipped": "issue-not-found" }),
             ));
@@ -94,6 +96,11 @@ pub(crate) async fn run_advance(
 
     if let Some(reason) = park_reason {
         if park(job, &data, &reason, issue_id, issue_number).await? {
+            // The job is already delayed, so a dirty flag can be turned into a
+            // promote instead of waiting for the timer.
+            if let Err(error) = state.queue.drain_dirty_advance(issue_id).await {
+                warn!(%error, %issue_id, "failed to drain dirty flag after parking");
+            }
             return Ok(JobOutcome::Delayed);
         }
     }
