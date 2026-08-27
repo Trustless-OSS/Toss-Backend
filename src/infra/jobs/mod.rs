@@ -13,8 +13,8 @@ use tracing::{error, info, warn};
 use crate::{
     error::AppError,
     infra::queue::{
-        JOB_ADVANCE_ISSUE, JOB_ESCROW_BALANCE_SYNC, JOB_GITHUB_WEBHOOK, JOB_PUSH_MILESTONE,
-        JOB_RELEASE_PAYOUT,
+        BountyJobData, JOB_ADVANCE_ISSUE, JOB_ESCROW_BALANCE_SYNC, JOB_GITHUB_WEBHOOK,
+        JOB_PUSH_MILESTONE, JOB_RELEASE_PAYOUT,
     },
     state::AppState,
 };
@@ -43,7 +43,18 @@ pub async fn process(
 
     let result = match name.as_str() {
         JOB_GITHUB_WEBHOOK => webhook::run(state, &job).await.map(JobOutcome::Done),
-        JOB_ADVANCE_ISSUE => advance::run_advance(state, &mut job).await,
+        JOB_ADVANCE_ISSUE => {
+            let issue_id = payload::<BountyJobData>(&job)
+                .ok()
+                .map(|data| data.issue_id);
+            let result = advance::run_advance(state, &mut job).await;
+            if let Some(issue_id) = issue_id {
+                if matches!(&result, Ok(JobOutcome::Done(_)) | Ok(JobOutcome::Delayed)) {
+                    state.queue.schedule_dirty_drain(issue_id);
+                }
+            }
+            result
+        }
         JOB_PUSH_MILESTONE => advance::run_push_milestone(state, &job)
             .await
             .map(JobOutcome::Done),

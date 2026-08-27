@@ -13,6 +13,12 @@ pub struct Config {
     pub bullmq_prefix: String,
     /// How many jobs each BullMQ worker processes concurrently.
     pub bullmq_concurrency: usize,
+    /// How long a worker holds a job lock before it can be considered stalled.
+    pub bullmq_lock_duration_ms: u64,
+    /// How often workers scan for stalled `active` jobs.
+    pub bullmq_stalled_interval_ms: u64,
+    /// How many times a stalled job is re-queued before it is failed.
+    pub bullmq_max_stalled_count: u32,
     /// Interval of the repeating `escrow-balance-sync` job scheduler.
     pub escrow_sync_interval_secs: u64,
     pub supabase_url: String,
@@ -58,6 +64,10 @@ impl Config {
             redis_url: required_env("REDIS_URL")?,
             bullmq_prefix: optional_env("BULLMQ_PREFIX").unwrap_or_else(|| "bull".to_string()),
             bullmq_concurrency: optional_parsed("BULLMQ_CONCURRENCY")?.unwrap_or(4),
+            bullmq_lock_duration_ms: optional_parsed("BULLMQ_LOCK_DURATION_MS")?.unwrap_or(30_000),
+            bullmq_stalled_interval_ms: optional_parsed("BULLMQ_STALLED_INTERVAL_MS")?
+                .unwrap_or(30_000),
+            bullmq_max_stalled_count: optional_parsed("BULLMQ_MAX_STALLED_COUNT")?.unwrap_or(1),
             escrow_sync_interval_secs: optional_parsed("ESCROW_SYNC_INTERVAL_SECS")?.unwrap_or(60),
             supabase_url: required_env("SUPABASE_URL")?,
             supabase_auth_api_key: first_env(&[

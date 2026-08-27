@@ -2,7 +2,8 @@
 //!
 //! These exercise the real Redis behaviour that the automation depends on:
 //! per-issue deduplication, promoting a parked re-check, the repeating scheduler
-//! and automatic retries with backoff.
+//! and automatic retries with backoff, plus concurrent enqueue, dirty-flag drain
+//! and stalled-job recovery.
 //!
 //! They are skipped when no Redis is reachable at `REDIS_URL` (default
 //! `redis://127.0.0.1:6379`), so `cargo test` still passes on a machine without
@@ -16,7 +17,7 @@ use bullmq::{
     JobOptions, Queue, Worker,
 };
 use toss_backend::infra::queue::{
-    BountyJobData, EnqueueOutcome, QueueInfra, WebhookEnqueueOutcome, WebhookJobData,
+    BountyJobData, EnqueueOutcome, QueueInfra, WebhookEnqueueOutcome, WebhookJobData, BOUNTY_QUEUE,
 };
 use uuid::Uuid;
 
@@ -42,6 +43,17 @@ async fn hub() -> Option<(QueueInfra, String)> {
         .await
         .ok()?;
     Some((queue, prefix))
+}
+
+async fn hub_with_prefix(prefix: &str) -> Option<QueueInfra> {
+    let url = redis_url();
+    let client = redis::Client::open(url.clone()).ok()?;
+    let mut connection = client.get_multiplexed_async_connection().await.ok()?;
+    redis::cmd("PING")
+        .query_async::<String>(&mut connection)
+        .await
+        .ok()?;
+    QueueInfra::connect(&url, prefix, Some(client)).await.ok()
 }
 
 /// Delete every key this test created.
@@ -495,6 +507,261 @@ async fn a_permanently_failed_delivery_can_be_revived_by_a_redelivery() {
     let stats = queue.stats().await.unwrap();
     assert_eq!(stats["webhooks"]["waiting"], 1);
     assert_eq!(stats["webhooks"]["failed"], 0);
+
+    cleanup(&prefix).await;
+}
+
+#[tokio::test]
+async fn concurrent_enqueues_for_one_issue_leave_exactly_one_job() {
+    let (queue, prefix) = skip_without_redis!();
+    let issue_id = Uuid::now_v7();
+
+    let mut tasks = Vec::new();
+    for i in 0..16 {
+        let queue = queue.clone();
+        tasks.push(tokio::spawn(async move {
+            queue
+                .enqueue_advance_issue(BountyJobData::new(issue_id, format!("burst-{i}")))
+                .await
+        }));
+    }
+
+    let mut outcomes = Vec::new();
+    for task in tasks {
+        outcomes.push(task.await.unwrap().unwrap());
+    }
+
+    let enqueued = outcomes
+        .iter()
+        .filter(|outcome| **outcome == EnqueueOutcome::Enqueued)
+        .count();
+    assert_eq!(enqueued, 1, "expected one winner, got {outcomes:?}");
+    assert!(outcomes.iter().all(|outcome| {
+        matches!(
+            outcome,
+            EnqueueOutcome::Enqueued | EnqueueOutcome::AlreadyPending
+        )
+    }));
+
+    let stats = queue.stats().await.unwrap();
+    let pending = stats["escrow-operations"]["waiting"].as_u64().unwrap_or(0)
+        + stats["escrow-operations"]["active"].as_u64().unwrap_or(0)
+        + stats["escrow-operations"]["delayed"].as_u64().unwrap_or(0);
+    assert_eq!(pending, 1, "concurrent enqueue dropped the job: {stats}");
+
+    cleanup(&prefix).await;
+}
+
+#[tokio::test]
+async fn dirty_flags_do_not_leak_across_bullmq_prefixes() {
+    let prefix_a = format!("toss-test-{}", Uuid::now_v7().simple());
+    let prefix_b = format!("toss-test-{}", Uuid::now_v7().simple());
+    let Some(queue_a) = hub_with_prefix(&prefix_a).await else {
+        eprintln!("skipping: no Redis at {}", redis_url());
+        return;
+    };
+    let Some(queue_b) = hub_with_prefix(&prefix_b).await else {
+        eprintln!("skipping: no Redis at {}", redis_url());
+        cleanup(&prefix_a).await;
+        return;
+    };
+
+    let issue_id = Uuid::now_v7();
+    queue_a.mark_dirty(issue_id).await.unwrap();
+
+    assert!(queue_a.is_dirty(issue_id).await.unwrap());
+    assert!(
+        !queue_b.is_dirty(issue_id).await.unwrap(),
+        "dirty keys must include the BullMQ prefix"
+    );
+    assert_ne!(queue_a.dirty_key(issue_id), queue_b.dirty_key(issue_id));
+
+    cleanup(&prefix_a).await;
+    cleanup(&prefix_b).await;
+}
+
+#[tokio::test]
+async fn a_dirty_flag_set_while_a_job_completes_is_drained_into_a_follow_up() {
+    let (queue, prefix) = skip_without_redis!();
+    let issue_id = Uuid::now_v7();
+    let connection = RedisConnectionOptions {
+        url: redis_url(),
+        ..Default::default()
+    };
+
+    let started = std::sync::Arc::new(tokio::sync::Notify::new());
+    let gate = std::sync::Arc::new(tokio::sync::Notify::new());
+    let worker_started = started.clone();
+    let worker_gate = gate.clone();
+
+    let worker = Worker::with_options(
+        BOUNTY_QUEUE,
+        move |_job: bullmq::Job, _token| {
+            let started = worker_started.clone();
+            let gate = worker_gate.clone();
+            async move {
+                started.notify_one();
+                gate.notified().await;
+                Ok(serde_json::json!({ "ok": true }))
+            }
+        },
+        WorkerOptions::new()
+            .prefix(&prefix)
+            .concurrency(1)
+            .connection(connection),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        queue
+            .enqueue_advance_issue(BountyJobData::new(issue_id, "first"))
+            .await
+            .unwrap(),
+        EnqueueOutcome::Enqueued
+    );
+
+    tokio::time::timeout(Duration::from_secs(5), started.notified())
+        .await
+        .expect("worker should pick up the job");
+
+    assert_eq!(
+        queue
+            .enqueue_advance_issue(BountyJobData::new(issue_id, "late-event"))
+            .await
+            .unwrap(),
+        EnqueueOutcome::Coalesced
+    );
+    assert!(queue.is_dirty(issue_id).await.unwrap());
+
+    gate.notify_one();
+
+    let mut idle = false;
+    for _ in 0..80 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let stats = queue.stats().await.unwrap();
+        let active = stats["escrow-operations"]["active"].as_u64().unwrap_or(0);
+        let waiting = stats["escrow-operations"]["waiting"].as_u64().unwrap_or(0);
+        if active == 0 && waiting == 0 {
+            idle = true;
+            break;
+        }
+    }
+    assert!(idle, "the first job should have left active");
+    assert!(
+        queue.is_dirty(issue_id).await.unwrap(),
+        "the late event must survive the completed job"
+    );
+
+    let drained = queue.drain_dirty_advance(issue_id).await.unwrap();
+    assert_eq!(drained, EnqueueOutcome::Enqueued);
+    assert!(!queue.is_dirty(issue_id).await.unwrap());
+
+    let stats = queue.stats().await.unwrap();
+    let pending = stats["escrow-operations"]["waiting"].as_u64().unwrap_or(0)
+        + stats["escrow-operations"]["active"].as_u64().unwrap_or(0)
+        + stats["escrow-operations"]["delayed"].as_u64().unwrap_or(0);
+    assert_eq!(pending, 1, "dirty drain must enqueue a follow-up: {stats}");
+
+    worker.close(2_000).await.unwrap();
+    cleanup(&prefix).await;
+}
+
+#[tokio::test]
+async fn a_killed_worker_does_not_leave_a_job_active_past_the_stall_window() {
+    let (queue, prefix) = skip_without_redis!();
+    let issue_id = Uuid::now_v7();
+    let connection = RedisConnectionOptions {
+        url: redis_url(),
+        ..Default::default()
+    };
+
+    let started = std::sync::Arc::new(tokio::sync::Notify::new());
+    let worker_started = started.clone();
+
+    let hanging = Worker::with_options(
+        BOUNTY_QUEUE,
+        move |_job: bullmq::Job, _token| {
+            let started = worker_started.clone();
+            async move {
+                started.notify_one();
+                std::future::pending::<Result<serde_json::Value, bullmq::Error>>().await
+            }
+        },
+        WorkerOptions::new()
+            .prefix(&prefix)
+            .concurrency(1)
+            .lock_duration(Duration::from_millis(400))
+            .stalled_interval(Duration::from_millis(400))
+            .max_stalled_count(1)
+            .skip_lock_renewal()
+            .skip_stalled_check()
+            .connection(connection.clone()),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        queue
+            .enqueue_advance_issue(BountyJobData::new(issue_id, "stall"))
+            .await
+            .unwrap(),
+        EnqueueOutcome::Enqueued
+    );
+
+    tokio::time::timeout(Duration::from_secs(5), started.notified())
+        .await
+        .expect("hanging worker should pick up the job");
+
+    hanging.close(0).await.unwrap();
+
+    let recovered = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let seen = recovered.clone();
+    let _rescuer = Worker::with_options(
+        BOUNTY_QUEUE,
+        move |_job: bullmq::Job, _token| {
+            let seen = seen.clone();
+            async move {
+                seen.store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok(serde_json::json!({ "recovered": true }))
+            }
+        },
+        WorkerOptions::new()
+            .prefix(&prefix)
+            .concurrency(1)
+            .lock_duration(Duration::from_millis(400))
+            .stalled_interval(Duration::from_millis(400))
+            .max_stalled_count(1)
+            .connection(connection),
+    )
+    .await
+    .unwrap();
+
+    let mut recovered_or_moved = false;
+    for _ in 0..80 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        if recovered.load(std::sync::atomic::Ordering::SeqCst) {
+            recovered_or_moved = true;
+            break;
+        }
+        let stats = queue.stats().await.unwrap();
+        if stats["escrow-operations"]["active"].as_u64().unwrap_or(0) == 0
+            && (stats["escrow-operations"]["waiting"].as_u64().unwrap_or(0) >= 1
+                || stats["escrow-operations"]["completed"]
+                    .as_u64()
+                    .unwrap_or(0)
+                    >= 1
+                || stats["escrow-operations"]["failed"].as_u64().unwrap_or(0) >= 1)
+        {
+            recovered_or_moved = true;
+            break;
+        }
+    }
+
+    assert!(
+        recovered_or_moved || recovered.load(std::sync::atomic::Ordering::SeqCst),
+        "stalled active job was not recovered"
+    );
 
     cleanup(&prefix).await;
 }
