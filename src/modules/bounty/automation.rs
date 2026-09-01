@@ -32,9 +32,11 @@ use crate::{
             fetch_milestone_state, push_milestone_on_chain, release_escrow_milestone,
         },
         github::{
-            auth::{fetch_github_issue_state, post_comment},
+            auth::{
+                fetch_github_issue, fetch_github_pull_request, post_comment, GitHubPullRequest,
+            },
             handlers::helpers::{
-                dispute_milestone, explorer_tx_url, maintainer_github_id,
+                dispute_milestone, explorer_tx_url, extract_issue_number, maintainer_github_id,
                 resolve_milestone_dispute, split_amounts,
             },
         },
@@ -262,11 +264,15 @@ pub async fn evaluate(state: &AppState, ctx: &IssueContext) -> Result<Decision, 
         }
     }
 
-    // ── Completion gate: live GitHub re-read ─────────────────────────────────
-    if !is_work_complete(state, repo, issue, assignment).await? {
-        return Ok(Decision::Waiting {
-            reason: "GitHub issue is not closed yet".to_string(),
-        });
+    // ── Completion gate: live GitHub re-read of the merged PR ────────────────
+    match confirm_live_merge(state, repo, issue, assignment, Some(contributor)).await? {
+        MergeConfirmation::Merged => {}
+        MergeConfirmation::NotMerged { reason } => {
+            return Ok(Decision::Waiting { reason });
+        }
+        MergeConfirmation::Blocked { reason } => {
+            return Ok(Decision::Blocked { reason });
+        }
     }
 
     let split_percentage = assignment
@@ -280,29 +286,93 @@ pub async fn evaluate(state: &AppState, ctx: &IssueContext) -> Result<Decision, 
     })
 }
 
-/// Whether GitHub currently reports the work as finished.
+/// Whether GitHub currently reports the assigned contributor's PR as merged
+/// and the bounty issue as closed.
 ///
-/// The live issue state is authoritative. When no bot token is configured we
-/// fall back to the merge recorded from the signed `pull_request` webhook, which
-/// GitHub itself vouched for at merge time.
-async fn is_work_complete(
+/// The webhook records `pr_number`; payout still re-fetches the PR with the
+/// GitHub App so a closed-without-merge issue, a later unlink, or an author
+/// mismatch cannot release funds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum MergeConfirmation {
+    Merged,
+    NotMerged { reason: String },
+    Blocked { reason: String },
+}
+
+async fn confirm_live_merge(
     state: &AppState,
     repo: &Repo,
     issue: &Issue,
     assignment: &Assignment,
-) -> Result<bool, AppError> {
-    match fetch_github_issue_state(state, &repo.full_name, issue.github_issue_number).await {
-        Ok(github_state) => Ok(github_state == "closed"),
-        Err(error) if state.config.github_bot_token.is_none() => {
-            warn!(
-                %error,
-                issue = issue.github_issue_number,
-                "GITHUB_BOT_TOKEN is not configured; falling back to the recorded PR merge"
-            );
-            Ok(assignment.pr_merged_at.is_some())
-        }
-        Err(error) => Err(error),
+    contributor: Option<&Contributor>,
+) -> Result<MergeConfirmation, AppError> {
+    let Some(pr_number) = assignment.pr_number else {
+        return Ok(MergeConfirmation::NotMerged {
+            reason: "no merged PR recorded yet".to_string(),
+        });
+    };
+
+    let pr =
+        fetch_github_pull_request(state, repo.github_repo_id, &repo.full_name, pr_number).await?;
+    let assigned_github_id = contributor.map(|value| value.github_user_id);
+    let confirmation =
+        confirm_payout_pull_request(&pr, issue.github_issue_number, assigned_github_id);
+    if confirmation != MergeConfirmation::Merged {
+        return Ok(confirmation);
     }
+
+    let github_issue = fetch_github_issue(
+        state,
+        repo.github_repo_id,
+        &repo.full_name,
+        issue.github_issue_number,
+    )
+    .await?;
+    if !issue_is_closed(&github_issue.state) {
+        return Ok(MergeConfirmation::NotMerged {
+            reason: format!(
+                "issue #{} is not closed on GitHub",
+                issue.github_issue_number
+            ),
+        });
+    }
+
+    Ok(MergeConfirmation::Merged)
+}
+
+fn issue_is_closed(state: &str) -> bool {
+    state.eq_ignore_ascii_case("closed")
+}
+
+fn confirm_payout_pull_request(
+    pr: &GitHubPullRequest,
+    issue_number: i32,
+    assigned_github_id: Option<i64>,
+) -> MergeConfirmation {
+    if !pr.merged {
+        return MergeConfirmation::NotMerged {
+            reason: format!("PR #{} is not merged on GitHub", pr.number),
+        };
+    }
+
+    if extract_issue_number(pr.body.as_deref()) != Some(issue_number) {
+        return MergeConfirmation::Blocked {
+            reason: format!(
+                "PR #{} no longer references issue #{issue_number}",
+                pr.number
+            ),
+        };
+    }
+
+    if let Some(expected) = assigned_github_id {
+        if pr.user.id != expected {
+            return MergeConfirmation::Blocked {
+                reason: "PR author does not match the assigned contributor".to_string(),
+            };
+        }
+    }
+
+    MergeConfirmation::Merged
 }
 
 // ── Actions ──────────────────────────────────────────────────────────────────
@@ -598,5 +668,54 @@ mod tests {
             split_percentage: None
         }
         .wants_recheck());
+    }
+
+    fn pull(merged: bool, body: &str, user_id: i64) -> GitHubPullRequest {
+        GitHubPullRequest {
+            number: 12,
+            state: if merged { "closed" } else { "open" }.to_string(),
+            merged,
+            body: Some(body.to_string()),
+            user: crate::modules::github::auth::GitHubPullUser { id: user_id },
+        }
+    }
+
+    #[test]
+    fn payout_requires_a_live_merged_pr_linked_to_the_issue() {
+        assert_eq!(
+            confirm_payout_pull_request(&pull(true, "Closes #7", 42), 7, Some(42)),
+            MergeConfirmation::Merged
+        );
+    }
+
+    #[test]
+    fn a_closed_unmerged_pr_does_not_release_the_payout() {
+        assert!(matches!(
+            confirm_payout_pull_request(&pull(false, "Closes #7", 42), 7, Some(42)),
+            MergeConfirmation::NotMerged { .. }
+        ));
+    }
+
+    #[test]
+    fn a_merged_pr_for_a_different_issue_is_blocked() {
+        assert!(matches!(
+            confirm_payout_pull_request(&pull(true, "Closes #99", 42), 7, Some(42)),
+            MergeConfirmation::Blocked { .. }
+        ));
+    }
+
+    #[test]
+    fn a_merged_pr_by_someone_else_is_blocked() {
+        assert!(matches!(
+            confirm_payout_pull_request(&pull(true, "Fixes #7", 99), 7, Some(42)),
+            MergeConfirmation::Blocked { .. }
+        ));
+    }
+
+    #[test]
+    fn an_open_issue_does_not_count_as_closed() {
+        assert!(!issue_is_closed("open"));
+        assert!(issue_is_closed("closed"));
+        assert!(issue_is_closed("Closed"));
     }
 }

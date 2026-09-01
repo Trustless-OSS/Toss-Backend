@@ -175,9 +175,6 @@ The complete template lives in [`.env.example`](.env.example).
 | Application | `APP_URL`, `WEBHOOK_URL` | Frontend and public webhook locations |
 | Local webhook relay | `DEV_WEBHOOK_PROXY_ENABLED`, `SMEE_SOURCE_URL`, `SMEE_TARGET_URL` | Optional development-only GitHub relay |
 
-`GITHUB_BOT_TOKEN` is optional and is only needed by paths that fetch GitHub
-issue state directly.
-
 The migrate binary also accepts `TOASTY_CONNECTION_URL` as an override for
 `DATABASE_URL`.
 

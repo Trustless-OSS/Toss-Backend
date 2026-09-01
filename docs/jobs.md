@@ -120,7 +120,8 @@ stale state.
 ```
 labeled + assigned          → wait for wallet
 wallet connected            → push milestone on-chain
-PR merged / issue closed
+PR merged (live GitHub confirm)
+  + issue closed on GitHub
   + milestone on-chain
   + receiver matches wallet
   + not already released    → release payout
@@ -135,7 +136,7 @@ Decisions (`Decision` in `automation.rs`):
 | `ReleasePayout` | Every live rule passed | Queue `release-payout` |
 | `RepairDatabase` | Chain says released, Postgres says pending | **Update Postgres only. Never pay again.** |
 | `Settled` | Nothing left to do | Stop |
-| `Waiting` | Issue still open, nobody assigned yet | Park; delayed re-check |
+| `Waiting` | No merged PR yet, nobody assigned yet | Park; delayed re-check |
 | `Blocked` | Amount mismatch, no escrow deployed, DB/chain disagreement | Stop and log — deliberately not retried |
 
 ### Money safety
@@ -152,8 +153,10 @@ Decisions (`Decision` in `automation.rs`):
   means something moved that should not have — neither figure gets paid.
 - If Postgres says "released" but the chain does not, that is `Blocked` too —
   paying again to "fix" the books is exactly the failure we refuse to have.
-- A blind scheduled pass never auto-releases, refunds or disputes. Money moves
-  only when the live rules pass.
+- Payout re-reads the pull request **and** the issue with the GitHub App.
+  `merged` must be true, the issue must be `closed`, the PR body must still
+  reference this issue, and the author must be the assigned contributor. A
+  recorded webhook merge is not enough on its own.
 
 ### Loop safety
 
