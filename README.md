@@ -22,13 +22,18 @@ Toss Backend is the orchestration layer for the Trustless OSS platform. It
 connects GitHub activity with bounty state, contributor wallets, and escrow
 operations while keeping slow or retryable work in background jobs.
 
+Once a bounty is labelled and assigned, it advances **on its own**: every step is
+a [BullMQ](https://docs.bullmq.io/rust/introduction) job that re-checks the live
+rules, and transient failures retry with backoff. See
+[`docs/jobs.md`](docs/jobs.md).
+
 | Capability | What it handles |
 | --- | --- |
 | 🐙 **GitHub integration** | GitHub App installations, repository sync, signed webhooks, issues, assignments, labels, and pull requests |
-| 🎯 **Bounty lifecycle** | Reward tiers, contributor assignment, milestone creation, retries, and payout status |
+| 🎯 **Bounty lifecycle** | Reward tiers, contributor assignment, milestone creation, automatic payout, and payout status |
 | 🔐 **Authentication** | Supabase bearer-token verification with GitHub identity extraction |
 | 💸 **Escrow operations** | Unsigned transaction creation, deployment, funding, refunds, closure, and submission through Trustless Work |
-| ⚙️ **Background processing** | Redis-backed webhook jobs, scheduled work, retries, and queue statistics |
+| ⚙️ **Background processing** | BullMQ queues for webhooks, the bounty state machine, and scheduled escrow sync — with per-issue deduplication, automatic retries, and queue statistics ([docs](docs/jobs.md)) |
 | 🩺 **Operations** | Toasty migrations, dependency-aware health checks, request tracing, and graceful shutdown |
 
 ## 🔄 How it works
@@ -39,21 +44,28 @@ flowchart LR
     UI["🖥️ Trustless OSS<br/>frontend"] -->|Supabase bearer token| API
 
     API --> DB[("🐘 PostgreSQL<br/>repos, issues & assignments")]
-    API --> REDIS[("🔴 Redis<br/>cache & job queue")]
-    REDIS --> WORKERS["⚙️ Background workers"]
+    API -->|enqueue only| REDIS[("🔴 Redis<br/>cache & BullMQ")]
+    REDIS --> WORKERS["⚙️ BullMQ workers<br/>github-webhook · advance-issue<br/>push-milestone · release-payout"]
+    WORKERS -->|re-check rules| DB
     WORKERS --> GH
 
-    API --> TW["🤝 Trustless Work API"]
+    WORKERS --> TW["🤝 Trustless Work API"]
     TW --> STELLAR["🌐 Stellar escrow"]
 ```
 
 The common bounty journey is:
 
 1. A maintainer connects a repository and configures reward tiers.
-2. GitHub sends signed issue, assignment, label, and pull-request events.
-3. The backend records bounty state and processes retryable work through Redis.
-4. A contributor connects a payout wallet and the milestone is pushed to escrow.
-5. Completion events move the bounty toward release and update its payout state.
+2. GitHub sends signed issue, assignment, label, and pull-request events. Routes
+   verify the signature and *enqueue*; they never move funds themselves.
+3. A contributor connects a payout wallet, and the milestone is pushed to escrow.
+4. A merged PR or closed issue satisfies the release rule, and the payout goes
+   out automatically.
+5. If a step is not ready yet — no wallet, issue still open — the flow parks and
+   resumes by itself when the missing piece arrives. Nobody presses retry.
+
+Every job re-reads Postgres, GitHub, and the escrow contract before acting, so an
+already-paid bounty is always a no-op. [Full job documentation →](docs/jobs.md)
 
 ## 🧰 Tech stack
 
@@ -155,15 +167,13 @@ The complete template lives in [`.env.example`](.env.example).
 | --- | --- | --- |
 | Runtime | `NODE_ENV`, `PORT`, `LOG_LEVEL` | Server mode, address, and logging |
 | Infrastructure | `DATABASE_URL`, `REDIS_URL` | PostgreSQL, cache, and job queue |
+| Background jobs | `BULLMQ_PREFIX`, `BULLMQ_CONCURRENCY`, `ESCROW_SYNC_INTERVAL_SECS` | Optional BullMQ tuning ([docs](docs/jobs.md)) |
 | Authentication | `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY` | Bearer-token verification |
 | GitHub | `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_WEBHOOK_SECRET` | App authentication and webhook verification |
 | Stellar | `STELLAR_NETWORK`, platform and dispute-resolver keypairs | Transaction signing and network selection |
 | Trustless Work | `TRUSTLESS_WORK_API_KEY`, `TRUSTLESS_WORK_BASE_URL` | Escrow API access |
 | Application | `APP_URL`, `WEBHOOK_URL` | Frontend and public webhook locations |
 | Local webhook relay | `DEV_WEBHOOK_PROXY_ENABLED`, `SMEE_SOURCE_URL`, `SMEE_TARGET_URL` | Optional development-only GitHub relay |
-
-`GITHUB_BOT_TOKEN` is optional and is only needed by paths that fetch GitHub
-issue state directly.
 
 The migrate binary also accepts `TOASTY_CONNECTION_URL` as an override for
 `DATABASE_URL`.
@@ -177,7 +187,7 @@ GitHub webhooks instead require a valid `X-Hub-Signature-256` signature.
 | --- | --- |
 | System | `GET /`, `GET /health`, `GET /api/health`, `GET /api/health/database`, `GET /api/health/redis`, `GET /api/health/trustless-work`, `GET /api/queue/stats` |
 | Repositories | `GET /api/repos`, `POST /api/repos/connect`, `POST /api/repos/sync-installation`, `GET/DELETE /api/repos/{repoId}` |
-| Issues and rewards | `GET /api/repos/{repoId}/issues`, `PUT /api/repos/{repoId}/rewards`, `POST /api/issues/{issueId}/retry` |
+| Issues and rewards | `GET /api/repos/{repoId}/issues`, `PUT /api/repos/{repoId}/rewards`, `POST /api/issues/{issueId}/retry` (emergency override — [not part of the happy path](docs/jobs.md#retry-is-not-part-of-the-happy-path)) |
 | Contributors | `POST /api/wallet/connect`, `GET /api/contributor/me` |
 | Milestones | `POST /api/milestones/push` |
 | Escrow | `POST /api/escrow/create-unsigned`, `/submit-deploy`, `/fund-unsigned`, `/submit-fund`, `/refund`, `/close-unsigned`, `/submit-close` |
@@ -194,13 +204,15 @@ Toss-Backend/
 │   ├── bin/migrate.rs  # Toasty migration CLI
 │   ├── modules/        # Repo, GitHub, bounty, contributor, and escrow domains
 │   ├── shared/models/  # Entity DTOs + Toasty schema models
-│   ├── infra/          # PostgreSQL (Toasty), Redis, queue, cache, Stellar
+│   ├── infra/          # PostgreSQL (Toasty), Redis, BullMQ queue + jobs, cache, Stellar
 │   ├── middleware/     # Authentication and request middleware
 │   ├── routes/         # Health and operational routes
 │   ├── lib.rs          # Shared library crate
 │   ├── config.rs       # Environment configuration
 │   ├── app.rs          # Axum router assembly
 │   └── main.rs         # Server startup and graceful shutdown
+├── docs/jobs.md        # Queues, job names, retry policy, automation rules
+├── tests/              # Integration tests (BullMQ against a real Redis)
 ├── toasty/             # Generated SQL migrations, snapshots, history
 ├── Toasty.toml         # Toasty migration config
 ├── docker-compose.yml  # Local PostgreSQL + Redis

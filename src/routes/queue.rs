@@ -5,15 +5,20 @@ use utoipa::ToSchema;
 
 use crate::{error::AppError, state::AppState};
 
+/// Live BullMQ job counts for a single queue.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct QueueCounts {
-    pub waiting: i64,
-    pub active: i64,
-    pub completed: i64,
-    pub failed: i64,
-    pub delayed: i64,
+    pub waiting: u64,
+    pub active: u64,
+    pub completed: u64,
+    pub failed: u64,
+    pub delayed: u64,
 }
 
+/// Counts for every queue the backend runs.
+///
+/// `webhooks` is `toss-webhooks`, `escrow-operations` is the money queue
+/// `toss-bounty`, and `sync` is `toss-sync`.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct QueueStatsResponse {
     pub webhooks: QueueCounts,
@@ -27,7 +32,7 @@ pub struct QueueStatsResponse {
     path = "/api/queue/stats",
     tag = "Queue",
     responses(
-        (status = 200, description = "Current background queue depths", body = QueueStatsResponse),
+        (status = 200, description = "Live BullMQ counts per queue", body = QueueStatsResponse),
         (status = 500, description = "Failed to read queue stats", body = crate::error::ErrorResponse)
     )
 )]

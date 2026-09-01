@@ -448,38 +448,69 @@ pub async fn install_repo_webhook(
     Ok(())
 }
 
-pub async fn fetch_github_issue_state(
+pub async fn fetch_github_pull_request(
     state: &AppState,
+    github_repo_id: i64,
+    full_name: &str,
+    pr_number: i32,
+) -> Result<GitHubPullRequest, AppError> {
+    let url = format!("https://api.github.com/repos/{full_name}/pulls/{pr_number}");
+    github_get_json(state, github_repo_id, &url, "pull request lookup").await
+}
+
+pub async fn fetch_github_issue(
+    state: &AppState,
+    github_repo_id: i64,
     full_name: &str,
     issue_number: i32,
-) -> Result<String, AppError> {
-    let token = state
-        .config
-        .github_bot_token
-        .as_deref()
-        .ok_or_else(|| AppError::github("GITHUB_BOT_TOKEN is not configured"))?;
-
+) -> Result<GitHubIssue, AppError> {
     let url = format!("https://api.github.com/repos/{full_name}/issues/{issue_number}");
+    github_get_json(state, github_repo_id, &url, "issue lookup").await
+}
+
+async fn github_get_json<T: serde::de::DeserializeOwned>(
+    state: &AppState,
+    github_repo_id: i64,
+    url: &str,
+    operation: &str,
+) -> Result<T, AppError> {
+    let Some(token) = get_installation_token(state, github_repo_id).await? else {
+        return Err(AppError::github(format!(
+            "failed to get installation token for {operation}"
+        )));
+    };
+
     let response = state
         .http_client
-        .get(&url)
-        .header("Authorization", format!("token {token}"))
-        .header("Accept", "application/vnd.github.v3+json")
-        .header("User-Agent", "Trustless-OSS-Bot")
+        .get(url)
+        .header("Authorization", format!("Bearer {token}"))
+        .header("Accept", GITHUB_ACCEPT)
+        .header("X-GitHub-Api-Version", GITHUB_API_VERSION)
+        .header("User-Agent", GITHUB_USER_AGENT)
         .send()
         .await
-        .map_err(|error| AppError::github(error.to_string()))?;
+        .map_err(|error| AppError::github(format!("{operation} failed: {error}")))?;
 
-    let payload: serde_json::Value = response
-        .json()
-        .await
-        .map_err(|error| AppError::github(error.to_string()))?;
+    github_json::<T>(response, operation).await
+}
 
-    payload
-        .get("state")
-        .and_then(|value| value.as_str())
-        .map(str::to_owned)
-        .ok_or_else(|| AppError::github("GitHub issue state missing from response"))
+#[derive(Debug, Clone, Deserialize)]
+pub struct GitHubPullRequest {
+    pub number: i32,
+    pub state: String,
+    pub merged: bool,
+    pub body: Option<String>,
+    pub user: GitHubPullUser,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct GitHubPullUser {
+    pub id: i64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct GitHubIssue {
+    pub state: String,
 }
 
 pub async fn delete_github_installation(

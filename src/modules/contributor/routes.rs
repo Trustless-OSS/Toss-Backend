@@ -4,8 +4,11 @@ use axum::{
     Json, Router,
 };
 
+use tracing::{info, warn};
+
 use crate::{
     error::{AppError, ErrorResponse},
+    infra::queue::BountyJobData,
     middleware::auth::AuthedUser,
     modules::contributor::model::{ConnectWalletBody, ContributorMeResponse, OkResponse},
     modules::contributor::repository::{
@@ -51,7 +54,60 @@ pub(crate) async fn connect_wallet(
     )
     .await?;
 
+    // The wallet was the thing every parked bounty for this contributor was
+    // waiting on. Nudge each of them so the flow continues on its own — this is
+    // what removes the need for a maintainer `/retry`.
+    resume_parked_bounties(&state, user.github_id).await;
+
     Ok(Json(OkResponse { ok: true }))
+}
+
+/// Queue an `advance-issue` pass for every bounty this contributor still owns.
+///
+/// Failures here are logged, never surfaced: the wallet *was* saved, and the
+/// scheduled re-checks will pick the issue up regardless.
+async fn resume_parked_bounties(state: &AppState, github_id: i64) {
+    let contributor = match get_contributor_by_github_id(state, github_id).await {
+        Ok(Some(contributor)) => contributor,
+        Ok(None) => return,
+        Err(error) => {
+            warn!(%error, "failed to load contributor after wallet connect");
+            return;
+        }
+    };
+
+    let assignments = match list_assignments_for_contributor(state, contributor.id).await {
+        Ok(assignments) => assignments,
+        Err(error) => {
+            warn!(%error, "failed to list assignments after wallet connect");
+            return;
+        }
+    };
+
+    for (assignment, issue) in assignments {
+        let Some(issue) = issue else { continue };
+        if issue.status == "completed" || issue.status == "cancelled" {
+            continue;
+        }
+        if assignment.payout_status == "released" {
+            continue;
+        }
+
+        match state
+            .queue
+            .enqueue_advance_issue(BountyJobData::new(issue.id, "wallet-connected"))
+            .await
+        {
+            Ok(outcome) => info!(
+                issue = issue.github_issue_number,
+                outcome = outcome.label(),
+                "wallet connected; bounty automation resumed"
+            ),
+            Err(error) => {
+                warn!(%error, issue = issue.github_issue_number, "failed to resume bounty automation")
+            }
+        }
+    }
 }
 
 #[utoipa::path(

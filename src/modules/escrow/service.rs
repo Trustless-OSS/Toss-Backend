@@ -691,6 +691,85 @@ pub async fn release_escrow_milestone(
     }
 }
 
+/// A single milestone as it currently exists on-chain.
+///
+/// Read-only: this is the source of truth the automation workers consult before
+/// moving any funds. It never mutates escrow state.
+#[derive(Debug, Clone)]
+pub struct MilestoneChainState {
+    pub index: i32,
+    pub released: bool,
+    pub approved: bool,
+    pub disputed: bool,
+    pub resolved: bool,
+    pub receiver: Option<String>,
+    pub amount: Option<Decimal>,
+}
+
+/// Read one milestone's live on-chain state from Trustless Work.
+///
+/// Returns `Ok(None)` when the escrow exists but has no milestone at
+/// `milestone_index` (for example, the milestone has not been pushed yet).
+pub async fn fetch_milestone_state(
+    state: &AppState,
+    contract_id: &str,
+    milestone_index: i32,
+) -> Result<Option<MilestoneChainState>, AppError> {
+    let escrow_array = tw_fetch(
+        state,
+        &format!("/helper/get-escrow-by-contract-ids?contractIds[]={contract_id}"),
+        reqwest::Method::GET,
+        None,
+    )
+    .await?;
+
+    let escrow_data = escrow_array
+        .as_array()
+        .and_then(|items| items.first())
+        .ok_or_else(|| AppError::internal(format!("Escrow not found: {contract_id}")))?;
+
+    let Some(milestone) = escrow_data
+        .get("milestones")
+        .and_then(Value::as_array)
+        .and_then(|milestones| {
+            usize::try_from(milestone_index)
+                .ok()
+                .and_then(|index| milestones.get(index))
+        })
+    else {
+        return Ok(None);
+    };
+
+    let flag = |name: &str| {
+        milestone
+            .get("flags")
+            .and_then(|flags| flags.get(name))
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    };
+
+    // Trustless Work reports a released milestone either through `flags.released`
+    // or through the milestone status; treat both as released so the workers can
+    // never pay a milestone twice.
+    let status_released = milestone
+        .get("status")
+        .and_then(Value::as_str)
+        .is_some_and(|status| status.eq_ignore_ascii_case("released"));
+
+    Ok(Some(MilestoneChainState {
+        index: milestone_index,
+        released: flag("released") || status_released,
+        approved: flag("approved"),
+        disputed: flag("disputed"),
+        resolved: flag("resolved"),
+        receiver: milestone
+            .get("receiver")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        amount: milestone.get("amount").and_then(decimal_from_value),
+    }))
+}
+
 // ── Private helpers ───────────────────────────────────────────────────────────
 
 /// Build the receiver accepted by Trustless Work multi-release escrows.
