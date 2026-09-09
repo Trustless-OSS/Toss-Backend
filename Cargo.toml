@@ -44,6 +44,7 @@ utoipa = { version = "5.5.0", features = ["axum_extras", "uuid", "chrono", "deci
 utoipa-axum = "0.2.0"
 utoipa-swagger-ui = { version = "9.0.2", features = ["axum"] }
 bullmq-official = "1.2.6"
+resend-rs = "0.32.1"
 
 [features]
 default = []
