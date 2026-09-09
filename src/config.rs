@@ -39,6 +39,7 @@ pub struct Config {
     pub dev_webhook_proxy_enabled: bool,
     pub smee_source_url: String,
     pub smee_target_url: String,
+    pub resend_api_key: String,
 }
 
 impl Config {
@@ -95,6 +96,7 @@ impl Config {
             dev_webhook_proxy_enabled,
             smee_source_url: required_env("SMEE_SOURCE_URL")?,
             smee_target_url: required_env("SMEE_TARGET_URL")?,
+            resend_api_key: required_env("RESEND_API_KEY")?,
         })
     }
 

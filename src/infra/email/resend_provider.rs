@@ -1,6 +1,5 @@
-use resend_rs::Resend;
-
 use crate::error::AppError;
+use resend_rs::Resend;
 
 pub async fn connect(api_key: &str) -> Result<Resend, AppError> {
     if api_key.trim().is_empty() {
