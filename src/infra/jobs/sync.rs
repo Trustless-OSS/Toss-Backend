@@ -1,8 +1,3 @@
-//! The `escrow-balance-sync` processor.
-//!
-//! Driven by a BullMQ job scheduler, so exactly one sync is pending at any time
-//! instead of a new list entry accumulating every interval.
-
 use tracing::{info, warn};
 
 use crate::{
@@ -10,7 +5,6 @@ use crate::{
     modules::escrow::service::sync_repo_escrow_balance, state::AppState,
 };
 
-/// Reconcile every deployed escrow's balance with the chain.
 pub(crate) async fn run(state: &AppState) -> Result<serde_json::Value, AppError> {
     let repos = list_active_escrow_repos(state).await?;
 
@@ -31,8 +25,7 @@ pub(crate) async fn run(state: &AppState) -> Result<serde_json::Value, AppError>
                 }
             }
             Err(error) => {
-                // One unreachable escrow must not abort the whole sweep; the next
-                // scheduled run picks it up again.
+                // continue sweep; next run retries this repo
                 failed += 1;
                 warn!(%error, repo = %repo.full_name, "escrow balance sync failed for repo");
             }

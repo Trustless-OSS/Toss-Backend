@@ -1,9 +1,3 @@
-//! Worker processors.
-//!
-//! Every BullMQ worker started in [`crate::infra::queue`] funnels through
-//! [`process`], which dispatches on the job name. Processors are the only place
-//! background work executes; producers elsewhere in the app just add jobs.
-
 pub mod advance;
 pub mod sync;
 pub mod webhook;
@@ -19,18 +13,11 @@ use crate::{
     state::AppState,
 };
 
-/// What a processor did.
 pub(crate) enum JobOutcome {
-    /// Finished; the value becomes the job's return value.
     Done(serde_json::Value),
-    /// The processor moved its own job to `delayed` and wants to be re-run later.
-    ///
-    /// BullMQ treats this as control flow rather than a failure: no attempt is
-    /// consumed, and the job keeps its id so a real event can promote it.
     Delayed,
 }
 
-/// Route one job to its processor.
 pub async fn process(
     state: &AppState,
     mut job: bullmq::Job,
@@ -89,13 +76,6 @@ pub async fn process(
     }
 }
 
-/// Classify an application error for BullMQ's retry machinery.
-///
-/// Transient faults — Trustless Work timeouts, GitHub 5xx and rate limits,
-/// database blips — become retryable so the queue backs off and tries again.
-/// Errors that describe a state which cannot change on retry (a malformed
-/// payload, a missing record, a rejected request) are marked unrecoverable so
-/// they fail once and land in `failed` with their reason intact.
 fn to_job_error(error: AppError) -> bullmq::Error {
     match error {
         AppError::BadRequest { .. }
@@ -111,13 +91,11 @@ fn to_job_error(error: AppError) -> bullmq::Error {
     }
 }
 
-/// Deserialize a job body, reporting a bad payload as unrecoverable.
 pub(crate) fn payload<T: serde::de::DeserializeOwned>(job: &bullmq::Job) -> Result<T, AppError> {
     serde_json::from_value(job.data().clone())
         .map_err(|error| AppError::webhook(format!("invalid job payload: {error}")))
 }
 
-/// Surface a queue-level failure as a retryable application error.
 pub(crate) fn queue_error(error: bullmq::Error) -> AppError {
     AppError::internal(format!("queue error: {error}"))
 }

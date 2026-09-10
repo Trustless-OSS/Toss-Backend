@@ -1,11 +1,3 @@
-//! The bounty automation processors: `advance-issue`, `push-milestone` and
-//! `release-payout`.
-//!
-//! `advance-issue` decides; the other two act. All three re-read Postgres,
-//! GitHub and the escrow contract before doing anything, so a job that has been
-//! sitting in the queue — or retrying with backoff — can never act on stale
-//! state.
-
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tracing::{info, warn};
@@ -20,20 +12,13 @@ use crate::{
     state::AppState,
 };
 
-/// How many times one `advance-issue` job re-evaluates before yielding.
-///
-/// A pass is repeated only when new events landed while it was running, so this
-/// bound is a safety valve rather than a normal path.
 const MAX_PASSES: u32 = 3;
 
-/// How many times an issue parks itself on a timer before it stops revisiting.
-/// Real events still wake it at any point.
 const MAX_RECHECKS: u32 = 12;
 
 const RECHECK_BASE: Duration = Duration::from_secs(60);
 const RECHECK_CAP: Duration = Duration::from_secs(30 * 60);
 
-/// Evaluate an issue and take the next allowed step.
 pub(crate) async fn run_advance(
     state: &AppState,
     job: &mut bullmq::Job,
@@ -58,8 +43,6 @@ pub(crate) async fn run_advance(
     let mut issue_number = 0;
 
     for pass in 0..MAX_PASSES {
-        // Clear before reading: anything that arrives from here on re-sets the
-        // flag and earns another pass.
         state.queue.clear_dirty(issue_id).await?;
 
         let Some(ctx) = automation::load_context(state, issue_id).await? else {
@@ -84,8 +67,6 @@ pub(crate) async fn run_advance(
 
         apply(state, &ctx, &decision, &data).await?;
 
-        // The last pass decides whether the issue is parked; an event arriving
-        // mid-job can turn a "waiting" into a "release".
         park_reason = decision.park_reason();
 
         if !state.queue.is_dirty(issue_id).await? {
@@ -96,8 +77,6 @@ pub(crate) async fn run_advance(
 
     if let Some(reason) = park_reason {
         if park(job, &data, &reason, issue_id, issue_number).await? {
-            // The job is already delayed, so a dirty flag can be turned into a
-            // promote instead of waiting for the timer.
             if let Err(error) = state.queue.drain_dirty_advance(issue_id).await {
                 warn!(%error, %issue_id, "failed to drain dirty flag after parking");
             }
@@ -111,10 +90,6 @@ pub(crate) async fn run_advance(
     })))
 }
 
-/// Act on a decision by queueing the concrete step.
-///
-/// Nothing here touches the chain directly: money-moving work always goes back
-/// through the queue so it gets its own retries and its own per-issue job id.
 async fn apply(
     state: &AppState,
     ctx: &IssueContext,
@@ -145,8 +120,7 @@ async fn apply(
         }
 
         Decision::WaitForWallet { github_username } => {
-            // Tell the contributor once, on the event that actually parked the
-            // payout — never again on the timed re-checks.
+            // notify once on first park, not on rechecks
             if data.notify && data.recheck == 0 {
                 if let Err(error) =
                     automation::notify_waiting_for_wallet(state, ctx, github_username).await
@@ -167,9 +141,6 @@ async fn apply(
         }
 
         Decision::Blocked { reason } => {
-            // Deliberately terminal: a blocked rule means the live state does not
-            // justify moving money, and retrying it on a timer would be exactly
-            // the wrong behaviour.
             warn!(
                 %issue_id,
                 issue = ctx.issue.github_issue_number,
@@ -182,16 +153,6 @@ async fn apply(
     Ok(())
 }
 
-/// Park this job on a timer, keeping its id.
-///
-/// The job moves *itself* to `delayed` rather than enqueueing a second job —
-/// a running job already owns `advance-issue:<issue-id>`, so re-adding it would
-/// be swallowed as a duplicate. Keeping the id is also what lets a wallet
-/// connect or a merged PR **promote** the parked job and resume immediately;
-/// the timer is only the backstop.
-///
-/// Returns `false` when the re-check budget is spent, leaving the job to
-/// complete normally and wait for a real event.
 async fn park(
     job: &mut bullmq::Job,
     data: &BountyJobData,
@@ -213,7 +174,6 @@ async fn park(
 
     let delay = recheck_delay(data.recheck);
 
-    // Persist the widened backoff before parking, so each visit waits longer.
     let updated = BountyJobData::new(issue_id, "scheduled-recheck").with_recheck(next);
     job.update_data(
         serde_json::to_value(&updated).map_err(|error| AppError::internal(error.to_string()))?,
@@ -250,7 +210,6 @@ fn recheck_delay(recheck: u32) -> Duration {
         .min(RECHECK_CAP)
 }
 
-/// Push the milestone on-chain, once the live rules still ask for it.
 pub(crate) async fn run_push_milestone(
     state: &AppState,
     job: &bullmq::Job,
@@ -278,9 +237,6 @@ pub(crate) async fn run_push_milestone(
             let milestone_index =
                 automation::push_milestone(state, &ctx, &payout_address, &payout_chain).await?;
 
-            // Keep the chain moving: the next evaluation may already be able to
-            // release, for example when the PR was merged before the wallet
-            // arrived.
             state
                 .queue
                 .enqueue_advance_issue(data.next("milestone-pushed"))
@@ -299,10 +255,6 @@ pub(crate) async fn run_push_milestone(
     }
 }
 
-/// Release the bounty, once the live rules still ask for it.
-///
-/// This is the only place funds leave escrow on the happy path, and it re-reads
-/// every source of truth immediately beforehand.
 pub(crate) async fn run_release_payout(
     state: &AppState,
     job: &bullmq::Job,
@@ -326,9 +278,7 @@ pub(crate) async fn run_release_payout(
             }))
         }
         Decision::RepairDatabase { milestone_index } => {
-            // The chain paid this milestone already — most likely on a previous
-            // attempt that failed after the transaction landed. Fix the books,
-            // move no money.
+            // chain already paid — repair DB only
             automation::repair_database(state, &ctx, milestone_index).await?;
             Ok(serde_json::json!({ "repaired": true }))
         }
@@ -365,7 +315,6 @@ mod tests {
 
     #[test]
     fn only_parking_decisions_produce_a_park_reason() {
-        // Mirrors the match in `run_advance`: acting decisions must not park.
         for decision in [
             Decision::Settled,
             Decision::Blocked {

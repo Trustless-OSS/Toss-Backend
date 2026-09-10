@@ -1,8 +1,3 @@
-/// All escrow business logic — deploy, fund, close, refund, milestone operations.
-///
-/// This module talks directly to the TrustlessWork API and the database.
-/// Handlers in `handler.rs` call into these functions; they contain no HTTP
-/// concerns (no Axum types, no request parsing).
 use rust_decimal::{prelude::ToPrimitive, Decimal};
 use serde_json::{json, Value};
 use tracing::info;
@@ -19,14 +14,10 @@ use crate::{
     state::AppState,
 };
 
-// USDC contract address on Stellar testnet.
 const TESTNET_USDC: &str = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
 const TRUSTLESS_WORK_FEE_BPS: i64 = 30;
 const BASIS_POINTS: i64 = 10_000;
 
-// ── Deploy ────────────────────────────────────────────────────────────────────
-
-/// Build the unsigned deploy transaction for a new multi-release escrow.
 pub async fn create_unsigned_escrow(
     state: &AppState,
     repo: &Repo,
@@ -64,7 +55,6 @@ pub async fn create_unsigned_escrow(
         .ok_or_else(|| AppError::internal("TrustlessWork response missing unsignedTransaction"))
 }
 
-/// Submit the signed deploy XDR, persist the resulting contract ID.
 pub async fn submit_deploy_escrow(
     state: &AppState,
     repo_id: uuid::Uuid,
@@ -89,9 +79,6 @@ pub async fn submit_deploy_escrow(
     Ok(contract_id.to_string())
 }
 
-// ── Fund ──────────────────────────────────────────────────────────────────────
-
-/// Build the unsigned fund transaction.
 pub async fn create_fund_unsigned(
     state: &AppState,
     repo: &Repo,
@@ -122,7 +109,6 @@ pub async fn create_fund_unsigned(
         .ok_or_else(|| AppError::internal("TrustlessWork response missing unsignedTransaction"))
 }
 
-/// Submit the signed fund XDR and update the stored balance.
 pub async fn submit_fund_escrow(
     state: &AppState,
     repo_id: uuid::Uuid,
@@ -145,7 +131,6 @@ pub async fn submit_fund_escrow(
     Ok(new_balance)
 }
 
-/// Re-fetch the on-chain balance and sync it to the database if it drifted.
 pub async fn sync_repo_escrow_balance(state: &AppState, repo: &Repo) -> Result<Decimal, AppError> {
     let contract_id = repo
         .escrow_contract_id
@@ -176,9 +161,6 @@ pub async fn sync_repo_escrow_balance(state: &AppState, repo: &Repo) -> Result<D
     Ok(on_chain_balance)
 }
 
-// ── Close ─────────────────────────────────────────────────────────────────────
-
-/// Build the unsigned close-escrow transaction.
 pub async fn create_close_unsigned(
     state: &AppState,
     repo: &Repo,
@@ -207,7 +189,6 @@ pub async fn create_close_unsigned(
         .ok_or_else(|| AppError::internal("TrustlessWork response missing unsignedTransaction"))
 }
 
-/// Submit the signed close XDR and clear the escrow record in the database.
 pub async fn submit_close_escrow(
     state: &AppState,
     repo_id: uuid::Uuid,
@@ -224,12 +205,6 @@ pub async fn submit_close_escrow(
     crate::modules::escrow::repository::clear_repo_escrow(state, repo_id).await
 }
 
-// ── Refund ────────────────────────────────────────────────────────────────────
-
-/// Full refund flow: dispute/resolve every unreleased milestone, withdraw
-/// remaining balance, cancel all open issues.
-///
-/// Returns `(total_refunded, cancelled_issue_count)`.
 pub async fn refund_escrow(
     state: &AppState,
     repo: &Repo,
@@ -511,9 +486,6 @@ pub async fn refund_escrow(
     Ok((total_refunded, cancelled_count))
 }
 
-// ── Milestone operations ──────────────────────────────────────────────────────
-
-/// Add or update a milestone on-chain for the given issue, then mark it active.
 pub async fn push_milestone_on_chain(
     state: &AppState,
     repo: &Repo,
@@ -605,7 +577,6 @@ pub async fn push_milestone_on_chain(
     Ok(milestone_index)
 }
 
-/// Approve and release funds for a completed milestone.
 pub async fn release_escrow_milestone(
     state: &AppState,
     repo: &Repo,
@@ -691,10 +662,6 @@ pub async fn release_escrow_milestone(
     }
 }
 
-/// A single milestone as it currently exists on-chain.
-///
-/// Read-only: this is the source of truth the automation workers consult before
-/// moving any funds. It never mutates escrow state.
 #[derive(Debug, Clone)]
 pub struct MilestoneChainState {
     pub index: i32,
@@ -706,10 +673,6 @@ pub struct MilestoneChainState {
     pub amount: Option<Decimal>,
 }
 
-/// Read one milestone's live on-chain state from Trustless Work.
-///
-/// Returns `Ok(None)` when the escrow exists but has no milestone at
-/// `milestone_index` (for example, the milestone has not been pushed yet).
 pub async fn fetch_milestone_state(
     state: &AppState,
     contract_id: &str,
@@ -748,9 +711,6 @@ pub async fn fetch_milestone_state(
             .unwrap_or(false)
     };
 
-    // Trustless Work reports a released milestone either through `flags.released`
-    // or through the milestone status; treat both as released so the workers can
-    // never pay a milestone twice.
     let status_released = milestone
         .get("status")
         .and_then(Value::as_str)
@@ -770,9 +730,6 @@ pub async fn fetch_milestone_state(
     }))
 }
 
-// ── Private helpers ───────────────────────────────────────────────────────────
-
-/// Build the receiver accepted by Trustless Work multi-release escrows.
 fn build_receiver(payout_chain: &str, payout_address: &str) -> Result<Value, AppError> {
     if payout_address.trim().is_empty() {
         return Err(AppError::bad_request("Payout address cannot be empty"));
@@ -787,8 +744,6 @@ fn build_receiver(payout_chain: &str, payout_address: &str) -> Result<Value, App
     )))
 }
 
-/// Remove read-only metadata fields before sending an escrow payload to the
-/// update endpoint.
 fn strip_escrow_metadata(escrow_data: &Value) -> Value {
     let mut payload = escrow_data.clone();
     if let Some(obj) = payload.as_object_mut() {

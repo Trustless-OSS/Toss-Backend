@@ -1,8 +1,3 @@
-//! Bounty module API types (milestones, retries).
-//!
-//! Database entities live in [`crate::shared::models::Issue`] and
-//! [`crate::shared::models::Assignment`].
-
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
