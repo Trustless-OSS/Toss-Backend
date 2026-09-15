@@ -38,7 +38,9 @@ pub struct IssueContext {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decision {
-    WaitForWallet { github_username: String },
+    WaitForWallet {
+        github_username: String,
+    },
     PushMilestone {
         payout_address: String,
         payout_chain: String,
@@ -47,10 +49,16 @@ pub enum Decision {
         milestone_index: i32,
         split_percentage: Option<i32>,
     },
-    RepairDatabase { milestone_index: i32 },
+    RepairDatabase {
+        milestone_index: i32,
+    },
     Settled,
-    Waiting { reason: String },
-    Blocked { reason: String },
+    Waiting {
+        reason: String,
+    },
+    Blocked {
+        reason: String,
+    },
 }
 
 impl Decision {

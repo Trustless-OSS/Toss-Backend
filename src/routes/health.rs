@@ -114,9 +114,10 @@ pub async fn health_handler(State(state): State<AppState>) -> Response {
     checks["database"] = db_check;
 
     let tw_start = std::time::Instant::now();
-    checks["trustless_work"] = match health_check(&state.config, &state.http_client).await {
-        Ok(()) => json!({
+    checks["trustless_work"] = match health_check(&state).await {
+        Ok(x) => json!({
             "status": "ok",
+            "data" : x,
             "latency": format!("{}ms", tw_start.elapsed().as_millis()),
         }),
         Err(error) => json!({
@@ -281,8 +282,8 @@ pub async fn trustless_work_health_handler(State(state): State<AppState>) -> Res
     }
 
     let start = std::time::Instant::now();
-    match health_check(&state.config, &state.http_client).await {
-        Ok(()) => dependency_response("trustless_work", true, start.elapsed().as_millis(), None),
+    match health_check(&state).await {
+        Ok(_) => dependency_response("trustless_work", true, start.elapsed().as_millis(), None),
         Err(error) => dependency_response(
             "trustless_work",
             false,

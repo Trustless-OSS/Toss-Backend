@@ -69,7 +69,16 @@ pub async fn shutdown_signal() {
     let terminate = std::future::pending::<()>();
 
     tokio::select! {
-        _ = ctrl_c => {}
-        _ = terminate => {}
+        _ = ctrl_c => {
+            begin_shutdown();
+            tokio::spawn(async {
+                let _ = tokio::signal::ctrl_c().await;
+                warn!("Second Ctrl+C received; forcing shutdown");
+                std::process::exit(1);
+            });
+        }
+        _ = terminate => {
+            begin_shutdown();
+        }
     }
 }
