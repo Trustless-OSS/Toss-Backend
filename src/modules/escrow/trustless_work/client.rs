@@ -60,7 +60,7 @@ pub async fn health_check(state: &AppState) -> Result<Value, AppError> {
         escrow_address
     );
 
-    let response = tw_fetch(&state, &path, Method::GET, None).await?;
+    let response = tw_fetch(state, &path, Method::GET, None).await?;
 
     if response.is_array() {
         Ok(response)

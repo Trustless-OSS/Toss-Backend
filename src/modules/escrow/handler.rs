@@ -1,11 +1,3 @@
-/// Thin Axum handler functions.
-///
-/// Each handler is responsible only for:
-///   1. Extracting data from the HTTP request.
-///   2. Calling the relevant `service` function.
-///   3. Shaping the HTTP response.
-///
-/// No business logic lives here.
 use axum::{extract::State, Json};
 use rust_decimal::Decimal;
 use tracing::error;
@@ -18,9 +10,9 @@ use crate::{
         escrow::repository::{update_repo_escrow_balance, update_repo_escrow_funder_wallet},
         escrow::{
             dto::{
-                CloseEscrowBody, ContractIdResponse, CreateEscrowBody, FundEscrowBody, OkResponse,
-                RefundEscrowBody, RefundResponse, SubmitCloseBody, SubmitDeployBody,
-                SubmitFundBody, SubmitFundResponse, UnsignedTransactionResponse,
+                CloseEscrow, ContractIdResponse, CreateEscrow, FundEscrow, OkResponse,
+                RefundEscrow, RefundResponse, SubmitClose, SubmitDeploy, SubmitFund,
+                SubmitFundResponse, UnsignedTransactionResponse,
             },
             service,
         },
@@ -35,7 +27,7 @@ use crate::{
     path = "/api/escrow/create-unsigned",
     tag = "Escrow",
     security(("bearer_auth" = [])),
-    request_body = CreateEscrowBody,
+    request_body = CreateEscrow,
     responses(
         (status = 200, description = "Unsigned escrow deploy transaction", body = UnsignedTransactionResponse),
         (status = 401, description = "Missing or invalid bearer token", body = ErrorResponse),
@@ -47,7 +39,7 @@ use crate::{
 pub async fn create_escrow_unsigned(
     State(state): State<AppState>,
     user: AuthedUser,
-    Json(body): Json<CreateEscrowBody>,
+    Json(body): Json<CreateEscrow>,
 ) -> Result<Json<UnsignedTransactionResponse>, AppError> {
     let repo = get_repo_by_id(&state, body.repo_id)
         .await?
@@ -72,7 +64,7 @@ pub async fn create_escrow_unsigned(
     path = "/api/escrow/submit-deploy",
     tag = "Escrow",
     security(("bearer_auth" = [])),
-    request_body = SubmitDeployBody,
+    request_body = SubmitDeploy,
     responses(
         (status = 200, description = "Escrow contract deployed", body = ContractIdResponse),
         (status = 401, description = "Missing or invalid bearer token", body = ErrorResponse),
@@ -83,7 +75,7 @@ pub async fn create_escrow_unsigned(
 pub async fn submit_deploy(
     State(state): State<AppState>,
     user: AuthedUser,
-    Json(body): Json<SubmitDeployBody>,
+    Json(body): Json<SubmitDeploy>,
 ) -> Result<Json<ContractIdResponse>, AppError> {
     if !is_maintainer(&state, user.github_id, body.repo_id).await? {
         return Err(AppError::forbidden(
@@ -101,7 +93,7 @@ pub async fn submit_deploy(
     path = "/api/escrow/fund-unsigned",
     tag = "Escrow",
     security(("bearer_auth" = [])),
-    request_body = FundEscrowBody,
+    request_body = FundEscrow,
     responses(
         (status = 200, description = "Unsigned escrow fund transaction", body = UnsignedTransactionResponse),
         (status = 400, description = "Invalid amount, wallet, or escrow state", body = ErrorResponse),
@@ -113,7 +105,7 @@ pub async fn submit_deploy(
 pub async fn fund_unsigned(
     State(state): State<AppState>,
     user: AuthedUser,
-    Json(body): Json<FundEscrowBody>,
+    Json(body): Json<FundEscrow>,
 ) -> Result<Json<UnsignedTransactionResponse>, AppError> {
     if body.amount <= Decimal::ZERO || body.funder_wallet.is_empty() {
         return Err(AppError::bad_request("Invalid amount or funder wallet"));
@@ -158,7 +150,7 @@ pub async fn fund_unsigned(
     path = "/api/escrow/submit-fund",
     tag = "Escrow",
     security(("bearer_auth" = [])),
-    request_body = SubmitFundBody,
+    request_body = SubmitFund,
     responses(
         (status = 200, description = "Fund transaction submitted and local balance updated", body = SubmitFundResponse),
         (status = 401, description = "Missing or invalid bearer token", body = ErrorResponse),
@@ -168,7 +160,7 @@ pub async fn fund_unsigned(
 pub async fn submit_fund(
     State(state): State<AppState>,
     _user: AuthedUser,
-    Json(body): Json<SubmitFundBody>,
+    Json(body): Json<SubmitFund>,
 ) -> Result<Json<SubmitFundResponse>, AppError> {
     use crate::modules::escrow::trustless_work::client::tw_fetch;
 
@@ -201,7 +193,7 @@ pub async fn submit_fund(
     path = "/api/escrow/refund",
     tag = "Escrow",
     security(("bearer_auth" = [])),
-    request_body = RefundEscrowBody,
+    request_body = RefundEscrow,
     responses(
         (status = 200, description = "Escrow refunded and open bounties cancelled", body = RefundResponse),
         (status = 400, description = "Escrow has no recorded funding wallet", body = ErrorResponse),
@@ -214,7 +206,7 @@ pub async fn submit_fund(
 pub async fn refund(
     State(state): State<AppState>,
     user: AuthedUser,
-    Json(body): Json<RefundEscrowBody>,
+    Json(body): Json<RefundEscrow>,
 ) -> Result<Json<RefundResponse>, AppError> {
     if !is_maintainer(&state, user.github_id, body.repo_id).await? {
         return Err(AppError::forbidden(
@@ -263,7 +255,7 @@ pub async fn refund(
     path = "/api/escrow/close-unsigned",
     tag = "Escrow",
     security(("bearer_auth" = [])),
-    request_body = CloseEscrowBody,
+    request_body = CloseEscrow,
     responses(
         (status = 200, description = "Unsigned escrow close transaction", body = UnsignedTransactionResponse),
         (status = 400, description = "No escrow deployed for this repository", body = ErrorResponse),
@@ -275,7 +267,7 @@ pub async fn refund(
 pub async fn close_unsigned(
     State(state): State<AppState>,
     user: AuthedUser,
-    Json(body): Json<CloseEscrowBody>,
+    Json(body): Json<CloseEscrow>,
 ) -> Result<Json<UnsignedTransactionResponse>, AppError> {
     let repo = get_repo_by_id(&state, body.repo_id)
         .await?
@@ -304,7 +296,7 @@ pub async fn close_unsigned(
     path = "/api/escrow/submit-close",
     tag = "Escrow",
     security(("bearer_auth" = [])),
-    request_body = SubmitCloseBody,
+    request_body = SubmitClose,
     responses(
         (status = 200, description = "Escrow close transaction submitted", body = OkResponse),
         (status = 401, description = "Missing or invalid bearer token", body = ErrorResponse),
@@ -315,7 +307,7 @@ pub async fn close_unsigned(
 pub async fn submit_close(
     State(state): State<AppState>,
     user: AuthedUser,
-    Json(body): Json<SubmitCloseBody>,
+    Json(body): Json<SubmitClose>,
 ) -> Result<Json<OkResponse>, AppError> {
     if !is_maintainer(&state, user.github_id, body.repo_id).await? {
         return Err(AppError::forbidden(
