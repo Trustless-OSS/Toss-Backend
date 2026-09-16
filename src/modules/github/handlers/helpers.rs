@@ -10,8 +10,8 @@ use crate::{
     error::AppError,
     infra::stellar::signer::sign_and_send_transaction,
     modules::{
-        escrow::repository::update_repo_escrow_balance, escrow::trustless_work::client::tw_fetch,
-        repo::repository::get_repo_by_id,
+        escrow::repository::update_repo_escrow_balance,
+        escrow::trustless_work::api_client::tw_fetch, repo::repository::get_repo_by_id,
     },
     shared::models::Repo,
     state::AppState,

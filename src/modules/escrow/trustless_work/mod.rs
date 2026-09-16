@@ -1,3 +1,3 @@
-pub mod client;
-pub mod escrow;
-pub mod unsigned_tx;
+pub mod api_client;
+pub mod escrow_service;
+pub mod tx_builder;

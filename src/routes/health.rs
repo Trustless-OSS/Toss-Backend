@@ -10,7 +10,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 
 use crate::{
-    infra::redis, lifecycle, modules::escrow::trustless_work::client::health_check,
+    infra::redis, lifecycle, modules::escrow::trustless_work::api_client::health_check,
     modules::repo::repository::ping_db, state::AppState,
 };
 

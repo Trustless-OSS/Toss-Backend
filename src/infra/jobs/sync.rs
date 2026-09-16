@@ -2,7 +2,7 @@ use tracing::{info, warn};
 
 use crate::{
     error::AppError, modules::escrow::repository::list_active_escrow_repos,
-    modules::escrow::service::sync_repo_escrow_balance, state::AppState,
+    modules::escrow::trustless_work::escrow_service::TrustlessWorkAPI, state::AppState,
 };
 
 pub(crate) async fn run(state: &AppState) -> Result<serde_json::Value, AppError> {
@@ -12,7 +12,10 @@ pub(crate) async fn run(state: &AppState) -> Result<serde_json::Value, AppError>
     let mut failed = 0usize;
 
     for repo in &repos {
-        match sync_repo_escrow_balance(state, repo).await {
+        match TrustlessWorkAPI::new(state.clone())
+            .sync_balance(repo)
+            .await
+        {
             Ok(balance) => {
                 synced += 1;
                 if balance != repo.escrow_balance {

@@ -11,9 +11,7 @@ use crate::{
             update_issue_status,
         },
         contributor::repository::get_contributor_by_github_id,
-        escrow::service::{
-            fetch_milestone_state, push_milestone_on_chain, release_escrow_milestone,
-        },
+        escrow::trustless_work::escrow_service::TrustlessWorkAPI,
         github::{
             auth::{
                 fetch_github_issue, fetch_github_pull_request, post_comment, GitHubPullRequest,
@@ -139,7 +137,11 @@ pub async fn evaluate(state: &AppState, ctx: &IssueContext) -> Result<Decision, 
     };
 
     let chain = match issue.milestone_index {
-        Some(index) => fetch_milestone_state(state, contract_id, index).await?,
+        Some(index) => {
+            TrustlessWorkAPI::new(state.clone())
+                .fetch_milestone_state(contract_id, index)
+                .await?
+        }
         None => None,
     };
 
@@ -322,8 +324,9 @@ pub async fn push_milestone(
     payout_address: &str,
     payout_chain: &str,
 ) -> Result<i32, AppError> {
-    let milestone_index =
-        push_milestone_on_chain(state, &ctx.repo, &ctx.issue, payout_address, payout_chain).await?;
+    let milestone_index = TrustlessWorkAPI::new(state.clone())
+        .push_milestone(&ctx.repo, &ctx.issue, payout_address, payout_chain)
+        .await?;
 
     let contract_id = ctx.repo.escrow_contract_id.as_deref().unwrap_or("");
     let username = ctx
@@ -371,7 +374,9 @@ async fn release_full(state: &AppState, ctx: &IssueContext) -> Result<(), AppErr
         .as_ref()
         .ok_or_else(|| AppError::internal("release requires an assignment"))?;
 
-    let tx_hash = release_escrow_milestone(state, &ctx.repo, &ctx.issue).await?;
+    let tx_hash = TrustlessWorkAPI::new(state.clone())
+        .release_milestone(&ctx.repo, &ctx.issue)
+        .await?;
 
     update_assignment_payout_status(state, assignment.id, "released").await?;
     update_issue_status(state, ctx.issue.id, "completed", None).await?;

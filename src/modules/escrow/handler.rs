@@ -7,14 +7,14 @@ use crate::{
     middleware::auth::AuthedUser,
     modules::{
         bounty::repository::list_issues_to_cancel,
-        escrow::repository::{update_repo_escrow_balance, update_repo_escrow_funder_wallet},
+        escrow::repository::update_repo_escrow_funder_wallet,
         escrow::{
             dto::{
                 CloseEscrow, ContractIdResponse, CreateEscrow, FundEscrow, OkResponse,
                 RefundEscrow, RefundResponse, SubmitClose, SubmitDeploy, SubmitFund,
                 SubmitFundResponse, UnsignedTransactionResponse,
             },
-            service,
+            trustless_work::{escrow_service::TrustlessWorkAPI, tx_builder::TxBuilder},
         },
         github::auth::post_comment,
         repo::repository::{get_repo_by_id, is_maintainer},
@@ -52,7 +52,7 @@ pub async fn create_escrow_unsigned(
     }
 
     let unsigned_transaction =
-        service::create_unsigned_escrow(&state, &repo, &body.maintainer_wallet).await?;
+        TxBuilder::create_escrow(&state, &repo, &body.maintainer_wallet).await?;
 
     Ok(Json(UnsignedTransactionResponse {
         unsigned_transaction,
@@ -83,7 +83,9 @@ pub async fn submit_deploy(
         ));
     }
 
-    let contract_id = service::submit_deploy_escrow(&state, body.repo_id, &body.signed_xdr).await?;
+    let contract_id = TrustlessWorkAPI::new(state.clone())
+        .deploy(body.repo_id, &body.signed_xdr)
+        .await?;
 
     Ok(Json(ContractIdResponse { contract_id }))
 }
@@ -136,7 +138,7 @@ pub async fn fund_unsigned(
     }
 
     let unsigned_transaction =
-        service::create_fund_unsigned(&state, &repo, body.amount, &body.funder_wallet).await?;
+        TxBuilder::fund_escrow(&state, &repo, body.amount, &body.funder_wallet).await?;
 
     update_repo_escrow_funder_wallet(&state, repo.id, &body.funder_wallet).await?;
 
@@ -162,30 +164,14 @@ pub async fn submit_fund(
     _user: AuthedUser,
     Json(body): Json<SubmitFund>,
 ) -> Result<Json<SubmitFundResponse>, AppError> {
-    use crate::modules::escrow::trustless_work::client::tw_fetch;
+    let new_balance = TrustlessWorkAPI::new(state.clone())
+        .fund(body.repo_id, body.amount, &body.signed_xdr)
+        .await?;
 
-    tw_fetch(
-        &state,
-        "/helper/send-transaction",
-        reqwest::Method::POST,
-        Some(serde_json::json!({ "signedXdr": body.signed_xdr })),
-    )
-    .await?;
-
-    if let Some(repo) = get_repo_by_id(&state, body.repo_id).await? {
-        let new_balance = repo.escrow_balance + body.amount;
-        update_repo_escrow_balance(&state, body.repo_id, new_balance, Some(repo.github_repo_id))
-            .await?;
-        Ok(Json(SubmitFundResponse {
-            ok: true,
-            new_balance: Some(new_balance),
-        }))
-    } else {
-        Ok(Json(SubmitFundResponse {
-            ok: true,
-            new_balance: None,
-        }))
-    }
+    Ok(Json(SubmitFundResponse {
+        ok: true,
+        new_balance: Some(new_balance),
+    }))
 }
 
 #[utoipa::path(
@@ -230,12 +216,20 @@ pub async fn refund(
     let issues_to_cancel = list_issues_to_cancel(&state, repo.id).await?;
     let contract_id = repo.escrow_contract_id.clone().unwrap_or_default();
 
-    let (refunded_amount, cancelled_issues) =
-        service::refund_escrow(&state, &repo, funder_wallet).await?;
+    let (refunded_amount, cancelled_issues) = TrustlessWorkAPI::new(state.clone())
+        .refund(&repo, funder_wallet)
+        .await?;
 
     for issue in &issues_to_cancel {
         let comment = format!(
-            "🚫 **Bounty Cancelled.**\n\nThe maintainer has withdrawn funds from the escrow. This bounty is now cancelled.\n\n[View Escrow Contract](https://viewer.trustlesswork.com/{contract_id})"
+            "## 🚫 Bounty Cancelled\n\n\
+             > **Status:** Cancelled  \n\
+             > **Reason:** A repository maintainer withdrew the escrowed funds.\n\n\
+             ### What this means\n\n\
+             - No further work or pull requests for this issue are eligible for a payout.\n\
+             - The bounty will not be reopened unless the repository maintainer creates a new one.\n\n\
+             ### Escrow\n\n\
+             [View escrow contract →](https://viewer.trustlesswork.com/{contract_id})"
         );
         if let Err(error) =
             post_comment(&state, &repo.full_name, issue.github_issue_number, &comment).await
@@ -284,7 +278,7 @@ pub async fn close_unsigned(
     }
 
     let unsigned_transaction =
-        service::create_close_unsigned(&state, &repo, &body.maintainer_wallet).await?;
+        TxBuilder::close_escrow(&state, &repo, &body.maintainer_wallet).await?;
 
     Ok(Json(UnsignedTransactionResponse {
         unsigned_transaction,
@@ -315,7 +309,9 @@ pub async fn submit_close(
         ));
     }
 
-    service::submit_close_escrow(&state, body.repo_id, &body.signed_xdr).await?;
+    TrustlessWorkAPI::new(state.clone())
+        .close(body.repo_id, &body.signed_xdr)
+        .await?;
 
     Ok(Json(OkResponse { ok: true }))
 }
