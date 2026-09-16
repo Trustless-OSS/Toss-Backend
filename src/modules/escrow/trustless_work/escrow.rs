@@ -1,16 +1,20 @@
 use crate::error::AppError;
+use crate::modules::github;
 use crate::state::AppState;
+use uuid::Uuid;
 
-pub struct TrustlessWorkClient {
+use super::unsigned_tx::UnsignedTx;
+
+pub struct TrustlessWorkAPI {
     state: AppState,
 }
 
-impl TrustlessWorkClient {
+impl TrustlessWorkAPI {
     pub fn new(state: AppState) -> Self {
         Self { state }
     }
 
-    pub async fn deploy(&self) -> Result<String, AppError> {
+    pub async fn deploy(&self, repo_id: Uuid, signed_xdr: &str) -> Result<String, AppError> {
         todo!()
     }
 
