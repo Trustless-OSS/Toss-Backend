@@ -3,25 +3,25 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
-// ── Request bodies ────────────────────────────────────────────────────────────
+// Request DTO
 
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct CreateEscrowBody {
+pub struct CreateEscrow {
     pub repo_id: Uuid,
     pub maintainer_wallet: String,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct SubmitDeployBody {
+pub struct SubmitDeploy {
     pub repo_id: Uuid,
     pub signed_xdr: String,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct FundEscrowBody {
+pub struct FundEscrow {
     pub repo_id: Uuid,
     pub amount: Decimal,
     pub funder_wallet: String,
@@ -29,33 +29,34 @@ pub struct FundEscrowBody {
 
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct SubmitFundBody {
+pub struct SubmitFund {
     pub repo_id: Uuid,
     pub amount: Decimal,
+    pub funder_wallet: String,
     pub signed_xdr: String,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct RefundEscrowBody {
+pub struct RefundEscrow {
     pub repo_id: Uuid,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct CloseEscrowBody {
+pub struct CloseEscrow {
     pub repo_id: Uuid,
     pub maintainer_wallet: String,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct SubmitCloseBody {
+pub struct SubmitClose {
     pub repo_id: Uuid,
     pub signed_xdr: String,
 }
 
-// ── Response structs ──────────────────────────────────────────────────────────
+// Response DTO
 
 #[derive(Debug, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]

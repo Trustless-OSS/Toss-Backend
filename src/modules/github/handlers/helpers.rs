@@ -9,10 +9,7 @@ use tracing::warn;
 use crate::{
     error::AppError,
     infra::stellar::signer::sign_and_send_transaction,
-    modules::{
-        escrow::repository::update_repo_escrow_balance, escrow::trustless_work::client::tw_fetch,
-        repo::repository::get_repo_by_id,
-    },
+    modules::{escrow::trustless_work::api_client::tw_fetch, repo::repository::get_repo_by_id},
     shared::models::Repo,
     state::AppState,
 };
@@ -121,33 +118,20 @@ pub fn explorer_tx_url(state: &AppState, tx_hash: &str, contract_id: &str) -> St
 }
 
 pub async fn sync_repo_balance(state: &AppState, repo: &mut Repo) -> Result<(), AppError> {
-    let contract_id = match repo.escrow_contract_id.as_deref() {
-        Some(id) => id,
-        None => return Ok(()),
-    };
-
-    let escrow_array = tw_fetch(
-        state,
-        &format!("/helper/get-escrow-by-contract-ids?contractIds[]={contract_id}"),
-        Method::GET,
-        None,
-    )
-    .await?;
-
-    let on_chain_balance = escrow_array
-        .as_array()
-        .and_then(|items| items.first())
-        .and_then(|item| item.get("balance"))
-        .and_then(|value| value.as_f64())
-        .and_then(Decimal::from_f64_retain)
-        .unwrap_or(repo.escrow_balance);
-
-    if on_chain_balance != repo.escrow_balance {
-        update_repo_escrow_balance(state, repo.id, on_chain_balance, Some(repo.github_repo_id))
-            .await?;
-        repo.escrow_balance = on_chain_balance;
+    if repo
+        .escrow_contract_id
+        .as_deref()
+        .is_none_or(|id| id.trim().is_empty())
+    {
+        return Ok(());
     }
 
+    let balance = crate::modules::escrow::trustless_work::escrow_service::TrustlessWorkAPI::new(
+        state.clone(),
+    )
+    .sync_balance(repo)
+    .await?;
+    repo.escrow_balance = balance;
     Ok(())
 }
 

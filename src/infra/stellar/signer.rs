@@ -7,7 +7,9 @@ use stellar_xdr::{
 };
 use tracing::info;
 
-use crate::{error::AppError, modules::escrow::trustless_work::client::tw_fetch, state::AppState};
+use crate::{
+    error::AppError, modules::escrow::trustless_work::api_client::tw_fetch, state::AppState,
+};
 
 pub async fn sign_and_send_transaction(
     state: &AppState,

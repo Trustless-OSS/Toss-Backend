@@ -1,11 +1,3 @@
-/// Thin Axum handler functions.
-///
-/// Each handler is responsible only for:
-///   1. Extracting data from the HTTP request.
-///   2. Calling the relevant `service` function.
-///   3. Shaping the HTTP response.
-///
-/// No business logic lives here.
 use axum::{extract::State, Json};
 use rust_decimal::Decimal;
 use tracing::error;
@@ -15,14 +7,13 @@ use crate::{
     middleware::auth::AuthedUser,
     modules::{
         bounty::repository::list_issues_to_cancel,
-        escrow::repository::{update_repo_escrow_balance, update_repo_escrow_funder_wallet},
         escrow::{
             dto::{
-                CloseEscrowBody, ContractIdResponse, CreateEscrowBody, FundEscrowBody, OkResponse,
-                RefundEscrowBody, RefundResponse, SubmitCloseBody, SubmitDeployBody,
-                SubmitFundBody, SubmitFundResponse, UnsignedTransactionResponse,
+                CloseEscrow, ContractIdResponse, CreateEscrow, FundEscrow, OkResponse,
+                RefundEscrow, RefundResponse, SubmitClose, SubmitDeploy, SubmitFund,
+                SubmitFundResponse, UnsignedTransactionResponse,
             },
-            service,
+            trustless_work::{escrow_service::TrustlessWorkAPI, tx_builder::TxBuilder},
         },
         github::auth::post_comment,
         repo::repository::{get_repo_by_id, is_maintainer},
@@ -35,7 +26,7 @@ use crate::{
     path = "/api/escrow/create-unsigned",
     tag = "Escrow",
     security(("bearer_auth" = [])),
-    request_body = CreateEscrowBody,
+    request_body = CreateEscrow,
     responses(
         (status = 200, description = "Unsigned escrow deploy transaction", body = UnsignedTransactionResponse),
         (status = 401, description = "Missing or invalid bearer token", body = ErrorResponse),
@@ -47,7 +38,7 @@ use crate::{
 pub async fn create_escrow_unsigned(
     State(state): State<AppState>,
     user: AuthedUser,
-    Json(body): Json<CreateEscrowBody>,
+    Json(body): Json<CreateEscrow>,
 ) -> Result<Json<UnsignedTransactionResponse>, AppError> {
     let repo = get_repo_by_id(&state, body.repo_id)
         .await?
@@ -60,7 +51,7 @@ pub async fn create_escrow_unsigned(
     }
 
     let unsigned_transaction =
-        service::create_unsigned_escrow(&state, &repo, &body.maintainer_wallet).await?;
+        TxBuilder::create_escrow(&state, &repo, &body.maintainer_wallet).await?;
 
     Ok(Json(UnsignedTransactionResponse {
         unsigned_transaction,
@@ -72,7 +63,7 @@ pub async fn create_escrow_unsigned(
     path = "/api/escrow/submit-deploy",
     tag = "Escrow",
     security(("bearer_auth" = [])),
-    request_body = SubmitDeployBody,
+    request_body = SubmitDeploy,
     responses(
         (status = 200, description = "Escrow contract deployed", body = ContractIdResponse),
         (status = 401, description = "Missing or invalid bearer token", body = ErrorResponse),
@@ -83,7 +74,7 @@ pub async fn create_escrow_unsigned(
 pub async fn submit_deploy(
     State(state): State<AppState>,
     user: AuthedUser,
-    Json(body): Json<SubmitDeployBody>,
+    Json(body): Json<SubmitDeploy>,
 ) -> Result<Json<ContractIdResponse>, AppError> {
     if !is_maintainer(&state, user.github_id, body.repo_id).await? {
         return Err(AppError::forbidden(
@@ -91,7 +82,9 @@ pub async fn submit_deploy(
         ));
     }
 
-    let contract_id = service::submit_deploy_escrow(&state, body.repo_id, &body.signed_xdr).await?;
+    let contract_id = TrustlessWorkAPI::new(state.clone())
+        .deploy(body.repo_id, &body.signed_xdr)
+        .await?;
 
     Ok(Json(ContractIdResponse { contract_id }))
 }
@@ -101,7 +94,7 @@ pub async fn submit_deploy(
     path = "/api/escrow/fund-unsigned",
     tag = "Escrow",
     security(("bearer_auth" = [])),
-    request_body = FundEscrowBody,
+    request_body = FundEscrow,
     responses(
         (status = 200, description = "Unsigned escrow fund transaction", body = UnsignedTransactionResponse),
         (status = 400, description = "Invalid amount, wallet, or escrow state", body = ErrorResponse),
@@ -113,7 +106,7 @@ pub async fn submit_deploy(
 pub async fn fund_unsigned(
     State(state): State<AppState>,
     user: AuthedUser,
-    Json(body): Json<FundEscrowBody>,
+    Json(body): Json<FundEscrow>,
 ) -> Result<Json<UnsignedTransactionResponse>, AppError> {
     if body.amount <= Decimal::ZERO || body.funder_wallet.is_empty() {
         return Err(AppError::bad_request("Invalid amount or funder wallet"));
@@ -144,9 +137,7 @@ pub async fn fund_unsigned(
     }
 
     let unsigned_transaction =
-        service::create_fund_unsigned(&state, &repo, body.amount, &body.funder_wallet).await?;
-
-    update_repo_escrow_funder_wallet(&state, repo.id, &body.funder_wallet).await?;
+        TxBuilder::fund_escrow(&state, &repo, body.amount, &body.funder_wallet).await?;
 
     Ok(Json(UnsignedTransactionResponse {
         unsigned_transaction,
@@ -158,42 +149,43 @@ pub async fn fund_unsigned(
     path = "/api/escrow/submit-fund",
     tag = "Escrow",
     security(("bearer_auth" = [])),
-    request_body = SubmitFundBody,
+    request_body = SubmitFund,
     responses(
         (status = 200, description = "Fund transaction submitted and local balance updated", body = SubmitFundResponse),
+        (status = 400, description = "Invalid amount, wallet, or escrow state", body = ErrorResponse),
         (status = 401, description = "Missing or invalid bearer token", body = ErrorResponse),
+        (status = 403, description = "Caller is not a maintainer", body = ErrorResponse),
         (status = 500, description = "Failed to submit fund transaction", body = ErrorResponse)
     )
 )]
 pub async fn submit_fund(
     State(state): State<AppState>,
-    _user: AuthedUser,
-    Json(body): Json<SubmitFundBody>,
+    user: AuthedUser,
+    Json(body): Json<SubmitFund>,
 ) -> Result<Json<SubmitFundResponse>, AppError> {
-    use crate::modules::escrow::trustless_work::client::tw_fetch;
-
-    tw_fetch(
-        &state,
-        "/helper/send-transaction",
-        reqwest::Method::POST,
-        Some(serde_json::json!({ "signedXdr": body.signed_xdr })),
-    )
-    .await?;
-
-    if let Some(repo) = get_repo_by_id(&state, body.repo_id).await? {
-        let new_balance = repo.escrow_balance + body.amount;
-        update_repo_escrow_balance(&state, body.repo_id, new_balance, Some(repo.github_repo_id))
-            .await?;
-        Ok(Json(SubmitFundResponse {
-            ok: true,
-            new_balance: Some(new_balance),
-        }))
-    } else {
-        Ok(Json(SubmitFundResponse {
-            ok: true,
-            new_balance: None,
-        }))
+    if body.amount <= Decimal::ZERO || body.funder_wallet.is_empty() {
+        return Err(AppError::bad_request("Invalid amount or funder wallet"));
     }
+
+    if !is_maintainer(&state, user.github_id, body.repo_id).await? {
+        return Err(AppError::forbidden(
+            "Forbidden: Only maintainers can fund the escrow",
+        ));
+    }
+
+    let new_balance = TrustlessWorkAPI::new(state.clone())
+        .fund(
+            body.repo_id,
+            &body.signed_xdr,
+            &body.funder_wallet,
+            body.amount,
+        )
+        .await?;
+
+    Ok(Json(SubmitFundResponse {
+        ok: true,
+        new_balance: Some(new_balance),
+    }))
 }
 
 #[utoipa::path(
@@ -201,7 +193,7 @@ pub async fn submit_fund(
     path = "/api/escrow/refund",
     tag = "Escrow",
     security(("bearer_auth" = [])),
-    request_body = RefundEscrowBody,
+    request_body = RefundEscrow,
     responses(
         (status = 200, description = "Escrow refunded and open bounties cancelled", body = RefundResponse),
         (status = 400, description = "Escrow has no recorded funding wallet", body = ErrorResponse),
@@ -214,7 +206,7 @@ pub async fn submit_fund(
 pub async fn refund(
     State(state): State<AppState>,
     user: AuthedUser,
-    Json(body): Json<RefundEscrowBody>,
+    Json(body): Json<RefundEscrow>,
 ) -> Result<Json<RefundResponse>, AppError> {
     if !is_maintainer(&state, user.github_id, body.repo_id).await? {
         return Err(AppError::forbidden(
@@ -238,12 +230,20 @@ pub async fn refund(
     let issues_to_cancel = list_issues_to_cancel(&state, repo.id).await?;
     let contract_id = repo.escrow_contract_id.clone().unwrap_or_default();
 
-    let (refunded_amount, cancelled_issues) =
-        service::refund_escrow(&state, &repo, funder_wallet).await?;
+    let (refunded_amount, cancelled_issues) = TrustlessWorkAPI::new(state.clone())
+        .refund(&repo, funder_wallet)
+        .await?;
 
     for issue in &issues_to_cancel {
         let comment = format!(
-            "🚫 **Bounty Cancelled.**\n\nThe maintainer has withdrawn funds from the escrow. This bounty is now cancelled.\n\n[View Escrow Contract](https://viewer.trustlesswork.com/{contract_id})"
+            "## 🚫 Bounty Cancelled\n\n\
+             > **Status:** Cancelled  \n\
+             > **Reason:** A repository maintainer withdrew the escrowed funds.\n\n\
+             ### What this means\n\n\
+             - No further work or pull requests for this issue are eligible for a payout.\n\
+             - The bounty will not be reopened unless the repository maintainer creates a new one.\n\n\
+             ### Escrow\n\n\
+             [View escrow contract →](https://viewer.trustlesswork.com/{contract_id})"
         );
         if let Err(error) =
             post_comment(&state, &repo.full_name, issue.github_issue_number, &comment).await
@@ -263,7 +263,7 @@ pub async fn refund(
     path = "/api/escrow/close-unsigned",
     tag = "Escrow",
     security(("bearer_auth" = [])),
-    request_body = CloseEscrowBody,
+    request_body = CloseEscrow,
     responses(
         (status = 200, description = "Unsigned escrow close transaction", body = UnsignedTransactionResponse),
         (status = 400, description = "No escrow deployed for this repository", body = ErrorResponse),
@@ -275,7 +275,7 @@ pub async fn refund(
 pub async fn close_unsigned(
     State(state): State<AppState>,
     user: AuthedUser,
-    Json(body): Json<CloseEscrowBody>,
+    Json(body): Json<CloseEscrow>,
 ) -> Result<Json<UnsignedTransactionResponse>, AppError> {
     let repo = get_repo_by_id(&state, body.repo_id)
         .await?
@@ -292,7 +292,7 @@ pub async fn close_unsigned(
     }
 
     let unsigned_transaction =
-        service::create_close_unsigned(&state, &repo, &body.maintainer_wallet).await?;
+        TxBuilder::close_escrow(&state, &repo, &body.maintainer_wallet).await?;
 
     Ok(Json(UnsignedTransactionResponse {
         unsigned_transaction,
@@ -304,7 +304,7 @@ pub async fn close_unsigned(
     path = "/api/escrow/submit-close",
     tag = "Escrow",
     security(("bearer_auth" = [])),
-    request_body = SubmitCloseBody,
+    request_body = SubmitClose,
     responses(
         (status = 200, description = "Escrow close transaction submitted", body = OkResponse),
         (status = 401, description = "Missing or invalid bearer token", body = ErrorResponse),
@@ -315,7 +315,7 @@ pub async fn close_unsigned(
 pub async fn submit_close(
     State(state): State<AppState>,
     user: AuthedUser,
-    Json(body): Json<SubmitCloseBody>,
+    Json(body): Json<SubmitClose>,
 ) -> Result<Json<OkResponse>, AppError> {
     if !is_maintainer(&state, user.github_id, body.repo_id).await? {
         return Err(AppError::forbidden(
@@ -323,7 +323,9 @@ pub async fn submit_close(
         ));
     }
 
-    service::submit_close_escrow(&state, body.repo_id, &body.signed_xdr).await?;
+    TrustlessWorkAPI::new(state.clone())
+        .close(body.repo_id, &body.signed_xdr)
+        .await?;
 
     Ok(Json(OkResponse { ok: true }))
 }

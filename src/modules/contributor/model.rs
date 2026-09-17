@@ -1,7 +1,3 @@
-//! Contributor module API types.
-//!
-//! Database entities live in [`crate::shared::models::Contributor`].
-
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;

@@ -1,12 +1,11 @@
-use std::sync::Arc;
-
-use reqwest::Client;
-
 use crate::{
     config::Config,
     error::AppError,
-    infra::{cache::Cache, db, queue::QueueInfra, redis},
+    infra::{cache::Cache, db, email::resend_provider, queue::QueueInfra, redis},
 };
+use reqwest::Client;
+use resend_rs::Resend;
+use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -16,6 +15,7 @@ pub struct AppState {
     pub http_client: Client,
     pub cache: Cache,
     pub queue: QueueInfra,
+    pub email: Resend,
 }
 
 impl AppState {
@@ -24,9 +24,6 @@ impl AppState {
         let redis = Some(redis::build_client(&config.redis_url)?);
         let cache = Cache::new(redis.clone());
 
-        // A queue that cannot connect must not take the API down with it: fall
-        // back to a disabled hub, which makes webhook routes process inline the
-        // same way they did before Redis was reachable.
         let queue = match QueueInfra::connect(
             &config.redis_url,
             &config.bullmq_prefix,
@@ -41,6 +38,8 @@ impl AppState {
             }
         };
 
+        let email = resend_provider::connect(&config.resend_api_key).await?;
+
         Ok(Self {
             config: Arc::new(config),
             db,
@@ -48,6 +47,7 @@ impl AppState {
             http_client: Client::new(),
             cache,
             queue,
+            email,
         })
     }
 }

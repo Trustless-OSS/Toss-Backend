@@ -31,7 +31,7 @@ pub(crate) async fn root_handler() -> Json<RootResponse> {
     Json(RootResponse {
         service: "trustless-oss-backend",
         status: "ok",
-        message: "Trustless-OSS Rust backend is running.",
+        message: "Trustless-OSS Rust API is running.",
     })
 }
 

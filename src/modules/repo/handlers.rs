@@ -5,7 +5,7 @@ use axum::{
 };
 use rust_decimal::Decimal;
 use serde::Deserialize;
-use utoipa::ToSchema;
+use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
 
 use crate::{
@@ -13,8 +13,8 @@ use crate::{
     middleware::auth::AuthedUser,
     modules::repo::{
         model::{
-            ConnectRepoInput, OkResponse, RepoAccessInput, RepoDetails, RepoResponse,
-            SyncInstallationInput, SyncInstallationResult, UpdateRewardsInput,
+            ConnectRepoInput, InstallationReposList, OkResponse, RepoAccessInput, RepoDetails,
+            RepoResponse, SyncInstallationInput, SyncInstallationResult, UpdateRewardsInput,
         },
         service,
     },
@@ -45,6 +45,18 @@ pub(crate) struct UpdateRewardsBody {
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SyncInstallationBody {
+    #[serde(alias = "installation_id")]
+    installation_id: i64,
+    #[serde(default, alias = "github_repo_id")]
+    github_repo_id: Option<i64>,
+    #[serde(default, alias = "github_repo_ids")]
+    github_repo_ids: Option<Vec<i64>>,
+}
+
+#[derive(Debug, Deserialize, IntoParams, ToSchema)]
+#[into_params(parameter_in = Query)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct InstallationReposQuery {
     #[serde(alias = "installation_id")]
     installation_id: i64,
 }
@@ -125,6 +137,27 @@ pub(crate) async fn connect_repo(
 }
 
 #[utoipa::path(
+    get,
+    path = "/api/repos/installation-repos",
+    tag = "Repos",
+    security(("bearer_auth" = [])),
+    params(InstallationReposQuery),
+    responses(
+        (status = 200, description = "Public non-fork repositories on a GitHub App installation", body = InstallationReposList),
+        (status = 401, description = "Missing or invalid bearer token", body = ErrorResponse),
+        (status = 500, description = "Failed to list installation repositories", body = ErrorResponse)
+    )
+)]
+pub(crate) async fn list_installation_repos(
+    State(state): State<AppState>,
+    _user: AuthedUser,
+    Query(query): Query<InstallationReposQuery>,
+) -> Result<Json<InstallationReposList>, AppError> {
+    let response = service::list_installation_repos_for_sync(&state, query.installation_id).await?;
+    Ok(Json(response))
+}
+
+#[utoipa::path(
     post,
     path = "/api/repos/sync-installation",
     tag = "Repos",
@@ -133,6 +166,7 @@ pub(crate) async fn connect_repo(
     responses(
         (status = 200, description = "GitHub App installation repositories synced", body = SyncInstallationResult),
         (status = 401, description = "Missing or invalid bearer token", body = ErrorResponse),
+        (status = 404, description = "Requested installation repository not found", body = ErrorResponse),
         (status = 500, description = "Failed to sync installation", body = ErrorResponse)
     )
 )]
@@ -144,6 +178,8 @@ pub(crate) async fn sync_installation(
     let input = SyncInstallationInput {
         installation_id: body.installation_id,
         installer_github_id: user.github_id,
+        github_repo_id: body.github_repo_id,
+        github_repo_ids: body.github_repo_ids,
     };
     let response = service::sync_installation(&state, input).await?;
     Ok(Json(response))
@@ -269,11 +305,17 @@ mod tests {
 
     #[test]
     fn sync_installation_body_accepts_camel_and_snake_case() {
-        let camel: SyncInstallationBody =
-            serde_json::from_str(r#"{"installationId": 153860735}"#).unwrap();
+        let camel: SyncInstallationBody = serde_json::from_str(
+            r#"{"installationId": 153860735, "githubRepoId": 42, "githubRepoIds": [1, 2]}"#,
+        )
+        .unwrap();
         let snake: SyncInstallationBody =
             serde_json::from_str(r#"{"installation_id": 153860735}"#).unwrap();
         assert_eq!(camel.installation_id, 153860735);
+        assert_eq!(camel.github_repo_id, Some(42));
+        assert_eq!(camel.github_repo_ids, Some(vec![1, 2]));
         assert_eq!(snake.installation_id, 153860735);
+        assert_eq!(snake.github_repo_id, None);
+        assert_eq!(snake.github_repo_ids, None);
     }
 }

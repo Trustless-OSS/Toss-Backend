@@ -1,20 +1,3 @@
-//! The bounty issue state machine.
-//!
-//! This module owns the rules that decide whether a bounty may move forward and
-//! the actions that move it. It is deliberately free of any queue concerns: the
-//! `advance-issue`, `push-milestone` and `release-payout` workers in
-//! [`crate::infra::jobs`] call into it, and it never imports `bullmq`.
-//!
-//! Two invariants drive everything here:
-//!
-//! 1. **Rules are re-checked live.** Every decision re-reads Postgres, GitHub and
-//!    the escrow contract. A job that was enqueued minutes ago never acts on the
-//!    state that existed when it was created.
-//! 2. **Money moves only forward, once.** If the chain already shows the
-//!    milestone released, the only permitted action is repairing Postgres. A
-//!    receiver or amount that does not match the contributor's wallet blocks the
-//!    payout instead of retrying it.
-
 use rust_decimal::{prelude::ToPrimitive, Decimal};
 use serde_json::json;
 use tracing::{info, warn};
@@ -28,9 +11,7 @@ use crate::{
             update_issue_status,
         },
         contributor::repository::get_contributor_by_github_id,
-        escrow::service::{
-            fetch_milestone_state, push_milestone_on_chain, release_escrow_milestone,
-        },
+        escrow::trustless_work::escrow_service::TrustlessWorkAPI,
         github::{
             auth::{
                 fetch_github_issue, fetch_github_pull_request, post_comment, GitHubPullRequest,
@@ -45,7 +26,6 @@ use crate::{
     state::AppState,
 };
 
-/// Everything the rules need about one issue, read in a single pass.
 #[derive(Debug, Clone)]
 pub struct IssueContext {
     pub issue: Issue,
@@ -54,36 +34,32 @@ pub struct IssueContext {
     pub contributor: Option<Contributor>,
 }
 
-/// The next step the automation is allowed to take for an issue.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decision {
-    /// The contributor has not connected a payout wallet yet. Not a failure —
-    /// the flow resumes on its own once the wallet arrives.
-    WaitForWallet { github_username: String },
-    /// The wallet is known and the milestone is not on-chain yet.
+    WaitForWallet {
+        github_username: String,
+    },
     PushMilestone {
         payout_address: String,
         payout_chain: String,
     },
-    /// Every live rule passed; the milestone may be paid out.
     ReleasePayout {
         milestone_index: i32,
         split_percentage: Option<i32>,
     },
-    /// The chain already released this milestone but Postgres still says
-    /// otherwise. Repair the database; never send funds again.
-    RepairDatabase { milestone_index: i32 },
-    /// Nothing left to do for this issue.
+    RepairDatabase {
+        milestone_index: i32,
+    },
     Settled,
-    /// Waiting on an external event that is not the wallet (issue still open,
-    /// nobody assigned yet, …).
-    Waiting { reason: String },
-    /// A live rule failed in a way that must never be retried into a payment.
-    Blocked { reason: String },
+    Waiting {
+        reason: String,
+    },
+    Blocked {
+        reason: String,
+    },
 }
 
 impl Decision {
-    /// A short, stable label for logs and job return values.
     pub fn label(&self) -> &'static str {
         match self {
             Self::WaitForWallet { .. } => "wait-for-wallet",
@@ -96,10 +72,6 @@ impl Decision {
         }
     }
 
-    /// Why the flow is parked, if it is.
-    ///
-    /// Only states that resolve through an *external* change are worth
-    /// revisiting on a timer; terminal and blocked states are not.
     pub fn park_reason(&self) -> Option<String> {
         match self {
             Self::WaitForWallet { .. } => Some("waiting for a payout wallet".to_string()),
@@ -108,16 +80,11 @@ impl Decision {
         }
     }
 
-    /// Whether the automation should revisit this issue on a timer.
     pub fn wants_recheck(&self) -> bool {
         self.park_reason().is_some()
     }
 }
 
-/// Load every record the rules depend on for one issue.
-///
-/// Returns `Ok(None)` when the issue (or its repository) no longer exists, which
-/// makes a stale job a no-op rather than a failure.
 pub async fn load_context(
     state: &AppState,
     issue_id: Uuid,
@@ -139,12 +106,6 @@ pub async fn load_context(
     }))
 }
 
-/// Decide what the automation may do next for this issue.
-///
-/// This re-reads the escrow contract and (when the payout gate is reached)
-/// GitHub, so the answer reflects the world as it is right now. Transient
-/// failures propagate as `Err` so the caller's queue can retry them with
-/// backoff.
 pub async fn evaluate(state: &AppState, ctx: &IssueContext) -> Result<Decision, AppError> {
     let IssueContext {
         issue,
@@ -175,11 +136,12 @@ pub async fn evaluate(state: &AppState, ctx: &IssueContext) -> Result<Decision, 
         });
     };
 
-    // ── Chain truth first ────────────────────────────────────────────────────
-    // Reading the milestone before anything else means an already-paid issue can
-    // never fall through into a second payout, no matter what Postgres says.
     let chain = match issue.milestone_index {
-        Some(index) => fetch_milestone_state(state, contract_id, index).await?,
+        Some(index) => {
+            TrustlessWorkAPI::new(state.clone())
+                .fetch_milestone_state(contract_id, index)
+                .await?
+        }
         None => None,
     };
 
@@ -197,15 +159,11 @@ pub async fn evaluate(state: &AppState, ctx: &IssueContext) -> Result<Decision, 
     }
 
     if assignment.payout_status == "released" {
-        // Postgres claims the money left but the chain disagrees. Paying again to
-        // "fix" this is exactly the failure mode we must never have, so stop and
-        // surface it for a human instead.
         return Ok(Decision::Blocked {
             reason: "database marks the payout as released but the chain does not".to_string(),
         });
     }
 
-    // ── Wallet gate ──────────────────────────────────────────────────────────
     let payout_address = contributor
         .payout_address
         .as_deref()
@@ -224,7 +182,6 @@ pub async fn evaluate(state: &AppState, ctx: &IssueContext) -> Result<Decision, 
         .unwrap_or("stellar")
         .to_string();
 
-    // ── Milestone gate ───────────────────────────────────────────────────────
     let Some(chain) = chain else {
         return Ok(Decision::PushMilestone {
             payout_address: payout_address.to_string(),
@@ -232,12 +189,7 @@ pub async fn evaluate(state: &AppState, ctx: &IssueContext) -> Result<Decision, 
         });
     };
 
-    // ── Receiver / amount must match the contributor's wallet ────────────────
-    // A receiver mismatch means the milestone on-chain is stale — the contributor
-    // changed wallets since it was pushed. Paying the stale address would send
-    // money to the wrong place, so re-point the milestone instead. This moves no
-    // funds; it only rewrites the milestone to the contributor's current wallet,
-    // exactly as the original push did.
+    // stale on-chain receiver — re-push before payout
     if chain.receiver.as_deref() != Some(payout_address) {
         warn!(
             issue = issue.github_issue_number,
@@ -250,9 +202,7 @@ pub async fn evaluate(state: &AppState, ctx: &IssueContext) -> Result<Decision, 
         });
     }
 
-    // An amount mismatch is different: rewards only change while an issue is
-    // pending, so seeing one here means something moved that should not have.
-    // Stop and let a human look rather than paying either figure.
+    // amount mismatch is not auto-fixable
     if let Some(amount) = chain.amount {
         if amount != issue.reward_amount {
             return Ok(Decision::Blocked {
@@ -264,9 +214,14 @@ pub async fn evaluate(state: &AppState, ctx: &IssueContext) -> Result<Decision, 
         }
     }
 
-    // ── Completion gate: live GitHub re-read of the merged PR ────────────────
     match confirm_live_merge(state, repo, issue, assignment, Some(contributor)).await? {
-        MergeConfirmation::Merged => {}
+        MergeConfirmation::Merged => {
+            info!(
+                issue = issue.github_issue_number,
+                milestone = chain.index,
+                "PR merged and issue closed; authorizing complete → approve → release"
+            );
+        }
         MergeConfirmation::NotMerged { reason } => {
             return Ok(Decision::Waiting { reason });
         }
@@ -286,12 +241,6 @@ pub async fn evaluate(state: &AppState, ctx: &IssueContext) -> Result<Decision, 
     })
 }
 
-/// Whether GitHub currently reports the assigned contributor's PR as merged
-/// and the bounty issue as closed.
-///
-/// The webhook records `pr_number`; payout still re-fetches the PR with the
-/// GitHub App so a closed-without-merge issue, a later unlink, or an author
-/// mismatch cannot release funds.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum MergeConfirmation {
     Merged,
@@ -375,17 +324,15 @@ fn confirm_payout_pull_request(
     MergeConfirmation::Merged
 }
 
-// ── Actions ──────────────────────────────────────────────────────────────────
-
-/// Push the milestone on-chain and lock the reward for the contributor.
 pub async fn push_milestone(
     state: &AppState,
     ctx: &IssueContext,
     payout_address: &str,
     payout_chain: &str,
 ) -> Result<i32, AppError> {
-    let milestone_index =
-        push_milestone_on_chain(state, &ctx.repo, &ctx.issue, payout_address, payout_chain).await?;
+    let milestone_index = TrustlessWorkAPI::new(state.clone())
+        .push_milestone(&ctx.repo, &ctx.issue, payout_address, payout_chain)
+        .await?;
 
     let contract_id = ctx.repo.escrow_contract_id.as_deref().unwrap_or("");
     let username = ctx
@@ -408,16 +355,13 @@ pub async fn push_milestone(
     )
     .await
     {
-        // A failed comment must not roll back an on-chain milestone.
+        // comment failure must not undo on-chain push
         warn!(%error, "failed to comment after pushing the milestone");
     }
 
     Ok(milestone_index)
 }
 
-/// Release the bounty, then record the payout in Postgres.
-///
-/// The caller must have re-evaluated the rules immediately before this call.
 pub async fn release_payout(
     state: &AppState,
     ctx: &IssueContext,
@@ -436,7 +380,9 @@ async fn release_full(state: &AppState, ctx: &IssueContext) -> Result<(), AppErr
         .as_ref()
         .ok_or_else(|| AppError::internal("release requires an assignment"))?;
 
-    let tx_hash = release_escrow_milestone(state, &ctx.repo, &ctx.issue).await?;
+    let tx_hash = TrustlessWorkAPI::new(state.clone())
+        .release_milestone(&ctx.repo, &ctx.issue)
+        .await?;
 
     update_assignment_payout_status(state, assignment.id, "released").await?;
     update_issue_status(state, ctx.issue.id, "completed", None).await?;
@@ -506,8 +452,6 @@ async fn release_split(
 
     let maintainer = get_contributor_by_github_id(state, maintainer_github_id(&ctx.repo)).await?;
     let Some(maintainer_wallet) = maintainer.and_then(|value| value.stellar_wallet) else {
-        // The maintainer half has nowhere to go; this is a human step, not a
-        // transient failure, so report it and stop rather than retrying.
         post_comment(
             state,
             &ctx.repo.full_name,
@@ -573,10 +517,6 @@ async fn release_split(
     Ok(())
 }
 
-/// Bring Postgres in line with a chain that already released the milestone.
-///
-/// This moves no funds — it only repairs bookkeeping that drifted, which is the
-/// one action allowed once the chain says "released".
 pub async fn repair_database(
     state: &AppState,
     ctx: &IssueContext,
@@ -600,10 +540,6 @@ pub async fn repair_database(
     Ok(())
 }
 
-/// Tell the contributor the payout is parked on their wallet.
-///
-/// Replaces the old "run `@Trustless-OSS /retry`" instruction: nothing needs to
-/// be retried, the flow resumes by itself once the wallet is connected.
 pub async fn notify_waiting_for_wallet(
     state: &AppState,
     ctx: &IssueContext,

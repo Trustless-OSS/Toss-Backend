@@ -15,8 +15,9 @@ use crate::{
         },
         repo::{
             model::{
-                ConnectRepoInput, OkResponse, RepoAccessInput, RepoDetails, RepoResponse,
-                SyncInstallationInput, SyncInstallationResult, UpdateRewardsInput,
+                ConnectRepoInput, InstallationRepoSummary, InstallationReposList, OkResponse,
+                RepoAccessInput, RepoDetails, RepoResponse, SyncInstallationInput,
+                SyncInstallationResult, UpdateRewardsInput,
             },
             repository::{
                 count_repos_for_installation, delete_repo_cascade, get_repo_by_id,
@@ -74,6 +75,23 @@ pub(crate) async fn connect_repo(
     Ok(RepoResponse { repo })
 }
 
+pub(crate) async fn list_installation_repos_for_sync(
+    state: &AppState,
+    installation_id: i64,
+) -> Result<InstallationReposList, AppError> {
+    let repos = list_installation_repos(state, installation_id).await?;
+    let repositories = repos
+        .into_iter()
+        .filter(|repo| !repo.fork && !repo.private)
+        .map(|repo| InstallationRepoSummary {
+            github_repo_id: repo.id,
+            full_name: repo.full_name,
+        })
+        .collect();
+
+    Ok(InstallationReposList { repositories })
+}
+
 pub(crate) async fn sync_installation(
     state: &AppState,
     input: SyncInstallationInput,
@@ -81,9 +99,24 @@ pub(crate) async fn sync_installation(
     let repos = list_installation_repos(state, input.installation_id).await?;
     let mut synced = 0;
 
+    let filter_ids: Option<std::collections::HashSet<i64>> =
+        if let Some(ids) = input.github_repo_ids.as_ref().filter(|ids| !ids.is_empty()) {
+            Some(ids.iter().copied().collect())
+        } else {
+            input
+                .github_repo_id
+                .map(|id| std::collections::HashSet::from([id]))
+        };
+
     for repo in repos {
         if repo.fork || repo.private {
             continue;
+        }
+
+        if let Some(ref ids) = filter_ids {
+            if !ids.contains(&repo.id) {
+                continue;
+            }
         }
 
         upsert_installation_repo(
@@ -101,6 +134,12 @@ pub(crate) async fn sync_installation(
         .await?;
 
         synced += 1;
+    }
+
+    if filter_ids.is_some() && synced == 0 {
+        return Err(AppError::not_found(
+            "Requested installation repositories were not found or are private/forked",
+        ));
     }
 
     Ok(SyncInstallationResult { synced })

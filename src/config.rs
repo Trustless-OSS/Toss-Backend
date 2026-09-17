@@ -19,7 +19,7 @@ pub struct Config {
     pub bullmq_stalled_interval_ms: u64,
     /// How many times a stalled job is re-queued before it is failed.
     pub bullmq_max_stalled_count: u32,
-    /// Interval of the repeating `escrow-balance-sync` job scheduler.
+    /// Unused: repeating `escrow-balance-sync` was removed (sync is on fund/release).
     pub escrow_sync_interval_secs: u64,
     pub supabase_url: String,
     pub supabase_auth_api_key: String,
@@ -32,6 +32,7 @@ pub struct Config {
     pub dispute_resolver_stellar_secret_key: String,
     pub trustless_work_api_key: String,
     pub trustless_work_base_url: String,
+    pub trustless_work_health_escrow_contract: String,
     pub token_address: String,
     pub stellar_network: String,
     pub app_url: String,
@@ -39,6 +40,7 @@ pub struct Config {
     pub dev_webhook_proxy_enabled: bool,
     pub smee_source_url: String,
     pub smee_target_url: String,
+    pub resend_api_key: String,
 }
 
 impl Config {
@@ -88,6 +90,12 @@ impl Config {
             )?,
             trustless_work_api_key: required_env("TRUSTLESS_WORK_API_KEY")?,
             trustless_work_base_url: required_env("TRUSTLESS_WORK_BASE_URL")?,
+            trustless_work_health_escrow_contract: optional_env(
+                "TRUSTLESS_WORK_HEALTH_ESCROW_CONTRACT",
+            )
+            .unwrap_or_else(|| {
+                "CDQ6UR6RXUNEWZTQUWUBBLSUFP3XUF2F4RWXQWDFZR632RJIDMUA7U2D".to_string()
+            }),
             token_address: required_env("TOKEN_ADDRESS")?,
             stellar_network: required_env("STELLAR_NETWORK")?,
             app_url: required_env("APP_URL")?,
@@ -95,6 +103,7 @@ impl Config {
             dev_webhook_proxy_enabled,
             smee_source_url: required_env("SMEE_SOURCE_URL")?,
             smee_target_url: required_env("SMEE_TARGET_URL")?,
+            resend_api_key: required_env("RESEND_API_KEY")?,
         })
     }
 

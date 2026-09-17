@@ -18,12 +18,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let address = SocketAddr::from(([0, 0, 0, 0], config.port));
     let state = AppState::new(config).await?;
 
-    // Apply SQL from `toasty/migrations` (embedded at compile time) on every boot.
     info!("running database migrations");
     infra::db::apply_migrations(&state.db).await?;
 
-    // Workers start only after migrations, so a job never runs against a schema
-    // that has not been brought up to date yet.
     let workers = infra::queue::start_workers(state.clone()).await?;
     if let Err(error) = infra::queue::start_scheduler(&state).await {
         error!(%error, "failed to register repeating jobs");
@@ -45,8 +42,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_graceful_shutdown(lifecycle::shutdown_signal())
         .await?;
 
-    // Drain in-flight jobs before the process exits; anything still queued is
-    // picked up on the next boot.
     workers.shutdown().await;
     state.queue.close().await;
 

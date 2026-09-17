@@ -27,11 +27,6 @@ use crate::{
 pub struct BountyService;
 
 impl BountyService {
-    /// Save the contributor's payout wallet and let the automation take over.
-    ///
-    /// The on-chain milestone is pushed by the `push-milestone` worker, which
-    /// re-checks the rules first. When no queue is available the push happens
-    /// inline so the endpoint keeps working in a degraded deployment.
     pub async fn push_milestone(
         State(state): State<AppState>,
         user: AuthedUser,
@@ -101,12 +96,6 @@ impl BountyService {
         }))
     }
 
-    /// Emergency maintainer override.
-    ///
-    /// The documented happy path never needs this: every step advances by itself
-    /// and transient failures retry with backoff. It stays as an admin escape
-    /// hatch, and it does nothing more than ask the state machine to run now —
-    /// the same rules still gate any movement of funds.
     pub async fn retry_issue(
         State(state): State<AppState>,
         user: AuthedUser,
@@ -154,10 +143,6 @@ impl BountyService {
     }
 }
 
-/// Run one state-machine step without a queue.
-///
-/// Only reached when Redis is unreachable. The rules are identical to the ones
-/// the workers apply, so this cannot pay out anything the queue would not.
 async fn advance_inline(state: &AppState, issue_id: Uuid) -> Result<(), AppError> {
     use automation::Decision;
 

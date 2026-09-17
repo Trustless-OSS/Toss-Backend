@@ -45,6 +45,11 @@ pub(crate) async fn connect_wallet(
         .unwrap_or(&body.wallet)
         .to_string();
 
+    if payout_chain.eq_ignore_ascii_case("stellar") {
+        crate::infra::stellar::accounts::require_usdc_payout_account(&state, &payout_address)
+            .await?;
+    }
+
     upsert_contributor_wallet(
         &state,
         user.github_id,

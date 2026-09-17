@@ -1,12 +1,9 @@
-//! The `github-webhook` processor.
-
 use crate::{
     error::AppError,
     infra::{jobs::payload, queue::WebhookJobData},
     state::AppState,
 };
 
-/// Process one signed GitHub delivery.
 pub(crate) async fn run(
     state: &AppState,
     job: &bullmq::Job,
