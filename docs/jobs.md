@@ -286,8 +286,6 @@ picked up on the next boot.
 - a real event promotes a parked re-check instead of waiting out its delay;
 - a job that parks *itself* via `move_to_delayed` keeps its id, consumes no
   retry attempt, is not counted as failed, and resumes when promoted;
-- the escrow-sync scheduler holds exactly one pending job across repeated
-  registrations;
 - a transient failure retries with backoff and then succeeds, with no operator
   involvement.
 

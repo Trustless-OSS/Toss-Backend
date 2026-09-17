@@ -135,6 +135,7 @@ mod tests {
         "/api/queue/stats",
         "/api/repos",
         "/api/repos/connect",
+        "/api/repos/installation-repos",
         "/api/repos/sync-installation",
         "/api/repos/{repoId}",
         "/api/repos/{repoId}/issues",
@@ -156,6 +157,7 @@ mod tests {
     const AUTHENTICATED_OPERATIONS: &[(&str, &str)] = &[
         ("/api/repos", "get"),
         ("/api/repos/connect", "post"),
+        ("/api/repos/installation-repos", "get"),
         ("/api/repos/sync-installation", "post"),
         ("/api/repos/{repoId}", "get"),
         ("/api/repos/{repoId}", "delete"),
@@ -252,7 +254,7 @@ mod tests {
             "ConnectRepoBody",
             "ContributorMeResponse",
             "Milestone",
-            "CreateEscrowBody",
+            "CreateEscrow",
             "UnsignedTransactionResponse",
             "GitHubWebhookPayload",
         ] {

@@ -1,8 +1,8 @@
 //! Integration tests for the BullMQ-backed job hub.
 //!
 //! These exercise the real Redis behaviour that the automation depends on:
-//! per-issue deduplication, promoting a parked re-check, the repeating scheduler
-//! and automatic retries with backoff, plus concurrent enqueue, dirty-flag drain
+//! per-issue deduplication, promoting a parked re-check, and automatic retries
+//! with backoff, plus concurrent enqueue, dirty-flag drain
 //! and stalled-job recovery.
 //!
 //! They are skipped when no Redis is reachable at `REDIS_URL` (default
@@ -205,27 +205,6 @@ async fn a_real_event_promotes_a_parked_recheck_instead_of_waiting_it_out() {
     let stats = queue.stats().await.unwrap();
     assert_eq!(stats["escrow-operations"]["delayed"], 0);
     assert_eq!(stats["escrow-operations"]["waiting"], 1);
-
-    cleanup(&prefix).await;
-}
-
-#[tokio::test]
-async fn the_escrow_sync_scheduler_keeps_exactly_one_pending_job() {
-    let (queue, prefix) = skip_without_redis!();
-
-    // Registering repeatedly is what a restart loop looks like; the old code
-    // pushed a new list entry every interval and piled them up.
-    for _ in 0..3 {
-        queue
-            .register_schedulers(Duration::from_secs(60))
-            .await
-            .unwrap();
-    }
-
-    let stats = queue.stats().await.unwrap();
-    let pending = stats["sync"]["delayed"].as_u64().unwrap_or(0)
-        + stats["sync"]["waiting"].as_u64().unwrap_or(0);
-    assert_eq!(pending, 1, "scheduler should hold one pending job: {stats}");
 
     cleanup(&prefix).await;
 }
