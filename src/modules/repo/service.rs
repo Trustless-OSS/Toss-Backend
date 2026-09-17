@@ -75,7 +75,6 @@ pub(crate) async fn connect_repo(
     Ok(RepoResponse { repo })
 }
 
-// [ryzen-xp] : list install repos + optional single/batch repo sync
 pub(crate) async fn list_installation_repos_for_sync(
     state: &AppState,
     installation_id: i64,

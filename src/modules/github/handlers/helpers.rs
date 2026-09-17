@@ -118,7 +118,6 @@ pub fn explorer_tx_url(state: &AppState, tx_hash: &str, contract_id: &str) -> St
 }
 
 pub async fn sync_repo_balance(state: &AppState, repo: &mut Repo) -> Result<(), AppError> {
-    // [ryzen-xp] : Sync via TW get-multiple-escrow-balance (not escrow metadata / DB guess)
     if repo
         .escrow_contract_id
         .as_deref()

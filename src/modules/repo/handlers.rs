@@ -148,7 +148,6 @@ pub(crate) async fn connect_repo(
         (status = 500, description = "Failed to list installation repositories", body = ErrorResponse)
     )
 )]
-// [ryzen-xp] : list selected install repos for sequential sync UI
 pub(crate) async fn list_installation_repos(
     State(state): State<AppState>,
     _user: AuthedUser,

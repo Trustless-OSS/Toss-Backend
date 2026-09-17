@@ -72,7 +72,6 @@ impl TrustlessWorkAPI {
             .escrow_contract_id
             .as_deref()
             .ok_or_else(|| AppError::bad_request("No escrow deployed"))?;
-        // [ryzen-xp] : Poll TW balance after fund — indexer often lags the Funded event
         let new_balance = self
             .wait_for_balance_after_fund(contract_id, repo.escrow_balance, funded_amount)
             .await?;
@@ -87,7 +86,6 @@ impl TrustlessWorkAPI {
         clear_repo_escrow(&self.state, repo_id).await
     }
 
-    // [ryzen-xp] : Always read live balance from TW get-multiple-escrow-balance, then persist to DB
     pub async fn sync_balance(&self, repo: &Repo) -> Result<Decimal, AppError> {
         let contract_id = repo
             .escrow_contract_id
@@ -126,7 +124,6 @@ impl TrustlessWorkAPI {
             .cloned()
             .unwrap_or_default();
         let receiver = build_receiver(payout_chain, payout_address)?;
-        // [ryzen-xp] : Fail before TW update if receiver cannot hold USDC
         if payout_chain.eq_ignore_ascii_case("stellar") {
             crate::infra::stellar::accounts::require_usdc_payout_account(
                 &self.state,
@@ -182,7 +179,6 @@ impl TrustlessWorkAPI {
         Ok(milestone_index)
     }
 
-    // [ryzen-xp] : Strict TW payout path — complete → approve → release (each step verified)
     pub async fn release_milestone(&self, repo: &Repo, issue: &Issue) -> Result<String, AppError> {
         let platform_key = self.state.config.platform_stellar_public_key.as_str();
         let contract_id = repo
@@ -777,7 +773,6 @@ impl TrustlessWorkAPI {
         Ok(())
     }
 
-    // [ryzen-xp] : TW helper/get-multiple-escrow-balance — source of truth for escrow USDC
     pub async fn current_balance(&self, contract_id: &str) -> Result<Decimal, AppError> {
         let contract_id = contract_id.trim();
         if contract_id.is_empty() {

@@ -19,7 +19,6 @@ fn usdc_issuer(state: &AppState) -> &str {
     }
 }
 
-// [ryzen-xp] : Require funded Stellar account + USDC trustline before TW payout
 pub async fn require_usdc_payout_account(state: &AppState, address: &str) -> Result<(), AppError> {
     let address = address.trim();
     if address.is_empty() {

@@ -14,7 +14,6 @@ pub(crate) fn decimal_json_number(value: Decimal, field_name: &str) -> Result<Va
     Ok(Value::Number(number))
 }
 
-// [ryzen-xp] : TW fund-escrow REST expects amount as a JSON string
 pub(crate) fn decimal_json_string(value: Decimal, field_name: &str) -> Result<Value, AppError> {
     if value <= Decimal::ZERO {
         return Err(AppError::bad_request(format!(

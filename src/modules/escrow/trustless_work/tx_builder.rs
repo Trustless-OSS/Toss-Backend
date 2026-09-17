@@ -12,7 +12,6 @@ use crate::{
 pub struct TxBuilder;
 
 impl TxBuilder {
-    // [ryzen-xp] : Deploy with platformFee 0 and 0.01 init milestone (not a 5 USDC fee row)
     pub async fn create_escrow(
         state: &AppState,
         repo: &Repo,
@@ -64,7 +63,6 @@ impl TxBuilder {
             .as_deref()
             .ok_or_else(|| AppError::bad_request("No escrow deployed for this repository"))?;
 
-        // [ryzen-xp] : fund-escrow amount is a JSON number (TW class-validator)
         let response = tw_fetch(
             state,
             "/escrow/multi-release/fund-escrow",

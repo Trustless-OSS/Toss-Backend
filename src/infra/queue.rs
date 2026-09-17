@@ -542,7 +542,6 @@ impl QueueInfra {
         }))
     }
 
-    // [ryzen-xp] : Drop repeating escrow-balance-sync — balance syncs on fund/release only
     pub async fn register_schedulers(&self, _interval: Duration) -> Result<(), AppError> {
         let Some(queues) = self.queues.as_ref() else {
             return Ok(());
