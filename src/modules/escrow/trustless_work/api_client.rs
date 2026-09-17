@@ -14,6 +14,16 @@ pub(crate) fn decimal_json_number(value: Decimal, field_name: &str) -> Result<Va
     Ok(Value::Number(number))
 }
 
+// [ryzen-xp] : TW fund-escrow REST expects amount as a JSON string
+pub(crate) fn decimal_json_string(value: Decimal, field_name: &str) -> Result<Value, AppError> {
+    if value <= Decimal::ZERO {
+        return Err(AppError::bad_request(format!(
+            "{field_name} must be greater than zero"
+        )));
+    }
+    Ok(Value::String(value.normalize().to_string()))
+}
+
 pub async fn tw_fetch(
     state: &AppState,
     path: &str,
@@ -61,6 +71,18 @@ pub async fn tw_fetch(
     serde_json::from_str(&text).map_err(|error| {
         AppError::internal(format!("[Trustless-Work] : JSON parse failed: {error}"))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rust_decimal::Decimal;
+
+    #[test]
+    fn decimal_json_string_formats_fund_amount() {
+        let value = decimal_json_string(Decimal::new(1, 2), "amount").unwrap();
+        assert_eq!(value, Value::String("0.01".into()));
+    }
 }
 
 pub async fn health_check(state: &AppState) -> Result<Value, AppError> {

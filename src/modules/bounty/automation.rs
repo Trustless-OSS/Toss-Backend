@@ -215,7 +215,13 @@ pub async fn evaluate(state: &AppState, ctx: &IssueContext) -> Result<Decision, 
     }
 
     match confirm_live_merge(state, repo, issue, assignment, Some(contributor)).await? {
-        MergeConfirmation::Merged => {}
+        MergeConfirmation::Merged => {
+            info!(
+                issue = issue.github_issue_number,
+                milestone = chain.index,
+                "PR merged and issue closed; authorizing complete → approve → release"
+            );
+        }
         MergeConfirmation::NotMerged { reason } => {
             return Ok(Decision::Waiting { reason });
         }

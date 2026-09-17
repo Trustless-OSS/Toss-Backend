@@ -174,7 +174,12 @@ pub async fn submit_fund(
     }
 
     let new_balance = TrustlessWorkAPI::new(state.clone())
-        .fund(body.repo_id, &body.signed_xdr, &body.funder_wallet)
+        .fund(
+            body.repo_id,
+            &body.signed_xdr,
+            &body.funder_wallet,
+            body.amount,
+        )
         .await?;
 
     Ok(Json(SubmitFundResponse {

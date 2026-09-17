@@ -5,13 +5,14 @@ use serde_json::{json, Value};
 use crate::{
     error::AppError,
     modules::escrow::trustless_work::api_client::{decimal_json_number, tw_fetch},
-    shared::{constants::PLATFORM_FEES, models::Repo},
+    shared::{constants::ESCROW_INIT_MILESTONE_USDC, models::Repo},
     state::AppState,
 };
 
 pub struct TxBuilder;
 
 impl TxBuilder {
+    // [ryzen-xp] : Deploy with platformFee 0 and 0.01 init milestone (not a 5 USDC fee row)
     pub async fn create_escrow(
         state: &AppState,
         repo: &Repo,
@@ -35,10 +36,10 @@ impl TxBuilder {
                 "releaseSigner": platform,
                 "disputeResolver": dispute_resolver,
             },
-            "platformFee": PLATFORM_FEES,
+            "platformFee": 0,
             "milestones": [{
-                "description": format!("Trustless-OSS platform fee for {repo_name}"),
-                "amount": PLATFORM_FEES,
+                "description": "Escrow Initialized",
+                "amount": ESCROW_INIT_MILESTONE_USDC,
                 "receiver": platform,
             }],
             "trustline": {
@@ -63,6 +64,7 @@ impl TxBuilder {
             .as_deref()
             .ok_or_else(|| AppError::bad_request("No escrow deployed for this repository"))?;
 
+        // [ryzen-xp] : fund-escrow amount is a JSON number (TW class-validator)
         let response = tw_fetch(
             state,
             "/escrow/multi-release/fund-escrow",

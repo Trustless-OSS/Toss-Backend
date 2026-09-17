@@ -50,6 +50,7 @@ impl TrustlessWorkAPI {
         repo_id: Uuid,
         signed_xdr: &str,
         funder_wallet: &str,
+        funded_amount: Decimal,
     ) -> Result<Decimal, AppError> {
         self.submit_signed_transaction(signed_xdr).await?;
 
@@ -71,7 +72,10 @@ impl TrustlessWorkAPI {
             .escrow_contract_id
             .as_deref()
             .ok_or_else(|| AppError::bad_request("No escrow deployed"))?;
-        let new_balance = self.current_balance(contract_id).await?;
+        // [ryzen-xp] : Poll TW balance after fund — indexer often lags the Funded event
+        let new_balance = self
+            .wait_for_balance_after_fund(contract_id, repo.escrow_balance, funded_amount)
+            .await?;
         update_repo_escrow_balance(&self.state, repo_id, new_balance, Some(repo.github_repo_id))
             .await?;
 
@@ -83,27 +87,22 @@ impl TrustlessWorkAPI {
         clear_repo_escrow(&self.state, repo_id).await
     }
 
+    // [ryzen-xp] : Always read live balance from TW get-multiple-escrow-balance, then persist to DB
     pub async fn sync_balance(&self, repo: &Repo) -> Result<Decimal, AppError> {
         let contract_id = repo
             .escrow_contract_id
             .as_deref()
+            .filter(|id| !id.trim().is_empty())
             .ok_or_else(|| AppError::bad_request("No escrow deployed"))?;
 
-        let escrow = self.fetch_escrow(contract_id).await?;
-        let on_chain_balance = escrow
-            .get("balance")
-            .and_then(decimal_from_value)
-            .unwrap_or(repo.escrow_balance);
-
-        if on_chain_balance != repo.escrow_balance {
-            update_repo_escrow_balance(
-                &self.state,
-                repo.id,
-                on_chain_balance,
-                Some(repo.github_repo_id),
-            )
-            .await?;
-        }
+        let on_chain_balance = self.current_balance(contract_id).await?;
+        update_repo_escrow_balance(
+            &self.state,
+            repo.id,
+            on_chain_balance,
+            Some(repo.github_repo_id),
+        )
+        .await?;
 
         Ok(on_chain_balance)
     }
@@ -127,6 +126,14 @@ impl TrustlessWorkAPI {
             .cloned()
             .unwrap_or_default();
         let receiver = build_receiver(payout_chain, payout_address)?;
+        // [ryzen-xp] : Fail before TW update if receiver cannot hold USDC
+        if payout_chain.eq_ignore_ascii_case("stellar") {
+            crate::infra::stellar::accounts::require_usdc_payout_account(
+                &self.state,
+                payout_address,
+            )
+            .await?;
+        }
         let milestone_data = json!({
             "description": format!("Issue #{}: {}", issue.github_issue_number, issue.title),
             "amount": decimal_json_number(issue.reward_amount, "milestone amount")?,
@@ -175,6 +182,7 @@ impl TrustlessWorkAPI {
         Ok(milestone_index)
     }
 
+    // [ryzen-xp] : Strict TW payout path — complete → approve → release (each step verified)
     pub async fn release_milestone(&self, repo: &Repo, issue: &Issue) -> Result<String, AppError> {
         let platform_key = self.state.config.platform_stellar_public_key.as_str();
         let contract_id = repo
@@ -192,52 +200,206 @@ impl TrustlessWorkAPI {
             return Ok("success".to_string());
         }
 
-        if self
-            .fetch_milestone_state(contract_id, milestone_index)
-            .await?
-            .is_some_and(|state| state.released)
-        {
+        let mut state = self
+            .require_milestone_state(contract_id, milestone_index)
+            .await?;
+
+        if state.released {
+            info!(
+                issue = issue.github_issue_number,
+                milestone_index, "milestone already released on-chain; skipping payout"
+            );
             return Ok("success".to_string());
         }
 
-        if !self
-            .fetch_milestone_state(contract_id, milestone_index)
-            .await?
-            .is_some_and(|state| state.approved)
-        {
-            match tw_fetch(
-                &self.state,
-                "/escrow/multi-release/approve-milestone",
-                Method::POST,
-                Some(json!({
-                    "approver": platform_key,
-                    "contractId": contract_id,
-                    "milestoneIndex": milestone_index.to_string(),
-                })),
-            )
-            .await
-            {
-                Ok(response) => self.sign_platform_transaction(&response).await?,
-                Err(error) => {
-                    if !self
-                        .fetch_milestone_state(contract_id, milestone_index)
-                        .await?
-                        .is_some_and(|state| state.approved)
-                    {
-                        return Err(error);
-                    }
-                }
+        if state.disputed && !state.resolved {
+            return Err(AppError::bad_request(format!(
+                "Milestone {milestone_index} on {contract_id} is disputed; resolve the dispute before release"
+            )));
+        }
+
+        if let Some(receiver) = state.receiver.as_deref() {
+            crate::infra::stellar::accounts::require_usdc_payout_account(&self.state, receiver)
+                .await?;
+        }
+
+        let escrow_balance = self.current_balance(contract_id).await?;
+        if escrow_balance <= Decimal::ZERO {
+            return Err(AppError::bad_request(format!(
+                "Escrow {contract_id} has balance 0; fund the escrow before releasing issue #{}",
+                issue.github_issue_number
+            )));
+        }
+        if let Some(amount) = state.amount {
+            if escrow_balance < amount {
+                return Err(AppError::bad_request(format!(
+                    "Escrow balance {escrow_balance} USDC is below milestone amount {amount} USDC for issue #{}",
+                    issue.github_issue_number
+                )));
             }
         }
 
-        if self
-            .fetch_milestone_state(contract_id, milestone_index)
-            .await?
-            .is_some_and(|state| state.released)
-        {
+        let evidence = format!(
+            "Trustless-OSS automatic payout: GitHub issue #{} closed after merged PR ({})",
+            issue.github_issue_number, issue.title
+        );
+
+        // 1) Complete — TW approve requires a non-empty milestone status
+        info!(
+            issue = issue.github_issue_number,
+            milestone_index, "TW step 1/3: complete milestone"
+        );
+        self.complete_milestone(contract_id, milestone_index, platform_key, &evidence)
+            .await?;
+        state = self
+            .require_milestone_state(contract_id, milestone_index)
+            .await?;
+        if !state.is_completed() {
+            return Err(AppError::internal(format!(
+                "Milestone {milestone_index} on {contract_id} did not reach status=completed after change-milestone-status"
+            )));
+        }
+
+        // 2) Approve — only after completed is confirmed on-chain
+        info!(
+            issue = issue.github_issue_number,
+            milestone_index, "TW step 2/3: approve milestone"
+        );
+        self.approve_milestone(contract_id, milestone_index, platform_key)
+            .await?;
+        state = self
+            .require_milestone_state(contract_id, milestone_index)
+            .await?;
+        if !state.approved {
+            return Err(AppError::internal(format!(
+                "Milestone {milestone_index} on {contract_id} was not approved after approve-milestone"
+            )));
+        }
+
+        if state.released {
+            if let Err(error) = self.sync_balance(repo).await {
+                tracing::warn!(%error, "failed to sync escrow balance after release");
+            }
             return Ok("success".to_string());
         }
 
+        // 3) Release — only after approved is confirmed on-chain
+        info!(
+            issue = issue.github_issue_number,
+            milestone_index, "TW step 3/3: release milestone funds"
+        );
+        let tx_hash = self
+            .release_milestone_funds(contract_id, milestone_index, platform_key)
+            .await?;
+
+        state = self
+            .require_milestone_state(contract_id, milestone_index)
+            .await?;
+        if !state.released {
+            return Err(AppError::internal(format!(
+                "Milestone {milestone_index} on {contract_id} was not marked released after release-milestone-funds"
+            )));
+        }
+
+        if let Err(error) = self.sync_balance(repo).await {
+            tracing::warn!(%error, "failed to sync escrow balance after release");
+        }
+
+        Ok(tx_hash)
+    }
+
+    async fn require_milestone_state(
+        &self,
+        contract_id: &str,
+        milestone_index: i32,
+    ) -> Result<MilestoneChainState, AppError> {
+        self.fetch_milestone_state(contract_id, milestone_index)
+            .await?
+            .ok_or_else(|| {
+                AppError::bad_request(format!(
+                    "milestone {milestone_index} does not exist on escrow {contract_id}"
+                ))
+            })
+    }
+
+    async fn complete_milestone(
+        &self,
+        contract_id: &str,
+        milestone_index: i32,
+        platform_key: &str,
+        evidence: &str,
+    ) -> Result<(), AppError> {
+        let state = self
+            .require_milestone_state(contract_id, milestone_index)
+            .await?;
+        if state.is_completed() {
+            return Ok(());
+        }
+
+        let response = tw_fetch(
+            &self.state,
+            "/escrow/multi-release/change-milestone-status",
+            Method::POST,
+            Some(json!({
+                "contractId": contract_id,
+                "milestoneIndex": milestone_index.to_string(),
+                "newStatus": "completed",
+                "newEvidence": evidence,
+                "serviceProvider": platform_key,
+            })),
+        )
+        .await?;
+        self.sign_platform_transaction(&response).await?;
+        Ok(())
+    }
+
+    async fn approve_milestone(
+        &self,
+        contract_id: &str,
+        milestone_index: i32,
+        platform_key: &str,
+    ) -> Result<(), AppError> {
+        let state = self
+            .require_milestone_state(contract_id, milestone_index)
+            .await?;
+        if state.approved {
+            return Ok(());
+        }
+
+        match tw_fetch(
+            &self.state,
+            "/escrow/multi-release/approve-milestone",
+            Method::POST,
+            Some(json!({
+                "approver": platform_key,
+                "contractId": contract_id,
+                "milestoneIndex": milestone_index.to_string(),
+            })),
+        )
+        .await
+        {
+            Ok(response) => self.sign_platform_transaction(&response).await?,
+            Err(error) => {
+                if self
+                    .require_milestone_state(contract_id, milestone_index)
+                    .await?
+                    .approved
+                {
+                    return Ok(());
+                }
+                return Err(error);
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn release_milestone_funds(
+        &self,
+        contract_id: &str,
+        milestone_index: i32,
+        platform_key: &str,
+    ) -> Result<String, AppError> {
         match tw_fetch(
             &self.state,
             "/escrow/multi-release/release-milestone-funds",
@@ -262,11 +424,18 @@ impl TrustlessWorkAPI {
             }
             Err(error) => {
                 if self
-                    .fetch_milestone_state(contract_id, milestone_index)
+                    .require_milestone_state(contract_id, milestone_index)
                     .await?
-                    .is_some_and(|state| state.released)
+                    .released
                 {
                     Ok("success".to_string())
+                } else if error.to_string().contains("Escrow not found") {
+                    Err(AppError::bad_request(format!(
+                        "Trustless Work could not release milestone {milestone_index} on {contract_id} \
+                         (TW returned Escrow not found). Most often the milestone receiver account \
+                         does not exist on Stellar or has no USDC trustline, or escrow balance is too low. \
+                         TW detail: {error}"
+                    )))
                 } else {
                     Err(error)
                 }
@@ -300,13 +469,16 @@ impl TrustlessWorkAPI {
                 .and_then(Value::as_bool)
                 .unwrap_or(false)
         };
-        let status_released = milestone
+        let status = milestone
             .get("status")
             .and_then(Value::as_str)
-            .is_some_and(|status| status.eq_ignore_ascii_case("released"));
+            .unwrap_or("")
+            .to_string();
+        let status_released = status.eq_ignore_ascii_case("released");
 
         Ok(Some(MilestoneChainState {
             index: milestone_index,
+            status,
             released: flag("released") || status_released,
             approved: flag("approved"),
             disputed: flag("disputed"),
@@ -605,7 +777,13 @@ impl TrustlessWorkAPI {
         Ok(())
     }
 
-    async fn current_balance(&self, contract_id: &str) -> Result<Decimal, AppError> {
+    // [ryzen-xp] : TW helper/get-multiple-escrow-balance — source of truth for escrow USDC
+    pub async fn current_balance(&self, contract_id: &str) -> Result<Decimal, AppError> {
+        let contract_id = contract_id.trim();
+        if contract_id.is_empty() {
+            return Err(AppError::bad_request("Escrow contract id is empty"));
+        }
+
         let response = tw_fetch(
             &self.state,
             &format!("/helper/get-multiple-escrow-balance?addresses[]={contract_id}"),
@@ -619,19 +797,68 @@ impl TrustlessWorkAPI {
             .and_then(|items| items.first())
             .and_then(|item| item.get("balance"))
             .and_then(decimal_from_value)
-            .ok_or_else(|| AppError::internal("TrustlessWork response missing escrow balance"))
+            .ok_or_else(|| {
+                AppError::internal(format!(
+                    "TrustlessWork get-multiple-escrow-balance missing balance for {contract_id}"
+                ))
+            })
+    }
+
+    async fn wait_for_balance_after_fund(
+        &self,
+        contract_id: &str,
+        previous_balance: Decimal,
+        funded_amount: Decimal,
+    ) -> Result<Decimal, AppError> {
+        let expected = (previous_balance + funded_amount).max(Decimal::ZERO);
+        let mut last = previous_balance;
+
+        for attempt in 0..10u32 {
+            if attempt > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(
+                    350 + u64::from(attempt) * 150,
+                ))
+                .await;
+            }
+            last = self.current_balance(contract_id).await?;
+            if last > previous_balance || last >= expected {
+                return Ok(last);
+            }
+        }
+
+        if last <= previous_balance {
+            tracing::warn!(
+                %contract_id,
+                %previous_balance,
+                %funded_amount,
+                %last,
+                "TW balance still flat after fund; applying funded amount locally"
+            );
+            return Ok(expected);
+        }
+
+        Ok(last)
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct MilestoneChainState {
     pub index: i32,
+    pub status: String,
     pub released: bool,
     pub approved: bool,
     pub disputed: bool,
     pub resolved: bool,
     pub receiver: Option<String>,
     pub amount: Option<Decimal>,
+}
+
+impl MilestoneChainState {
+    fn is_completed(&self) -> bool {
+        self.status.eq_ignore_ascii_case("completed")
+            || self.status.eq_ignore_ascii_case("released")
+            || self.released
+    }
 }
 
 fn unsigned_transaction(response: &Value) -> Result<&str, AppError> {
@@ -778,5 +1005,43 @@ mod tests {
             resolution_distribution_amount(Decimal::from(100), Decimal::from(100), true),
             Decimal::new(997, 1)
         );
+    }
+
+    #[test]
+    fn completed_status_covers_completed_and_released() {
+        let completed = MilestoneChainState {
+            index: 1,
+            status: "completed".into(),
+            released: false,
+            approved: false,
+            disputed: false,
+            resolved: false,
+            receiver: None,
+            amount: None,
+        };
+        let released = MilestoneChainState {
+            index: 1,
+            status: "pending".into(),
+            released: true,
+            approved: true,
+            disputed: false,
+            resolved: false,
+            receiver: None,
+            amount: None,
+        };
+        let pending = MilestoneChainState {
+            index: 1,
+            status: "pending".into(),
+            released: false,
+            approved: false,
+            disputed: false,
+            resolved: false,
+            receiver: None,
+            amount: None,
+        };
+
+        assert!(completed.is_completed());
+        assert!(released.is_completed());
+        assert!(!pending.is_completed());
     }
 }

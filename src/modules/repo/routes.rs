@@ -10,6 +10,10 @@ pub fn router() -> Router<AppState> {
         .route("/api/repos", get(handlers::list_repos))
         .route("/api/repos/connect", post(handlers::connect_repo))
         .route(
+            "/api/repos/installation-repos",
+            get(handlers::list_installation_repos),
+        )
+        .route(
             "/api/repos/sync-installation",
             post(handlers::sync_installation),
         )

@@ -84,6 +84,12 @@ pub async fn list_active_escrow_repos(state: &AppState) -> Result<Vec<Repo>, App
             .map_err(map_db_err)?
             .into_iter()
             .map(Repo::from)
+            // [ryzen-xp] : Skip empty contract ids so balance sync does not hit TW with NULL
+            .filter(|repo| {
+                repo.escrow_contract_id
+                    .as_deref()
+                    .is_some_and(|id| !id.trim().is_empty())
+            })
             .collect(),
     )
 }

@@ -23,6 +23,21 @@ pub(crate) struct ConnectRepoInput {
 pub(crate) struct SyncInstallationInput {
     pub(crate) installation_id: i64,
     pub(crate) installer_github_id: i64,
+    pub(crate) github_repo_id: Option<i64>,
+    pub(crate) github_repo_ids: Option<Vec<i64>>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct InstallationRepoSummary {
+    pub(crate) github_repo_id: i64,
+    pub(crate) full_name: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct InstallationReposList {
+    pub(crate) repositories: Vec<InstallationRepoSummary>,
 }
 
 #[derive(Debug)]
