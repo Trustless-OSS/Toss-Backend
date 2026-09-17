@@ -32,6 +32,7 @@ pub struct Config {
     pub dispute_resolver_stellar_secret_key: String,
     pub trustless_work_api_key: String,
     pub trustless_work_base_url: String,
+    pub trustless_work_health_escrow_contract: String,
     pub token_address: String,
     pub stellar_network: String,
     pub app_url: String,
@@ -89,6 +90,12 @@ impl Config {
             )?,
             trustless_work_api_key: required_env("TRUSTLESS_WORK_API_KEY")?,
             trustless_work_base_url: required_env("TRUSTLESS_WORK_BASE_URL")?,
+            trustless_work_health_escrow_contract: optional_env(
+                "TRUSTLESS_WORK_HEALTH_ESCROW_CONTRACT",
+            )
+            .unwrap_or_else(|| {
+                "CDQ6UR6RXUNEWZTQUWUBBLSUFP3XUF2F4RWXQWDFZR632RJIDMUA7U2D".to_string()
+            }),
             token_address: required_env("TOKEN_ADDRESS")?,
             stellar_network: required_env("STELLAR_NETWORK")?,
             app_url: required_env("APP_URL")?,

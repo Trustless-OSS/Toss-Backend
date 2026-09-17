@@ -1,5 +1,5 @@
 use reqwest::Method;
-use rust_decimal::{prelude::ToPrimitive, Decimal};
+use rust_decimal::Decimal;
 use serde_json::{json, Value};
 use tracing::info;
 use uuid::Uuid;
@@ -12,8 +12,9 @@ use crate::{
         escrow::{
             repository::{
                 clear_repo_escrow, update_repo_escrow_balance, update_repo_escrow_contract,
+                update_repo_escrow_funder_wallet,
             },
-            trustless_work::api_client::tw_fetch,
+            trustless_work::api_client::{decimal_json_number, tw_fetch},
         },
         repo::repository::get_repo_by_id,
     },
@@ -47,15 +48,30 @@ impl TrustlessWorkAPI {
     pub async fn fund(
         &self,
         repo_id: Uuid,
-        amount: Decimal,
         signed_xdr: &str,
+        funder_wallet: &str,
     ) -> Result<Decimal, AppError> {
         self.submit_signed_transaction(signed_xdr).await?;
 
         let repo = get_repo_by_id(&self.state, repo_id)
             .await?
             .ok_or_else(|| AppError::not_found("Repo not found"))?;
-        let new_balance = repo.escrow_balance + amount;
+
+        if let Some(existing_funder_wallet) = repo.escrow_funder_wallet.as_deref() {
+            if existing_funder_wallet != funder_wallet {
+                return Err(AppError::bad_request(
+                    "This escrow must be funded from the original wallet",
+                ));
+            }
+        } else {
+            update_repo_escrow_funder_wallet(&self.state, repo_id, funder_wallet).await?;
+        }
+
+        let contract_id = repo
+            .escrow_contract_id
+            .as_deref()
+            .ok_or_else(|| AppError::bad_request("No escrow deployed"))?;
+        let new_balance = self.current_balance(contract_id).await?;
         update_repo_escrow_balance(&self.state, repo_id, new_balance, Some(repo.github_repo_id))
             .await?;
 
@@ -172,27 +188,57 @@ impl TrustlessWorkAPI {
             ))
         })?;
 
-        let approve = tw_fetch(
-            &self.state,
-            "/escrow/multi-release/approve-milestone",
-            Method::POST,
-            Some(json!({
-                "approver": platform_key,
-                "contractId": contract_id,
-                "milestoneIndex": milestone_index.to_string(),
-            })),
-        )
-        .await;
-        match approve {
-            Ok(response) => self.sign_platform_transaction(&response).await?,
-            Err(error)
-                if error
-                    .to_string()
-                    .contains("already been approved previously") => {}
-            Err(error) => return Err(error),
+        if issue.reward_amount == Decimal::ZERO {
+            return Ok("success".to_string());
         }
 
-        let release = tw_fetch(
+        if self
+            .fetch_milestone_state(contract_id, milestone_index)
+            .await?
+            .is_some_and(|state| state.released)
+        {
+            return Ok("success".to_string());
+        }
+
+        if !self
+            .fetch_milestone_state(contract_id, milestone_index)
+            .await?
+            .is_some_and(|state| state.approved)
+        {
+            match tw_fetch(
+                &self.state,
+                "/escrow/multi-release/approve-milestone",
+                Method::POST,
+                Some(json!({
+                    "approver": platform_key,
+                    "contractId": contract_id,
+                    "milestoneIndex": milestone_index.to_string(),
+                })),
+            )
+            .await
+            {
+                Ok(response) => self.sign_platform_transaction(&response).await?,
+                Err(error) => {
+                    if !self
+                        .fetch_milestone_state(contract_id, milestone_index)
+                        .await?
+                        .is_some_and(|state| state.approved)
+                    {
+                        return Err(error);
+                    }
+                }
+            }
+        }
+
+        if self
+            .fetch_milestone_state(contract_id, milestone_index)
+            .await?
+            .is_some_and(|state| state.released)
+        {
+            return Ok("success".to_string());
+        }
+
+        match tw_fetch(
             &self.state,
             "/escrow/multi-release/release-milestone-funds",
             Method::POST,
@@ -202,8 +248,8 @@ impl TrustlessWorkAPI {
                 "milestoneIndex": milestone_index.to_string(),
             })),
         )
-        .await;
-        match release {
+        .await
+        {
             Ok(response) => {
                 let unsigned = unsigned_transaction(&response)?;
                 let result = sign_and_send_transaction(&self.state, unsigned, None).await?;
@@ -215,11 +261,10 @@ impl TrustlessWorkAPI {
                     .to_string())
             }
             Err(error) => {
-                let message = error.to_string();
-                if message.contains("already been released previously")
-                    || message.contains("already been paid")
-                    || (message.contains("Only the dispute resolver can execute this function")
-                        && issue.reward_amount == Decimal::ZERO)
+                if self
+                    .fetch_milestone_state(contract_id, milestone_index)
+                    .await?
+                    .is_some_and(|state| state.released)
                 {
                     Ok("success".to_string())
                 } else {
@@ -638,15 +683,6 @@ fn strip_escrow_metadata(escrow_data: &Value) -> Value {
     payload
 }
 
-fn decimal_json_number(value: Decimal, field_name: &str) -> Result<Value, AppError> {
-    let number = value
-        .to_f64()
-        .and_then(serde_json::Number::from_f64)
-        .ok_or_else(|| AppError::internal(format!("Invalid {field_name}")))?;
-
-    Ok(Value::Number(number))
-}
-
 fn decimal_from_value(value: &Value) -> Option<Decimal> {
     match value {
         Value::Number(number) => number.to_string().parse().ok(),
@@ -684,6 +720,7 @@ fn consumed_balance_amount(distribution_amount: Decimal, is_mainnet: bool) -> De
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::modules::escrow::trustless_work::api_client::decimal_json_number;
 
     #[test]
     fn decimal_json_number_serializes_as_number() {

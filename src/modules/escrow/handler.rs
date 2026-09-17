@@ -7,7 +7,6 @@ use crate::{
     middleware::auth::AuthedUser,
     modules::{
         bounty::repository::list_issues_to_cancel,
-        escrow::repository::update_repo_escrow_funder_wallet,
         escrow::{
             dto::{
                 CloseEscrow, ContractIdResponse, CreateEscrow, FundEscrow, OkResponse,
@@ -140,8 +139,6 @@ pub async fn fund_unsigned(
     let unsigned_transaction =
         TxBuilder::fund_escrow(&state, &repo, body.amount, &body.funder_wallet).await?;
 
-    update_repo_escrow_funder_wallet(&state, repo.id, &body.funder_wallet).await?;
-
     Ok(Json(UnsignedTransactionResponse {
         unsigned_transaction,
     }))
@@ -155,17 +152,29 @@ pub async fn fund_unsigned(
     request_body = SubmitFund,
     responses(
         (status = 200, description = "Fund transaction submitted and local balance updated", body = SubmitFundResponse),
+        (status = 400, description = "Invalid amount, wallet, or escrow state", body = ErrorResponse),
         (status = 401, description = "Missing or invalid bearer token", body = ErrorResponse),
+        (status = 403, description = "Caller is not a maintainer", body = ErrorResponse),
         (status = 500, description = "Failed to submit fund transaction", body = ErrorResponse)
     )
 )]
 pub async fn submit_fund(
     State(state): State<AppState>,
-    _user: AuthedUser,
+    user: AuthedUser,
     Json(body): Json<SubmitFund>,
 ) -> Result<Json<SubmitFundResponse>, AppError> {
+    if body.amount <= Decimal::ZERO || body.funder_wallet.is_empty() {
+        return Err(AppError::bad_request("Invalid amount or funder wallet"));
+    }
+
+    if !is_maintainer(&state, user.github_id, body.repo_id).await? {
+        return Err(AppError::forbidden(
+            "Forbidden: Only maintainers can fund the escrow",
+        ));
+    }
+
     let new_balance = TrustlessWorkAPI::new(state.clone())
-        .fund(body.repo_id, body.amount, &body.signed_xdr)
+        .fund(body.repo_id, &body.signed_xdr, &body.funder_wallet)
         .await?;
 
     Ok(Json(SubmitFundResponse {

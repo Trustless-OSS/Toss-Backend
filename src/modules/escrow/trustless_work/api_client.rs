@@ -1,8 +1,18 @@
 use reqwest::Method;
-use serde_json::Value;
+use rust_decimal::{prelude::ToPrimitive, Decimal};
+use serde_json::{Number, Value};
 use tracing::debug;
 
 use crate::{error::AppError, state::AppState};
+
+pub(crate) fn decimal_json_number(value: Decimal, field_name: &str) -> Result<Value, AppError> {
+    let number = value
+        .to_f64()
+        .and_then(Number::from_f64)
+        .ok_or_else(|| AppError::internal(format!("Invalid {field_name}")))?;
+
+    Ok(Value::Number(number))
+}
 
 pub async fn tw_fetch(
     state: &AppState,
@@ -37,9 +47,11 @@ pub async fn tw_fetch(
     })?;
 
     if !status.is_success() {
-        return Err(AppError::internal(format!(
-            "[Trustless-Work] : {method} {path} → {status}: {text}"
-        )));
+        let message = format!("[Trustless-Work] : {method} {path} → {status}: {text}");
+        if status.is_client_error() {
+            return Err(AppError::bad_request(message));
+        }
+        return Err(AppError::internal(message));
     }
 
     if text.trim().is_empty() {
@@ -51,10 +63,8 @@ pub async fn tw_fetch(
     })
 }
 
-// [ryzen-xp] : This health check fn is checking balance of an dummy escrow .
-
 pub async fn health_check(state: &AppState) -> Result<Value, AppError> {
-    let escrow_address = "CDQ6UR6RXUNEWZTQUWUBBLSUFP3XUF2F4RWXQWDFZR632RJIDMUA7U2D";
+    let escrow_address = state.config.trustless_work_health_escrow_contract.as_str();
     let path = format!(
         "/helper/get-multiple-escrow-balance?addresses[]={}",
         escrow_address

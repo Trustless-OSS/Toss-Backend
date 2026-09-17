@@ -1,10 +1,10 @@
 use reqwest::Method;
-use rust_decimal::{prelude::ToPrimitive, Decimal};
+use rust_decimal::Decimal;
 use serde_json::{json, Value};
 
 use crate::{
     error::AppError,
-    modules::escrow::trustless_work::api_client::tw_fetch,
+    modules::escrow::trustless_work::api_client::{decimal_json_number, tw_fetch},
     shared::{constants::PLATFORM_FEES, models::Repo},
     state::AppState,
 };
@@ -109,13 +109,4 @@ impl TxBuilder {
             .map(str::to_owned)
             .ok_or_else(|| AppError::internal("TrustlessWork response missing unsignedTransaction"))
     }
-}
-
-fn decimal_json_number(value: Decimal, field_name: &str) -> Result<Value, AppError> {
-    let number = value
-        .to_f64()
-        .and_then(serde_json::Number::from_f64)
-        .ok_or_else(|| AppError::internal(format!("Invalid {field_name}")))?;
-
-    Ok(Value::Number(number))
 }

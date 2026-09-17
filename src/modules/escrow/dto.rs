@@ -32,6 +32,7 @@ pub struct FundEscrow {
 pub struct SubmitFund {
     pub repo_id: Uuid,
     pub amount: Decimal,
+    pub funder_wallet: String,
     pub signed_xdr: String,
 }
 
@@ -55,7 +56,7 @@ pub struct SubmitClose {
     pub signed_xdr: String,
 }
 
-// Responce DTO
+// Response DTO
 
 #[derive(Debug, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
