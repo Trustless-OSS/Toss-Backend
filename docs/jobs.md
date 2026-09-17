@@ -193,16 +193,16 @@ a merged PR **promotes** the parked job so it resumes immediately.
 | `modules/contributor/routes.rs` | `advance-issue` for every parked bounty, after wallet connect |
 | `modules/bounty/service.rs` | `advance-issue` from `/api/milestones/push` and `/api/issues/{id}/retry` |
 | `infra/jobs/advance.rs` | `push-milestone`, `release-payout`, and a follow-up `advance-issue` after a push |
-| `infra/queue.rs` scheduler | `escrow-balance-sync`, via a BullMQ `JobScheduler` |
+| `infra/queue.rs` scheduler | _(none)_ — repeating `escrow-balance-sync` removed; balance syncs on fund/release |
 
 ---
 
 ## Scheduled work
 
-`escrow-balance-sync` is registered with a BullMQ job scheduler, which holds
-**exactly one pending job at a time**. The old code pushed a new `queue:sync`
-list entry every 60 seconds — entries nothing ever consumed, so they accumulated
-forever. Re-registering on every boot is idempotent.
+Repeating `escrow-balance-sync` is **disabled**. Escrow balances are updated
+when fund/release (or other explicit sync paths) run. On startup the backend
+removes any leftover BullMQ job scheduler for that job so Redis does not keep
+firing it.
 
 ---
 

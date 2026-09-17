@@ -19,7 +19,7 @@ pub struct Config {
     pub bullmq_stalled_interval_ms: u64,
     /// How many times a stalled job is re-queued before it is failed.
     pub bullmq_max_stalled_count: u32,
-    /// Interval of the repeating `escrow-balance-sync` job scheduler.
+    /// Unused: repeating `escrow-balance-sync` was removed (sync is on fund/release).
     pub escrow_sync_interval_secs: u64,
     pub supabase_url: String,
     pub supabase_auth_api_key: String,

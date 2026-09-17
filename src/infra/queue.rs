@@ -1,7 +1,6 @@
 use std::{sync::Arc, time::Duration};
 
 use bullmq::{
-    job_scheduler::RepeatOptions,
     options::{QueueOptions, RedisConnectionOptions, WorkerOptions},
     types::{BackoffStrategy, KeepJobs, RemoveOnFinish},
     JobOptions, Queue, Worker,
@@ -24,7 +23,6 @@ pub const JOB_ESCROW_BALANCE_SYNC: &str = "escrow-balance-sync";
 
 const WEBHOOK_ATTEMPTS: u32 = 5;
 const BOUNTY_ATTEMPTS: u32 = 5;
-const SYNC_ATTEMPTS: u32 = 3;
 
 const WEBHOOK_BACKOFF_MS: u64 = 2_000;
 const BOUNTY_BACKOFF_MS: u64 = 5_000;
@@ -544,31 +542,33 @@ impl QueueInfra {
         }))
     }
 
-    pub async fn register_schedulers(&self, interval: Duration) -> Result<(), AppError> {
+    // [ryzen-xp] : Drop repeating escrow-balance-sync — balance syncs on fund/release only
+    pub async fn register_schedulers(&self, _interval: Duration) -> Result<(), AppError> {
         let Some(queues) = self.queues.as_ref() else {
             return Ok(());
         };
 
-        queues
+        match queues
             .sync
-            .upsert_job_scheduler(
-                JOB_ESCROW_BALANCE_SYNC,
-                RepeatOptions {
-                    every: Some(interval.as_millis() as u64),
-                    ..Default::default()
-                },
-                Some(JOB_ESCROW_BALANCE_SYNC),
-                Some(serde_json::json!({})),
-                Some(
-                    JobOptions::new()
-                        .attempts(SYNC_ATTEMPTS)
-                        .backoff(BackoffStrategy::Exponential(BOUNTY_BACKOFF_MS))
-                        .remove_on_complete(RemoveOnFinish::Count(100))
-                        .remove_on_fail(RemoveOnFinish::Count(100)),
-                ),
-            )
+            .remove_job_scheduler(JOB_ESCROW_BALANCE_SYNC)
             .await
-            .map_err(queue_error)?;
+        {
+            Ok(removed) => {
+                if removed {
+                    tracing::info!(
+                        job = JOB_ESCROW_BALANCE_SYNC,
+                        "removed repeating escrow-balance-sync scheduler"
+                    );
+                }
+            }
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    job = JOB_ESCROW_BALANCE_SYNC,
+                    "could not remove escrow-balance-sync scheduler (may already be gone)"
+                );
+            }
+        }
 
         Ok(())
     }
@@ -709,12 +709,12 @@ pub async fn start_workers(state: AppState) -> Result<Workers, AppError> {
 }
 
 pub async fn start_scheduler(state: &AppState) -> Result<(), AppError> {
+    // Interval config is ignored: continuous balance polling was removed.
     let interval = Duration::from_secs(state.config.escrow_sync_interval_secs.max(1));
     state.queue.register_schedulers(interval).await?;
     tracing::info!(
         job = JOB_ESCROW_BALANCE_SYNC,
-        interval_secs = interval.as_secs(),
-        "repeating job scheduler registered"
+        "repeating escrow-balance-sync disabled (sync runs on fund/release only)"
     );
     Ok(())
 }
