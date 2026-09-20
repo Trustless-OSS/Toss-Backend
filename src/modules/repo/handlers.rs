@@ -3,11 +3,9 @@ use axum::{
     http::HeaderMap,
     Json,
 };
-use rust_decimal::Decimal;
-use serde::Deserialize;
-use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
 
+use super::datatypes::{ConnectRepo, InstallationReposQuery, SyncInstallation, UpdateRewards};
 use crate::{
     error::{AppError, ErrorResponse},
     middleware::auth::AuthedUser,
@@ -25,42 +23,6 @@ use crate::{
     state::AppState,
 };
 
-#[derive(Debug, Deserialize, ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct ConnectRepoBody {
-    github_repo_id: i64,
-    full_name: String,
-    owner_github_id: i64,
-    owner_username: String,
-    gh_token: String,
-}
-
-#[derive(Debug, Deserialize, ToSchema)]
-pub(crate) struct UpdateRewardsBody {
-    reward_low: Decimal,
-    reward_medium: Decimal,
-    reward_high: Decimal,
-}
-
-#[derive(Debug, Deserialize, ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct SyncInstallationBody {
-    #[serde(alias = "installation_id")]
-    installation_id: i64,
-    #[serde(default, alias = "github_repo_id")]
-    github_repo_id: Option<i64>,
-    #[serde(default, alias = "github_repo_ids")]
-    github_repo_ids: Option<Vec<i64>>,
-}
-
-#[derive(Debug, Deserialize, IntoParams, ToSchema)]
-#[into_params(parameter_in = Query)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct InstallationReposQuery {
-    #[serde(alias = "installation_id")]
-    installation_id: i64,
-}
-
 fn resolve_webhook_url(state: &AppState, headers: &HeaderMap) -> String {
     if let Some(url) = state.config.webhook_url.as_deref() {
         return url.to_string();
@@ -72,13 +34,13 @@ fn resolve_webhook_url(state: &AppState, headers: &HeaderMap) -> String {
         .unwrap_or("http");
     let host = headers.get("host").and_then(|value| value.to_str().ok());
 
-    host.map(|host| format!("{protocol}://{host}/api/webhooks/github"))
+    host.map(|host| format!("{protocol}://{host}/api/v1/webhooks/github"))
         .unwrap_or_else(|| "https://smee.io/trustless-oss-dev-webhook".to_string())
 }
 
 #[utoipa::path(
     get,
-    path = "/api/repos",
+    path = "/api/v1/repos",
     tag = "Repos",
     security(("bearer_auth" = [])),
     params(PaginationQuery),
@@ -108,10 +70,10 @@ pub(crate) async fn list_repos(
 
 #[utoipa::path(
     post,
-    path = "/api/repos/connect",
+    path = "/api/v1/repos/connect",
     tag = "Repos",
     security(("bearer_auth" = [])),
-    request_body = ConnectRepoBody,
+    request_body = ConnectRepo,
     responses(
         (status = 200, description = "Repository connected (webhook install attempted)", body = RepoResponse),
         (status = 401, description = "Missing or invalid bearer token", body = ErrorResponse),
@@ -122,12 +84,12 @@ pub(crate) async fn connect_repo(
     State(state): State<AppState>,
     headers: HeaderMap,
     _user: AuthedUser,
-    Json(body): Json<ConnectRepoBody>,
+    Json(body): Json<ConnectRepo>,
 ) -> Result<Json<RepoResponse>, AppError> {
     let input = ConnectRepoInput {
-        github_repo_id: body.github_repo_id,
+        github_repo_id: body.gh_repo_id,
         full_name: body.full_name,
-        owner_github_id: body.owner_github_id,
+        owner_github_id: body.owner_gh_id,
         owner_username: body.owner_username,
         gh_token: body.gh_token,
         webhook_url: resolve_webhook_url(&state, &headers),
@@ -138,7 +100,7 @@ pub(crate) async fn connect_repo(
 
 #[utoipa::path(
     get,
-    path = "/api/repos/installation-repos",
+    path = "/api/v1/repos/installation-repos",
     tag = "Repos",
     security(("bearer_auth" = [])),
     params(InstallationReposQuery),
@@ -159,10 +121,10 @@ pub(crate) async fn list_installation_repos(
 
 #[utoipa::path(
     post,
-    path = "/api/repos/sync-installation",
+    path = "/api/v1/repos/sync-installation",
     tag = "Repos",
     security(("bearer_auth" = [])),
-    request_body = SyncInstallationBody,
+    request_body = SyncInstallation,
     responses(
         (status = 200, description = "GitHub App installation repositories synced", body = SyncInstallationResult),
         (status = 401, description = "Missing or invalid bearer token", body = ErrorResponse),
@@ -173,13 +135,13 @@ pub(crate) async fn list_installation_repos(
 pub(crate) async fn sync_installation(
     State(state): State<AppState>,
     user: AuthedUser,
-    Json(body): Json<SyncInstallationBody>,
+    Json(body): Json<SyncInstallation>,
 ) -> Result<Json<SyncInstallationResult>, AppError> {
     let input = SyncInstallationInput {
         installation_id: body.installation_id,
         installer_github_id: user.github_id,
-        github_repo_id: body.github_repo_id,
-        github_repo_ids: body.github_repo_ids,
+        github_repo_id: body.gh_repo_id,
+        github_repo_ids: body.gh_repo_ids,
     };
     let response = service::sync_installation(&state, input).await?;
     Ok(Json(response))
@@ -187,7 +149,7 @@ pub(crate) async fn sync_installation(
 
 #[utoipa::path(
     get,
-    path = "/api/repos/{repoId}/issues",
+    path = "/api/v1/repos/{repoId}/issues",
     tag = "Repos",
     params(
         ("repoId" = Uuid, Path, description = "Repository UUID"),
@@ -209,7 +171,7 @@ pub(crate) async fn list_issues(
 
 #[utoipa::path(
     get,
-    path = "/api/repos/{repoId}",
+    path = "/api/v1/repos/{repoId}",
     tag = "Repos",
     security(("bearer_auth" = [])),
     params(("repoId" = Uuid, Path, description = "Repository UUID")),
@@ -238,11 +200,11 @@ pub(crate) async fn repo_details(
 
 #[utoipa::path(
     put,
-    path = "/api/repos/{repoId}/rewards",
+    path = "/api/v1/repos/{repoId}/rewards",
     tag = "Repos",
     security(("bearer_auth" = [])),
     params(("repoId" = Uuid, Path, description = "Repository UUID")),
-    request_body = UpdateRewardsBody,
+    request_body = UpdateRewards,
     responses(
         (status = 200, description = "Reward tiers updated", body = RepoResponse),
         (status = 400, description = "Invalid reward amounts", body = ErrorResponse),
@@ -256,7 +218,7 @@ pub(crate) async fn update_rewards(
     State(state): State<AppState>,
     user: AuthedUser,
     Path(repo_id): Path<Uuid>,
-    Json(body): Json<UpdateRewardsBody>,
+    Json(body): Json<UpdateRewards>,
 ) -> Result<Json<RepoResponse>, AppError> {
     let input = UpdateRewardsInput {
         repo_id,
@@ -271,7 +233,7 @@ pub(crate) async fn update_rewards(
 
 #[utoipa::path(
     delete,
-    path = "/api/repos/{repoId}",
+    path = "/api/v1/repos/{repoId}",
     tag = "Repos",
     security(("bearer_auth" = [])),
     params(("repoId" = Uuid, Path, description = "Repository UUID")),
@@ -301,21 +263,21 @@ pub(crate) async fn delete_repo(
 
 #[cfg(test)]
 mod tests {
-    use super::SyncInstallationBody;
+    use super::SyncInstallation;
 
     #[test]
     fn sync_installation_body_accepts_camel_and_snake_case() {
-        let camel: SyncInstallationBody = serde_json::from_str(
+        let camel: SyncInstallation = serde_json::from_str(
             r#"{"installationId": 153860735, "githubRepoId": 42, "githubRepoIds": [1, 2]}"#,
         )
         .unwrap();
-        let snake: SyncInstallationBody =
+        let snake: SyncInstallation =
             serde_json::from_str(r#"{"installation_id": 153860735}"#).unwrap();
         assert_eq!(camel.installation_id, 153860735);
-        assert_eq!(camel.github_repo_id, Some(42));
-        assert_eq!(camel.github_repo_ids, Some(vec![1, 2]));
+        assert_eq!(camel.gh_repo_id, Some(42));
+        assert_eq!(camel.gh_repo_ids, Some(vec![1, 2]));
         assert_eq!(snake.installation_id, 153860735);
-        assert_eq!(snake.github_repo_id, None);
-        assert_eq!(snake.github_repo_ids, None);
+        assert_eq!(snake.gh_repo_id, None);
+        assert_eq!(snake.gh_repo_ids, None);
     }
 }

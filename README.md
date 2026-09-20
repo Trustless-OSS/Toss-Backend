@@ -147,7 +147,7 @@ cargo run
 
 ```bash
 curl http://localhost:5000/
-curl http://localhost:5000/api/health
+curl http://localhost:5000/api/v1/health
 ```
 
 The root endpoint confirms that the API is running. The detailed health endpoint
@@ -185,14 +185,14 @@ GitHub webhooks instead require a valid `X-Hub-Signature-256` signature.
 
 | Area | Main endpoints |
 | --- | --- |
-| System | `GET /`, `GET /health`, `GET /api/health`, `GET /api/health/database`, `GET /api/health/redis`, `GET /api/health/trustless-work`, `GET /api/queue/stats` |
-| Repositories | `GET /api/repos`, `POST /api/repos/connect`, `POST /api/repos/sync-installation`, `GET/DELETE /api/repos/{repoId}` |
-| Issues and rewards | `GET /api/repos/{repoId}/issues`, `PUT /api/repos/{repoId}/rewards`, `POST /api/issues/{issueId}/retry` (emergency override — [not part of the happy path](docs/jobs.md#retry-is-not-part-of-the-happy-path)) |
-| Contributors | `POST /api/wallet/connect`, `GET /api/contributor/me` |
-| Milestones | `POST /api/milestones/push` |
-| Escrow | `POST /api/escrow/create-unsigned`, `/submit-deploy`, `/fund-unsigned`, `/submit-fund`, `/refund`, `/close-unsigned`, `/submit-close` |
-| GitHub | `POST /api/webhooks/github` |
-| Docs | `GET /swagger` (full OpenAPI UI), `GET /api-doc/openapi.json` |
+| System | `GET /`, `GET /health`, `GET /api/v1/health`, `GET /api/v1/health/database`, `GET /api/v1/health/redis`, `GET /api/v1/health/trustless-work`, `GET /api/v1/queue/stats` |
+| Repositories | `GET /api/v1/repos`, `POST /api/v1/repos/connect`, `POST /api/v1/repos/sync-installation`, `GET/DELETE /api/v1/repos/{repoId}` |
+| Issues and rewards | `GET /api/v1/repos/{repoId}/issues`, `PUT /api/v1/repos/{repoId}/rewards`, `POST /api/v1/issues/{issueId}/retry` (emergency override — [not part of the happy path](docs/jobs.md#retry-is-not-part-of-the-happy-path)) |
+| Contributors | `POST /api/v1/wallet/connect`, `GET /api/v1/contributor/me` |
+| Milestones | `POST /api/v1/milestones/push` |
+| Escrow | `POST /api/v1/escrow/create-unsigned`, `/submit-deploy`, `/fund-unsigned`, `/submit-fund`, `/refund`, `/close-unsigned`, `/submit-close` |
+| GitHub | `POST /api/v1/webhooks/github` |
+| Docs | `GET /swagger` (full OpenAPI UI), `GET /api/v1-doc/openapi.json` |
 
 Interactive docs for every public endpoint live at [`/swagger`](http://localhost:5000/swagger). Request/response schemas and bearer-auth requirements are included in the spec.
 

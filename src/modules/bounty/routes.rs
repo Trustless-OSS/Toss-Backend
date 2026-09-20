@@ -17,7 +17,7 @@ use crate::{
 
 #[utoipa::path(
     post,
-    path = "/api/milestones/push",
+    path = "/api/v1/milestones/push",
     tag = "Bounty",
     security(("bearer_auth" = [])),
     request_body = Milestone,
@@ -40,7 +40,7 @@ pub async fn push_milestone(
 
 #[utoipa::path(
     post,
-    path = "/api/issues/{issueId}/retry",
+    path = "/api/v1/issues/{issueId}/retry",
     tag = "Bounty",
     security(("bearer_auth" = [])),
     params(("issueId" = Uuid, Path, description = "Issue UUID")),
@@ -63,6 +63,6 @@ pub async fn retry_issue(
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/api/milestones/push", post(push_milestone))
-        .route("/api/issues/{issueId}/retry", post(retry_issue))
+        .route("/api/v1/milestones/push", post(push_milestone))
+        .route("/api/v1/issues/{issueId}/retry", post(retry_issue))
 }

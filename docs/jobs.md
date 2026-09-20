@@ -191,7 +191,7 @@ a merged PR **promotes** the parked job so it resumes immediately.
 | `modules/github/handlers/issue_closed.rs` | `advance-issue` |
 | `modules/github/handlers/issue_comment.rs` | `advance-issue` (the `/retry` command) |
 | `modules/contributor/routes.rs` | `advance-issue` for every parked bounty, after wallet connect |
-| `modules/bounty/service.rs` | `advance-issue` from `/api/milestones/push` and `/api/issues/{id}/retry` |
+| `modules/bounty/service.rs` | `advance-issue` from `/api/v1/milestones/push` and `/api/v1/issues/{id}/retry` |
 | `infra/jobs/advance.rs` | `push-milestone`, `release-payout`, and a follow-up `advance-issue` after a push |
 | `infra/queue.rs` scheduler | _(none)_ — repeating `escrow-balance-sync` removed; balance syncs on fund/release |
 
@@ -208,7 +208,7 @@ firing it.
 
 ## Retry is not part of the happy path
 
-`POST /api/issues/{issueId}/retry` and `@Trustless-OSS /retry` still exist as
+`POST /api/v1/issues/{issueId}/retry` and `@Trustless-OSS /retry` still exist as
 maintainer escape hatches, but nothing depends on them. Both now do only one
 thing: ask the state machine to run *now*, against the same live rules. They
 cannot force a payout the automation would refuse.
@@ -226,7 +226,7 @@ The cases that used to require a manual retry are handled automatically:
 
 ## Observability
 
-`GET /api/queue/stats` returns live BullMQ counts:
+`GET /api/v1/queue/stats` returns live BullMQ counts:
 
 ```json
 {
@@ -255,7 +255,7 @@ completed bounty jobs are removed to free their per-issue id.
 | `ESCROW_SYNC_INTERVAL_SECS` | `60` | Interval of the repeating sync job |
 
 If Redis is unreachable at boot the API still starts: the hub is disabled,
-workers do not start, webhooks are processed inline and `/api/queue/stats`
+workers do not start, webhooks are processed inline and `/api/v1/queue/stats`
 reports zeros — the same degraded behaviour as before.
 
 ---

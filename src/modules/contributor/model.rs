@@ -17,7 +17,7 @@ pub struct OkResponse {
     pub ok: bool,
 }
 
-/// Profile returned by `GET /api/contributor/me` when the caller has a contributor record.
+/// Profile returned by `GET /api/v1/contributor/me` when the caller has a contributor record.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ContributorProfile {
     pub id: Uuid,
