@@ -1,8 +1,3 @@
-//! Runtime / API / cache DTO types.
-//!
-//! These are serde-friendly views of Toasty schema models. Prefer mapping from
-//! [`super::schema`] types via [`From`] rather than querying into these directly.
-
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
@@ -21,6 +16,15 @@ fn optional_timestamp(ts: Option<jiff::Timestamp>) -> Option<DateTime<Utc>> {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct Reward {
+    pub id: Uuid,
+    pub repo_id: Uuid,
+    pub label: String,
+    pub amount: Decimal,
+    pub created_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Repo {
     pub id: Uuid,
     pub github_repo_id: i64,
@@ -35,9 +39,7 @@ pub struct Repo {
     pub escrow_contract_id: Option<String>,
     pub escrow_funder_wallet: Option<String>,
     pub escrow_balance: Decimal,
-    pub reward_low: Decimal,
-    pub reward_medium: Decimal,
-    pub reward_high: Decimal,
+    pub rewards: Vec<Reward>,
     pub created_at: Option<DateTime<Utc>>,
 }
 
@@ -78,6 +80,18 @@ pub struct Assignment {
     pub completion_percentage: Option<Decimal>,
 }
 
+impl From<schema::Reward> for Reward {
+    fn from(value: schema::Reward) -> Self {
+        Self {
+            id: value.id,
+            repo_id: value.repo_id,
+            label: value.label,
+            amount: value.amount,
+            created_at: Some(timestamp_to_chrono(value.created_at)),
+        }
+    }
+}
+
 impl From<schema::Repo> for Repo {
     fn from(value: schema::Repo) -> Self {
         Self {
@@ -94,9 +108,7 @@ impl From<schema::Repo> for Repo {
             escrow_contract_id: value.escrow_contract_id,
             escrow_funder_wallet: value.escrow_funder_wallet,
             escrow_balance: value.escrow_balance,
-            reward_low: value.reward_low,
-            reward_medium: value.reward_medium,
-            reward_high: value.reward_high,
+            rewards: vec![],
             created_at: Some(timestamp_to_chrono(value.created_at)),
         }
     }

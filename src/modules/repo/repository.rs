@@ -180,38 +180,55 @@ pub async fn upsert_repo(
         .full_name(full_name)
         .owner_github_id(owner_github_id)
         .owner_username(owner_username)
-        .on_create(|repo| {
-            repo.reward_low(Decimal::from(1))
-                .reward_medium(Decimal::from(2))
-                .reward_high(Decimal::from(3))
-        })
         .exec(&mut db)
         .await
         .map_err(map_db_err)?;
+
+    // Seed default reward tiers on first insert.
+    for (label, amount) in [
+        ("low", Decimal::from(1)),
+        ("medium", Decimal::from(2)),
+        ("high", Decimal::from(3)),
+    ] {
+        schema::Reward::upsert_by_repo_id_and_label(repo.id, label.to_string())
+            .amount(amount)
+            .exec(&mut db)
+            .await
+            .map_err(map_db_err)?;
+    }
+
     Ok(Repo::from(repo))
 }
 
 pub async fn update_repo_rewards(
     state: &AppState,
     repo_id: Uuid,
-    reward_low: Decimal,
-    reward_medium: Decimal,
-    reward_high: Decimal,
+    label: String,
+    amount: Decimal,
 ) -> Result<Repo, AppError> {
     let mut db = require_db(&state.db)?;
-    let mut repo = schema::Repo::get_by_id(&mut db, &repo_id)
+
+    schema::Reward::upsert_by_repo_id_and_label(repo_id, label)
+        .amount(amount)
+        .exec(&mut db)
         .await
         .map_err(map_db_err)?;
-    toasty::update!(repo {
-        reward_low,
-        reward_medium,
-        reward_high,
-    })
-    .exec(&mut db)
-    .await
-    .map_err(map_db_err)?;
 
-    let repo = Repo::from(repo);
+    let schema_repo = schema::Repo::get_by_id(&mut db, &repo_id)
+        .await
+        .map_err(map_db_err)?;
+
+    let rewards = schema::Reward::filter_by_repo_id(repo_id)
+        .exec(&mut db)
+        .await
+        .map_err(map_db_err)?
+        .into_iter()
+        .map(crate::shared::models::Reward::from)
+        .collect::<Vec<_>>();
+
+    let mut repo = Repo::from(schema_repo);
+    repo.rewards = rewards;
+
     invalidate_repo_cache(state, repo.id, Some(repo.github_repo_id)).await;
     Ok(repo)
 }

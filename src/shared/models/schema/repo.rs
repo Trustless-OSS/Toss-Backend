@@ -1,7 +1,7 @@
 use rust_decimal::Decimal;
 use uuid::Uuid;
 
-use super::Issue;
+use super::{rewards::Reward, Issue};
 
 #[derive(Debug, toasty::Model)]
 #[table = "repos"]
@@ -37,17 +37,11 @@ pub struct Repo {
     #[default(Decimal::ZERO)]
     pub escrow_balance: Decimal,
 
-    #[default(Decimal::ZERO)]
-    pub reward_low: Decimal,
-
-    #[default(Decimal::ZERO)]
-    pub reward_medium: Decimal,
-
-    #[default(Decimal::ZERO)]
-    pub reward_high: Decimal,
-
     #[default(jiff::Timestamp::now())]
     pub created_at: jiff::Timestamp,
+
+    #[has_many]
+    pub rewards: toasty::Deferred<Vec<Reward>>,
 
     #[has_many]
     pub issues: toasty::Deferred<Vec<Issue>>,

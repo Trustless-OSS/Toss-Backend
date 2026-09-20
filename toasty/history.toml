@@ -4,3 +4,8 @@ version = 1
 id = 6687151156926154146
 name = "0000_initial.sql"
 snapshot_name = "0000_snapshot.toml"
+
+[[migrations]]
+id = 9107816935773802316
+name = "0001_add_rewards_table.sql"
+snapshot_name = "0001_snapshot.toml"

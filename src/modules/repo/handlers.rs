@@ -223,9 +223,8 @@ pub(crate) async fn update_rewards(
     let input = UpdateRewardsInput {
         repo_id,
         maintainer_github_id: user.github_id,
-        reward_low: body.reward_low,
-        reward_medium: body.reward_medium,
-        reward_high: body.reward_high,
+        label: body.label,
+        amount: body.amount,
     };
     let response = service::update_rewards(&state, input).await?;
     Ok(Json(response))

@@ -31,14 +31,22 @@ pub async fn upsert_installation_repo(
         .is_private(is_private)
         .installer_github_id(Some(installer_github_id))
         .github_installation_id(Some(github_installation_id))
-        .on_create(|repo| {
-            repo.reward_low(Decimal::from(1))
-                .reward_medium(Decimal::from(2))
-                .reward_high(Decimal::from(3))
-        })
         .exec(&mut db)
         .await
         .map_err(map_db_err)?;
+
+    // Seed default reward tiers on first insert.
+    for (label, amount) in [
+        ("low", Decimal::from(1)),
+        ("medium", Decimal::from(2)),
+        ("high", Decimal::from(3)),
+    ] {
+        schema::Reward::upsert_by_repo_id_and_label(repo.id, label.to_string())
+            .amount(amount)
+            .exec(&mut db)
+            .await
+            .map_err(map_db_err)?;
+    }
     invalidate_repo_cache(state, repo.id, Some(repo.github_repo_id)).await;
     Ok(())
 }

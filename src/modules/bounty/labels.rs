@@ -34,11 +34,19 @@ pub fn get_reward_amount(
     repo: &Repo,
     manual_amount: Option<Decimal>,
 ) -> Decimal {
+    let find_reward = |label: &str| {
+        repo.rewards
+            .iter()
+            .find(|r| r.label.eq_ignore_ascii_case(label))
+            .map(|r| r.amount)
+            .unwrap_or(Decimal::ZERO)
+    };
+
     match difficulty {
         Some(Difficulty::Manual) => manual_amount.unwrap_or(Decimal::ZERO),
-        Some(Difficulty::High) => repo.reward_high,
-        Some(Difficulty::Medium) => repo.reward_medium,
-        Some(Difficulty::Low) => repo.reward_low,
+        Some(Difficulty::High) => find_reward("high"),
+        Some(Difficulty::Medium) => find_reward("medium"),
+        Some(Difficulty::Low) => find_reward("low"),
         None => Decimal::ZERO,
     }
 }

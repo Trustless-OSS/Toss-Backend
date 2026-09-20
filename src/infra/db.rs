@@ -39,6 +39,7 @@ pub async fn connect(database_url: &str) -> Result<toasty::Db, AppError> {
             crate::shared::models::schema::Contributor,
             crate::shared::models::schema::Issue,
             crate::shared::models::schema::Assignment,
+            crate::shared::models::schema::Reward,
         ))
         .connect(&url)
         .await

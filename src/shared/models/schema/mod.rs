@@ -9,8 +9,10 @@ mod assignment;
 mod contributor;
 mod issue;
 mod repo;
+mod rewards;
 
 pub use assignment::Assignment;
 pub use contributor::Contributor;
 pub use issue::Issue;
 pub use repo::Repo;
+pub use rewards::Reward;

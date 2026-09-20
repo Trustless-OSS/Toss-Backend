@@ -44,9 +44,8 @@ pub(crate) struct InstallationReposList {
 pub(crate) struct UpdateRewardsInput {
     pub(crate) repo_id: Uuid,
     pub(crate) maintainer_github_id: i64,
-    pub(crate) reward_low: Decimal,
-    pub(crate) reward_medium: Decimal,
-    pub(crate) reward_high: Decimal,
+    pub(crate) label: String,
+    pub(crate) amount: Decimal,
 }
 
 #[derive(Debug)]

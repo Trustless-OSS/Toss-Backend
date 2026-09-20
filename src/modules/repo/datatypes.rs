@@ -15,9 +15,8 @@ pub(crate) struct ConnectRepo {
 
 #[derive(Debug, Deserialize, ToSchema)]
 pub(crate) struct UpdateRewards {
-    pub reward_low: Decimal,
-    pub reward_medium: Decimal,
-    pub reward_high: Decimal,
+    pub label: String,
+    pub amount: Decimal,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]

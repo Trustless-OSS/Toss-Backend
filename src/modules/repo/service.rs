@@ -183,21 +183,15 @@ pub(crate) async fn update_rewards(
         ));
     }
 
-    if input.reward_low < Decimal::ZERO
-        || input.reward_medium < Decimal::ZERO
-        || input.reward_high < Decimal::ZERO
-    {
+    if input.amount == Decimal::ZERO {
         return Err(AppError::bad_request("Reward amounts must be non-negative"));
     }
 
-    let repo = update_repo_rewards(
-        state,
-        input.repo_id,
-        input.reward_low,
-        input.reward_medium,
-        input.reward_high,
-    )
-    .await?;
+    if input.label.is_empty() {
+        return Err(AppError::bad_request("Reward Label must be non-negative"));
+    }
+
+    let repo = update_repo_rewards(state, input.repo_id, input.label, input.amount).await?;
 
     Ok(RepoResponse { repo })
 }

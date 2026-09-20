@@ -25,6 +25,7 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
     let repository = payload
         .get("repository")
         .ok_or_else(|| AppError::webhook("issues.labeled payload missing repository"))?;
+
     let issue = payload
         .get("issue")
         .ok_or_else(|| AppError::webhook("issues.labeled payload missing issue"))?;
@@ -33,6 +34,7 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
         .get("id")
         .and_then(|v| v.as_i64())
         .ok_or_else(|| AppError::webhook("repository.id missing"))?;
+
     let full_name = repository
         .get("full_name")
         .and_then(|v| v.as_str())
@@ -45,6 +47,7 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
         .map(str::to_ascii_lowercase);
 
     let difficulty_labels = ["low", "medium", "high", "bonus", "manual"];
+
     let is_opened = payload.get("action").and_then(Value::as_str) == Some("opened");
     let is_trigger = event_label.as_ref().is_some_and(|label| {
         label == "rewarded" || difficulty_labels.contains(&label.as_str()) || label == "rejected"

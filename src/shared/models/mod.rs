@@ -11,4 +11,4 @@ pub mod entities;
 pub mod schema;
 
 pub use domain::{Difficulty, ParsedLabels};
-pub use entities::{Assignment, Contributor, Issue, Repo};
+pub use entities::{Assignment, Contributor, Issue, Repo, Reward};
