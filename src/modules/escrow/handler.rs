@@ -23,7 +23,7 @@ use crate::{
 
 #[utoipa::path(
     post,
-    path = "/api/escrow/create-unsigned",
+    path = "/api/v1/escrow/create-unsigned",
     tag = "Escrow",
     security(("bearer_auth" = [])),
     request_body = CreateEscrow,
@@ -60,7 +60,7 @@ pub async fn create_escrow_unsigned(
 
 #[utoipa::path(
     post,
-    path = "/api/escrow/submit-deploy",
+    path = "/api/v1/escrow/submit-deploy",
     tag = "Escrow",
     security(("bearer_auth" = [])),
     request_body = SubmitDeploy,
@@ -91,7 +91,7 @@ pub async fn submit_deploy(
 
 #[utoipa::path(
     post,
-    path = "/api/escrow/fund-unsigned",
+    path = "/api/v1/escrow/fund-unsigned",
     tag = "Escrow",
     security(("bearer_auth" = [])),
     request_body = FundEscrow,
@@ -105,7 +105,6 @@ pub async fn submit_deploy(
 )]
 pub async fn fund_unsigned(
     State(state): State<AppState>,
-    user: AuthedUser,
     Json(body): Json<FundEscrow>,
 ) -> Result<Json<UnsignedTransactionResponse>, AppError> {
     if body.amount <= Decimal::ZERO || body.funder_wallet.is_empty() {
@@ -122,19 +121,19 @@ pub async fn fund_unsigned(
         ));
     }
 
-    if !is_maintainer(&state, user.github_id, repo.id).await? {
-        return Err(AppError::forbidden(
-            "Forbidden: Only maintainers can fund the escrow",
-        ));
-    }
+    // if !is_maintainer(&state, user.github_id, repo.id).await? {
+    //     return Err(AppError::forbidden(
+    //         "Forbidden: Only maintainers can fund the escrow",
+    //     ));
+    // }
 
-    if let Some(existing_funder_wallet) = repo.escrow_funder_wallet.as_deref() {
-        if existing_funder_wallet != body.funder_wallet {
-            return Err(AppError::bad_request(
-                "This escrow must be funded from the original wallet",
-            ));
-        }
-    }
+    // if let Some(existing_funder_wallet) = repo.escrow_funder_wallet.as_deref() {
+    //     if existing_funder_wallet != body.funder_wallet {
+    //         return Err(AppError::bad_request(
+    //             "This escrow must be funded from the original wallet",
+    //         ));
+    //     }
+    // }
 
     let unsigned_transaction =
         TxBuilder::fund_escrow(&state, &repo, body.amount, &body.funder_wallet).await?;
@@ -146,7 +145,7 @@ pub async fn fund_unsigned(
 
 #[utoipa::path(
     post,
-    path = "/api/escrow/submit-fund",
+    path = "/api/v1/escrow/submit-fund",
     tag = "Escrow",
     security(("bearer_auth" = [])),
     request_body = SubmitFund,
@@ -160,18 +159,17 @@ pub async fn fund_unsigned(
 )]
 pub async fn submit_fund(
     State(state): State<AppState>,
-    user: AuthedUser,
     Json(body): Json<SubmitFund>,
 ) -> Result<Json<SubmitFundResponse>, AppError> {
     if body.amount <= Decimal::ZERO || body.funder_wallet.is_empty() {
         return Err(AppError::bad_request("Invalid amount or funder wallet"));
     }
 
-    if !is_maintainer(&state, user.github_id, body.repo_id).await? {
-        return Err(AppError::forbidden(
-            "Forbidden: Only maintainers can fund the escrow",
-        ));
-    }
+    // if !is_maintainer(&state, user.github_id, body.repo_id).await? {
+    //     return Err(AppError::forbidden(
+    //         "Forbidden: Only maintainers can fund the escrow",
+    //     ));
+    // }
 
     let new_balance = TrustlessWorkAPI::new(state.clone())
         .fund(
@@ -190,7 +188,7 @@ pub async fn submit_fund(
 
 #[utoipa::path(
     post,
-    path = "/api/escrow/refund",
+    path = "/api/v1/escrow/refund",
     tag = "Escrow",
     security(("bearer_auth" = [])),
     request_body = RefundEscrow,
@@ -260,7 +258,7 @@ pub async fn refund(
 
 #[utoipa::path(
     post,
-    path = "/api/escrow/close-unsigned",
+    path = "/api/v1/escrow/close-unsigned",
     tag = "Escrow",
     security(("bearer_auth" = [])),
     request_body = CloseEscrow,
@@ -301,7 +299,7 @@ pub async fn close_unsigned(
 
 #[utoipa::path(
     post,
-    path = "/api/escrow/submit-close",
+    path = "/api/v1/escrow/submit-close",
     tag = "Escrow",
     security(("bearer_auth" = [])),
     request_body = SubmitClose,

@@ -19,7 +19,7 @@ use crate::{
 
 #[utoipa::path(
     post,
-    path = "/api/wallet/connect",
+    path = "/api/v1/wallet/connect",
     tag = "Contributor",
     security(("bearer_auth" = [])),
     request_body = ConnectWalletBody,
@@ -117,7 +117,7 @@ async fn resume_parked_bounties(state: &AppState, github_id: i64) {
 
 #[utoipa::path(
     get,
-    path = "/api/contributor/me",
+    path = "/api/v1/contributor/me",
     tag = "Contributor",
     security(("bearer_auth" = [])),
     responses(
@@ -171,6 +171,6 @@ pub(crate) async fn get_contributor_me(
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/api/wallet/connect", post(connect_wallet))
-        .route("/api/contributor/me", get(get_contributor_me))
+        .route("/api/v1/wallet/connect", post(connect_wallet))
+        .route("/api/v1/contributor/me", get(get_contributor_me))
 }

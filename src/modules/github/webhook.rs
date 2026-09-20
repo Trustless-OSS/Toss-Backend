@@ -42,7 +42,7 @@ struct GithubSender {
 }
 
 pub async fn process_webhook_job(state: &AppState, job: WebhookJobData) -> Result<(), AppError> {
-    let action = job.action.as_deref().unwrap_or("");
+    let action = job.action.as_deref().unwrap_or("invailid");
     info!(
         event = %job.event,
         action,

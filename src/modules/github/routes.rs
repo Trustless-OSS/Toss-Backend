@@ -17,7 +17,7 @@ pub struct GitHubWebhookPayload(serde_json::Value);
 
 #[utoipa::path(
     post,
-    path = "/api/webhooks/github",
+    path = "/api/v1/webhooks/github",
     tag = "GitHub",
     params(
         ("X-Hub-Signature-256" = String, Header, description = "HMAC SHA-256 signature (`sha256=<hex>`) of the raw body using `GITHUB_WEBHOOK_SECRET`"),
@@ -124,7 +124,7 @@ fn verify_github_signature(secret: &str, body: &[u8], signature: &str) -> Result
 }
 
 pub fn router() -> Router<AppState> {
-    Router::new().route("/api/webhooks/github", post(handle_github_webhook))
+    Router::new().route("/api/v1/webhooks/github", post(handle_github_webhook))
 }
 
 #[cfg(test)]

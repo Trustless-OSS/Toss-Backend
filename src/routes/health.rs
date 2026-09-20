@@ -198,10 +198,10 @@ pub async fn health_handler(State(state): State<AppState>) -> Response {
         .into_response()
 }
 
-/// OpenAPI entry for `GET /api/health` (same handler as [`health_handler`]).
+/// OpenAPI entry for `GET /api/v1/health` (same handler as [`health_handler`]).
 #[utoipa::path(
     get,
-    path = "/api/health",
+    path = "/api/v1/health",
     tag = "Health",
     operation_id = "api_health",
     responses(
@@ -214,7 +214,7 @@ pub fn api_health() {}
 
 #[utoipa::path(
     get,
-    path = "/api/health/database",
+    path = "/api/v1/health/database",
     tag = "Health",
     responses(
         (status = 200, description = "Database is reachable", body = DependencyHealthResponse),
@@ -240,7 +240,7 @@ pub async fn database_health_handler(State(state): State<AppState>) -> Response 
 
 #[utoipa::path(
     get,
-    path = "/api/health/redis",
+    path = "/api/v1/health/redis",
     tag = "Health",
     responses(
         (status = 200, description = "Redis is reachable", body = DependencyHealthResponse),
@@ -269,7 +269,7 @@ pub async fn redis_health_handler(State(state): State<AppState>) -> Response {
 
 #[utoipa::path(
     get,
-    path = "/api/health/trustless-work",
+    path = "/api/v1/health/trustless-work",
     tag = "Health",
     responses(
         (status = 200, description = "Trustless Work is reachable", body = DependencyHealthResponse),
@@ -296,11 +296,11 @@ pub async fn trustless_work_health_handler(State(state): State<AppState>) -> Res
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/health", get(health_handler))
-        .route("/api/health", get(health_handler))
-        .route("/api/health/database", get(database_health_handler))
-        .route("/api/health/redis", get(redis_health_handler))
+        .route("/api/v1/health", get(health_handler))
+        .route("/api/v1/health/database", get(database_health_handler))
+        .route("/api/v1/health/redis", get(redis_health_handler))
         .route(
-            "/api/health/trustless-work",
+            "/api/v1/health/trustless-work",
             get(trustless_work_health_handler),
         )
 }

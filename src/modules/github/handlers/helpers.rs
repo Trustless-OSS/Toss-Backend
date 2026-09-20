@@ -22,25 +22,25 @@ static ISSUE_NUMBER_RE: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 static MANUAL_AMOUNT_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)@Trustless-OSS\s+([\d.]+)").expect("valid manual amount regex")
+    Regex::new(r"(?i)@(?:toss|trustless-oss)\s+([\d.]+)").expect("valid manual amount regex")
 });
 
 static WORK_COMPLETION_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)@Trustless-OSS\s+/(pay|split|work|work-completion)\s+(\d+)")
+    Regex::new(r"(?i)@(?:toss|trustless-oss)\s+/(pay|split|work|work-completion)\s+(\d+)")
         .expect("valid work completion regex")
 });
 
 static REJECTED_CMD_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)@Trustless-OSS\s+/(reject|rejected|no)").expect("valid reject regex")
+    Regex::new(r"(?i)@(?:toss|trustless-oss)\s+/(reject|rejected|no)").expect("valid reject regex")
 });
 
 static WALLET_CMD_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)@Trustless-OSS\s+/(wallet|address|connect|change-address)")
+    Regex::new(r"(?i)@(?:toss|trustless-oss)\s+/(wallet|address|connect|change-address)")
         .expect("valid wallet regex")
 });
 
 static HELP_CMD_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)@Trustless-OSS\s+/help").expect("valid help regex"));
+    LazyLock::new(|| Regex::new(r"(?i)@(?:toss|trustless-oss)\s+/help").expect("valid help regex"));
 
 pub fn extract_issue_number(body: Option<&str>) -> Option<i32> {
     let body = body?;

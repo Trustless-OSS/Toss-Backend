@@ -29,7 +29,7 @@ pub struct QueueStatsResponse {
 
 #[utoipa::path(
     get,
-    path = "/api/queue/stats",
+    path = "/api/v1/queue/stats",
     tag = "Queue",
     responses(
         (status = 200, description = "Live BullMQ counts per queue", body = QueueStatsResponse),
@@ -46,5 +46,5 @@ pub async fn queue_stats_handler(
 }
 
 pub fn router() -> Router<AppState> {
-    Router::new().route("/api/queue/stats", get(queue_stats_handler))
+    Router::new().route("/api/v1/queue/stats", get(queue_stats_handler))
 }
