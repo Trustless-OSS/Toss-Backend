@@ -18,7 +18,6 @@ use crate::{
 /// can be locked right now — or has to wait for a wallet — is decided by the
 /// `advance-issue` worker against live state.
 pub async fn handle_issue_assigned(state: &AppState, payload: &Value) -> Result<(), AppError> {
-
     let repository = payload
         .get("repository")
         .ok_or_else(|| AppError::webhook("[Github]:payload missing repository"))?;

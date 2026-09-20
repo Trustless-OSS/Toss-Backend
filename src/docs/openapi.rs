@@ -95,7 +95,7 @@ impl Modify for SecurityAddon {
         crate::modules::repo::model::SyncInstallationResult,
         crate::modules::repo::model::OkResponse,
         crate::modules::repo::datatypes::ConnectRepo,
-        crate::modules::repo::datatypes::UpdateRewards , 
+        crate::modules::repo::datatypes::UpdateRewards,
         crate::modules::repo::datatypes::SyncInstallation,
         crate::modules::contributor::model::ConnectWalletBody,
         crate::modules::contributor::model::ContributorMeResponse,
