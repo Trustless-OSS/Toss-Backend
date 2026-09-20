@@ -3,6 +3,7 @@ use serde::Deserialize;
 use utoipa::{IntoParams, ToSchema};
 
 #[derive(Debug, Deserialize, ToSchema)]
+#[schema(as = ConnectRepoBody)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ConnectRepo {
     pub gh_repo_id: i64,
@@ -24,9 +25,9 @@ pub(crate) struct UpdateRewards {
 pub(crate) struct SyncInstallation {
     #[serde(alias = "installation_id")]
     pub installation_id: i64,
-    #[serde(default, alias = "github_repo_id")]
+    #[serde(default, alias = "githubRepoId", alias = "github_repo_id")]
     pub gh_repo_id: Option<i64>,
-    #[serde(default, alias = "github_repo_ids")]
+    #[serde(default, alias = "githubRepoIds", alias = "github_repo_ids")]
     pub gh_repo_ids: Option<Vec<i64>>,
 }
 

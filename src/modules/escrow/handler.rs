@@ -105,7 +105,6 @@ pub async fn submit_deploy(
 )]
 pub async fn fund_unsigned(
     State(state): State<AppState>,
-    user: AuthedUser,
     Json(body): Json<FundEscrow>,
 ) -> Result<Json<UnsignedTransactionResponse>, AppError> {
     if body.amount <= Decimal::ZERO || body.funder_wallet.is_empty() {
@@ -160,7 +159,6 @@ pub async fn fund_unsigned(
 )]
 pub async fn submit_fund(
     State(state): State<AppState>,
-    user: AuthedUser,
     Json(body): Json<SubmitFund>,
 ) -> Result<Json<SubmitFundResponse>, AppError> {
     if body.amount <= Decimal::ZERO || body.funder_wallet.is_empty() {
