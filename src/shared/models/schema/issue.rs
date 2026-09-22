@@ -1,7 +1,7 @@
 use rust_decimal::Decimal;
 use uuid::Uuid;
 
-use super::{Assignment, Repo};
+use super::{Assignment};
 
 #[derive(Debug, toasty::Model)]
 #[table = "issues"]

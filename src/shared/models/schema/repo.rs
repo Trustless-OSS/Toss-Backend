@@ -1,11 +1,10 @@
+use jiff::Timestamp;
 use rust_decimal::Decimal;
 use uuid::Uuid;
 
-use super::{rewards::Reward, Issue};
-
 #[derive(Debug, toasty::Model)]
-#[table = "repos"]
-pub struct Repo {
+#[table = "repositories"]
+pub struct Repositories {
     #[key]
     #[auto]
     pub id: Uuid,
@@ -14,35 +13,20 @@ pub struct Repo {
     pub github_repo_id: i64,
 
     #[index]
-    pub github_installation_id: Option<i64>,
+    pub github_install_id: Option<i64>,
 
     pub full_name: String,
-    pub owner_github_id: i64,
-
-    #[index]
-    pub owner_username: String,
-
-    pub owner_type: Option<String>,
-    pub installer_github_id: Option<i64>,
 
     #[default(false)]
     pub is_fork: bool,
 
-    #[default(false)]
-    pub is_private: bool,
-
     pub escrow_contract_id: Option<String>,
-    pub escrow_funder_wallet: Option<String>,
 
     #[default(Decimal::ZERO)]
     pub escrow_balance: Decimal,
 
-    #[default(jiff::Timestamp::now())]
-    pub created_at: jiff::Timestamp,
+    pub updated_at: Timestamp,
 
-    #[has_many]
-    pub rewards: toasty::Deferred<Vec<Reward>>,
-
-    #[has_many]
-    pub issues: toasty::Deferred<Vec<Issue>>,
+    #[default(Timestamp::now())]
+    pub created_at: Timestamp,
 }
