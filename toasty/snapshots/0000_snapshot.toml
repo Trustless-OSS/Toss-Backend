@@ -4,7 +4,7 @@ version = 1
 
 [[schema.tables]]
 id = 0
-name = "repos"
+name = "activity"
 primary_key = { columns = [{ table = 0, index = 0 }], index = { table = 0, index = 0 } }
 
 [[schema.tables.columns]]
@@ -15,108 +15,40 @@ storage_ty = "Uuid"
 
 [[schema.tables.columns]]
 id = { table = 0, index = 1 }
-name = "github_repo_id"
-ty = "I64"
-storage_ty = { Integer = 8 }
+name = "repo_id"
+ty = "Uuid"
+storage_ty = "Uuid"
+nullable = true
 
 [[schema.tables.columns]]
 id = { table = 0, index = 2 }
-name = "github_installation_id"
-ty = "I64"
-storage_ty = { Integer = 8 }
+name = "actor_id"
+ty = "Uuid"
+storage_ty = "Uuid"
 nullable = true
 
 [[schema.tables.columns]]
 id = { table = 0, index = 3 }
-name = "full_name"
+name = "event_type"
 ty = "String"
 storage_ty = "Text"
 
 [[schema.tables.columns]]
 id = { table = 0, index = 4 }
-name = "owner_github_id"
-ty = "I64"
-storage_ty = { Integer = 8 }
+name = "payload"
+ty = "String"
+storage_ty = "Jsonb"
+nullable = true
 
 [[schema.tables.columns]]
 id = { table = 0, index = 5 }
-name = "owner_username"
-ty = "String"
-storage_ty = "Text"
-
-[[schema.tables.columns]]
-id = { table = 0, index = 6 }
-name = "owner_type"
-ty = "String"
-storage_ty = "Text"
-nullable = true
-
-[[schema.tables.columns]]
-id = { table = 0, index = 7 }
-name = "installer_github_id"
-ty = "I64"
-storage_ty = { Integer = 8 }
-nullable = true
-
-[[schema.tables.columns]]
-id = { table = 0, index = 8 }
-name = "is_fork"
-ty = "Bool"
-storage_ty = "Boolean"
-
-[[schema.tables.columns]]
-id = { table = 0, index = 9 }
-name = "is_private"
-ty = "Bool"
-storage_ty = "Boolean"
-
-[[schema.tables.columns]]
-id = { table = 0, index = 10 }
-name = "escrow_contract_id"
-ty = "String"
-storage_ty = "Text"
-nullable = true
-
-[[schema.tables.columns]]
-id = { table = 0, index = 11 }
-name = "escrow_funder_wallet"
-ty = "String"
-storage_ty = "Text"
-nullable = true
-
-[[schema.tables.columns]]
-id = { table = 0, index = 12 }
-name = "escrow_balance"
-ty = "Decimal"
-storage_ty = { Numeric = [] }
-
-[[schema.tables.columns]]
-id = { table = 0, index = 13 }
-name = "reward_low"
-ty = "Decimal"
-storage_ty = { Numeric = [] }
-
-[[schema.tables.columns]]
-id = { table = 0, index = 14 }
-name = "reward_medium"
-ty = "Decimal"
-storage_ty = { Numeric = [] }
-
-[[schema.tables.columns]]
-id = { table = 0, index = 15 }
-name = "reward_high"
-ty = "Decimal"
-storage_ty = { Numeric = [] }
-
-[[schema.tables.columns]]
-id = { table = 0, index = 16 }
 name = "created_at"
 ty = "Timestamp"
 storage_ty = { Timestamp = 6 }
 
 [[schema.tables.indices]]
 id = { table = 0, index = 0 }
-name = "index_repos_by_id"
+name = "index_activity_by_id"
 on = 0
 columns = [{ column = { table = 0, index = 0 }, op = "Eq", scope = "Partition" }]
 unique = true
@@ -124,26 +56,19 @@ primary_key = true
 
 [[schema.tables.indices]]
 id = { table = 0, index = 1 }
-name = "index_repos_by_github_repo_id"
+name = "index_activity_by_repo_id"
 on = 0
 columns = [{ column = { table = 0, index = 1 }, op = "Eq", scope = "Partition" }]
-unique = true
 
 [[schema.tables.indices]]
 id = { table = 0, index = 2 }
-name = "index_repos_by_github_installation_id"
+name = "index_activity_by_actor_id"
 on = 0
 columns = [{ column = { table = 0, index = 2 }, op = "Eq", scope = "Partition" }]
 
-[[schema.tables.indices]]
-id = { table = 0, index = 3 }
-name = "index_repos_by_owner_username"
-on = 0
-columns = [{ column = { table = 0, index = 5 }, op = "Eq", scope = "Partition" }]
-
 [[schema.tables]]
 id = 1
-name = "issues"
+name = "bounties"
 primary_key = { columns = [{ table = 1, index = 0 }], index = { table = 1, index = 0 } }
 
 [[schema.tables.columns]]
@@ -160,40 +85,42 @@ storage_ty = "Uuid"
 
 [[schema.tables.columns]]
 id = { table = 1, index = 2 }
+name = "reward_level_id"
+ty = "Uuid"
+storage_ty = "Uuid"
+nullable = true
+
+[[schema.tables.columns]]
+id = { table = 1, index = 3 }
+name = "milestone_index"
+ty = "I32"
+storage_ty = { Integer = 4 }
+nullable = true
+
+[[schema.tables.columns]]
+id = { table = 1, index = 4 }
 name = "github_issue_id"
 ty = "I64"
 storage_ty = { Integer = 8 }
 
 [[schema.tables.columns]]
-id = { table = 1, index = 3 }
+id = { table = 1, index = 5 }
 name = "github_issue_number"
 ty = "I32"
 storage_ty = { Integer = 4 }
 
 [[schema.tables.columns]]
-id = { table = 1, index = 4 }
-name = "title"
-ty = "String"
-storage_ty = "Text"
-
-[[schema.tables.columns]]
-id = { table = 1, index = 5 }
-name = "reward_amount"
-ty = "Decimal"
-storage_ty = { Numeric = [] }
-
-[[schema.tables.columns]]
 id = { table = 1, index = 6 }
-name = "difficulty_label"
+name = "title"
 ty = "String"
 storage_ty = "Text"
 nullable = true
 
 [[schema.tables.columns]]
 id = { table = 1, index = 7 }
-name = "milestone_index"
-ty = "I32"
-storage_ty = { Integer = 4 }
+name = "reward_amount"
+ty = "Decimal"
+storage_ty = { Numeric = [] }
 nullable = true
 
 [[schema.tables.columns]]
@@ -204,13 +131,41 @@ storage_ty = "Text"
 
 [[schema.tables.columns]]
 id = { table = 1, index = 9 }
+name = "assignee_id"
+ty = "Uuid"
+storage_ty = "Uuid"
+nullable = true
+
+[[schema.tables.columns]]
+id = { table = 1, index = 10 }
+name = "assigned_at"
+ty = "Timestamp"
+storage_ty = { Timestamp = 6 }
+nullable = true
+
+[[schema.tables.columns]]
+id = { table = 1, index = 11 }
+name = "merged_at"
+ty = "Timestamp"
+storage_ty = { Timestamp = 6 }
+nullable = true
+
+[[schema.tables.columns]]
+id = { table = 1, index = 12 }
+name = "paid_at"
+ty = "Timestamp"
+storage_ty = { Timestamp = 6 }
+nullable = true
+
+[[schema.tables.columns]]
+id = { table = 1, index = 13 }
 name = "created_at"
 ty = "Timestamp"
 storage_ty = { Timestamp = 6 }
 
 [[schema.tables.indices]]
 id = { table = 1, index = 0 }
-name = "index_issues_by_id"
+name = "index_bounties_by_id"
 on = 1
 columns = [{ column = { table = 1, index = 0 }, op = "Eq", scope = "Partition" }]
 unique = true
@@ -218,26 +173,45 @@ primary_key = true
 
 [[schema.tables.indices]]
 id = { table = 1, index = 1 }
-name = "index_issues_by_repo_id_and_github_issue_id"
+name = "index_bounties_by_repo_id_and_github_issue_number"
 on = 1
-columns = [{ column = { table = 1, index = 1 }, op = "Eq", scope = "Partition" }, { column = { table = 1, index = 2 }, op = "Eq", scope = "Local" }]
+columns = [{ column = { table = 1, index = 1 }, op = "Eq", scope = "Partition" }, { column = { table = 1, index = 5 }, op = "Eq", scope = "Local" }]
 unique = true
 
 [[schema.tables.indices]]
 id = { table = 1, index = 2 }
-name = "index_issues_by_repo_id"
+name = "index_bounties_by_repo_id"
 on = 1
 columns = [{ column = { table = 1, index = 1 }, op = "Eq", scope = "Partition" }]
 
 [[schema.tables.indices]]
 id = { table = 1, index = 3 }
-name = "index_issues_by_github_issue_number"
+name = "index_bounties_by_github_issue_id"
 on = 1
-columns = [{ column = { table = 1, index = 3 }, op = "Eq", scope = "Partition" }]
+columns = [{ column = { table = 1, index = 4 }, op = "Eq", scope = "Partition" }]
+unique = true
+
+[[schema.tables.indices]]
+id = { table = 1, index = 4 }
+name = "index_bounties_by_github_issue_number"
+on = 1
+columns = [{ column = { table = 1, index = 5 }, op = "Eq", scope = "Partition" }]
+
+[[schema.tables.indices]]
+id = { table = 1, index = 5 }
+name = "index_bounties_by_status"
+on = 1
+columns = [{ column = { table = 1, index = 8 }, op = "Eq", scope = "Partition" }]
+
+[[schema.tables.indices]]
+id = { table = 1, index = 6 }
+name = "index_bounties_by_assignee_id"
+on = 1
+columns = [{ column = { table = 1, index = 9 }, op = "Eq", scope = "Partition" }]
 
 [[schema.tables]]
 id = 2
-name = "assignments"
+name = "escrow_funders"
 primary_key = { columns = [{ table = 2, index = 0 }], index = { table = 2, index = 0 } }
 
 [[schema.tables.columns]]
@@ -248,54 +222,50 @@ storage_ty = "Uuid"
 
 [[schema.tables.columns]]
 id = { table = 2, index = 1 }
-name = "issue_id"
+name = "repo_id"
 ty = "Uuid"
 storage_ty = "Uuid"
 
 [[schema.tables.columns]]
 id = { table = 2, index = 2 }
-name = "contributor_id"
-ty = "Uuid"
-storage_ty = "Uuid"
-nullable = true
-
-[[schema.tables.columns]]
-id = { table = 2, index = 3 }
-name = "assigned_at"
-ty = "Timestamp"
-storage_ty = { Timestamp = 6 }
-nullable = true
-
-[[schema.tables.columns]]
-id = { table = 2, index = 4 }
-name = "pr_number"
-ty = "I32"
-storage_ty = { Integer = 4 }
-nullable = true
-
-[[schema.tables.columns]]
-id = { table = 2, index = 5 }
-name = "pr_merged_at"
-ty = "Timestamp"
-storage_ty = { Timestamp = 6 }
-nullable = true
-
-[[schema.tables.columns]]
-id = { table = 2, index = 6 }
-name = "payout_status"
+name = "wallet_address"
 ty = "String"
 storage_ty = "Text"
 
 [[schema.tables.columns]]
-id = { table = 2, index = 7 }
-name = "completion_percentage"
+id = { table = 2, index = 3 }
+name = "chain"
+ty = "String"
+storage_ty = "Text"
+
+[[schema.tables.columns]]
+id = { table = 2, index = 4 }
+name = "amount"
 ty = "Decimal"
 storage_ty = { Numeric = [] }
+
+[[schema.tables.columns]]
+id = { table = 2, index = 5 }
+name = "tx_hash"
+ty = "String"
+storage_ty = "Text"
+
+[[schema.tables.columns]]
+id = { table = 2, index = 6 }
+name = "funded_at"
+ty = "Timestamp"
+storage_ty = { Timestamp = 6 }
+
+[[schema.tables.columns]]
+id = { table = 2, index = 7 }
+name = "profile_id"
+ty = "Uuid"
+storage_ty = "Uuid"
 nullable = true
 
 [[schema.tables.indices]]
 id = { table = 2, index = 0 }
-name = "index_assignments_by_id"
+name = "index_escrow_funders_by_id"
 on = 2
 columns = [{ column = { table = 2, index = 0 }, op = "Eq", scope = "Partition" }]
 unique = true
@@ -303,20 +273,26 @@ primary_key = true
 
 [[schema.tables.indices]]
 id = { table = 2, index = 1 }
-name = "index_assignments_by_issue_id"
+name = "index_escrow_funders_by_repo_id"
 on = 2
 columns = [{ column = { table = 2, index = 1 }, op = "Eq", scope = "Partition" }]
-unique = true
 
 [[schema.tables.indices]]
 id = { table = 2, index = 2 }
-name = "index_assignments_by_contributor_id"
+name = "index_escrow_funders_by_tx_hash"
 on = 2
-columns = [{ column = { table = 2, index = 2 }, op = "Eq", scope = "Partition" }]
+columns = [{ column = { table = 2, index = 5 }, op = "Eq", scope = "Partition" }]
+unique = true
+
+[[schema.tables.indices]]
+id = { table = 2, index = 3 }
+name = "index_escrow_funders_by_profile_id"
+on = 2
+columns = [{ column = { table = 2, index = 7 }, op = "Eq", scope = "Partition" }]
 
 [[schema.tables]]
 id = 3
-name = "contributors"
+name = "failed_tasks"
 primary_key = { columns = [{ table = 3, index = 0 }], index = { table = 3, index = 0 } }
 
 [[schema.tables.columns]]
@@ -327,45 +303,58 @@ storage_ty = "Uuid"
 
 [[schema.tables.columns]]
 id = { table = 3, index = 1 }
-name = "github_user_id"
-ty = "I64"
-storage_ty = { Integer = 8 }
+name = "task_type"
+ty = "String"
+storage_ty = "Text"
 
 [[schema.tables.columns]]
 id = { table = 3, index = 2 }
-name = "github_username"
-ty = "String"
-storage_ty = "Text"
+name = "ref_id"
+ty = "Uuid"
+storage_ty = "Uuid"
+nullable = true
 
 [[schema.tables.columns]]
 id = { table = 3, index = 3 }
-name = "stellar_wallet"
+name = "payload"
 ty = "String"
-storage_ty = "Text"
-nullable = true
+storage_ty = "Jsonb"
 
 [[schema.tables.columns]]
 id = { table = 3, index = 4 }
-name = "payout_chain"
-ty = "String"
-storage_ty = "Text"
-
-[[schema.tables.columns]]
-id = { table = 3, index = 5 }
-name = "payout_address"
+name = "error"
 ty = "String"
 storage_ty = "Text"
 nullable = true
 
 [[schema.tables.columns]]
+id = { table = 3, index = 5 }
+name = "attempts"
+ty = "I32"
+storage_ty = { Integer = 4 }
+
+[[schema.tables.columns]]
 id = { table = 3, index = 6 }
+name = "status"
+ty = "String"
+storage_ty = "Text"
+
+[[schema.tables.columns]]
+id = { table = 3, index = 7 }
+name = "last_attempt_at"
+ty = "Timestamp"
+storage_ty = { Timestamp = 6 }
+nullable = true
+
+[[schema.tables.columns]]
+id = { table = 3, index = 8 }
 name = "created_at"
 ty = "Timestamp"
 storage_ty = { Timestamp = 6 }
 
 [[schema.tables.indices]]
 id = { table = 3, index = 0 }
-name = "index_contributors_by_id"
+name = "index_failed_tasks_by_id"
 on = 3
 columns = [{ column = { table = 3, index = 0 }, op = "Eq", scope = "Partition" }]
 unique = true
@@ -373,7 +362,447 @@ primary_key = true
 
 [[schema.tables.indices]]
 id = { table = 3, index = 1 }
-name = "index_contributors_by_github_user_id"
+name = "index_failed_tasks_by_task_type"
 on = 3
 columns = [{ column = { table = 3, index = 1 }, op = "Eq", scope = "Partition" }]
+
+[[schema.tables.indices]]
+id = { table = 3, index = 2 }
+name = "index_failed_tasks_by_status"
+on = 3
+columns = [{ column = { table = 3, index = 6 }, op = "Eq", scope = "Partition" }]
+
+[[schema.tables]]
+id = 4
+name = "notifications"
+primary_key = { columns = [{ table = 4, index = 0 }], index = { table = 4, index = 0 } }
+
+[[schema.tables.columns]]
+id = { table = 4, index = 0 }
+name = "id"
+ty = "Uuid"
+storage_ty = "Uuid"
+
+[[schema.tables.columns]]
+id = { table = 4, index = 1 }
+name = "profile_id"
+ty = "Uuid"
+storage_ty = "Uuid"
+
+[[schema.tables.columns]]
+id = { table = 4, index = 2 }
+name = "kind"
+ty = "String"
+storage_ty = "Text"
+
+[[schema.tables.columns]]
+id = { table = 4, index = 3 }
+name = "title"
+ty = "String"
+storage_ty = "Text"
+
+[[schema.tables.columns]]
+id = { table = 4, index = 4 }
+name = "body"
+ty = "String"
+storage_ty = "Text"
+nullable = true
+
+[[schema.tables.columns]]
+id = { table = 4, index = 5 }
+name = "ref_id"
+ty = "Uuid"
+storage_ty = "Uuid"
+nullable = true
+
+[[schema.tables.columns]]
+id = { table = 4, index = 6 }
+name = "is_read"
+ty = "Bool"
+storage_ty = "Boolean"
+
+[[schema.tables.columns]]
+id = { table = 4, index = 7 }
+name = "created_at"
+ty = "Timestamp"
+storage_ty = { Timestamp = 6 }
+
+[[schema.tables.indices]]
+id = { table = 4, index = 0 }
+name = "index_notifications_by_id"
+on = 4
+columns = [{ column = { table = 4, index = 0 }, op = "Eq", scope = "Partition" }]
 unique = true
+primary_key = true
+
+[[schema.tables.indices]]
+id = { table = 4, index = 1 }
+name = "index_notifications_by_profile_id"
+on = 4
+columns = [{ column = { table = 4, index = 1 }, op = "Eq", scope = "Partition" }]
+
+[[schema.tables]]
+id = 5
+name = "profiles"
+primary_key = { columns = [{ table = 5, index = 0 }], index = { table = 5, index = 0 } }
+
+[[schema.tables.columns]]
+id = { table = 5, index = 0 }
+name = "id"
+ty = "Uuid"
+storage_ty = "Uuid"
+
+[[schema.tables.columns]]
+id = { table = 5, index = 1 }
+name = "github_id"
+ty = "I64"
+storage_ty = { Integer = 8 }
+
+[[schema.tables.columns]]
+id = { table = 5, index = 2 }
+name = "username"
+ty = "String"
+storage_ty = "Text"
+
+[[schema.tables.columns]]
+id = { table = 5, index = 3 }
+name = "full_name"
+ty = "String"
+storage_ty = "Text"
+nullable = true
+
+[[schema.tables.columns]]
+id = { table = 5, index = 4 }
+name = "email"
+ty = "String"
+storage_ty = "Text"
+nullable = true
+
+[[schema.tables.columns]]
+id = { table = 5, index = 5 }
+name = "avatar_url"
+ty = "String"
+storage_ty = "Text"
+nullable = true
+
+[[schema.tables.columns]]
+id = { table = 5, index = 6 }
+name = "bio"
+ty = "String"
+storage_ty = "Text"
+nullable = true
+
+[[schema.tables.columns]]
+id = { table = 5, index = 7 }
+name = "location"
+ty = "String"
+storage_ty = "Text"
+nullable = true
+
+[[schema.tables.columns]]
+id = { table = 5, index = 8 }
+name = "skills"
+ty = { List = "String" }
+storage_ty = { List = "Text" }
+nullable = true
+
+[[schema.tables.columns]]
+id = { table = 5, index = 9 }
+name = "telegram"
+ty = "String"
+storage_ty = "Text"
+nullable = true
+
+[[schema.tables.columns]]
+id = { table = 5, index = 10 }
+name = "discord"
+ty = "String"
+storage_ty = "Text"
+nullable = true
+
+[[schema.tables.columns]]
+id = { table = 5, index = 11 }
+name = "twitter"
+ty = "String"
+storage_ty = "Text"
+nullable = true
+
+[[schema.tables.columns]]
+id = { table = 5, index = 12 }
+name = "created_at"
+ty = "Timestamp"
+storage_ty = { Timestamp = 6 }
+
+[[schema.tables.columns]]
+id = { table = 5, index = 13 }
+name = "updated_at"
+ty = "Timestamp"
+storage_ty = { Timestamp = 6 }
+
+[[schema.tables.indices]]
+id = { table = 5, index = 0 }
+name = "index_profiles_by_id"
+on = 5
+columns = [{ column = { table = 5, index = 0 }, op = "Eq", scope = "Partition" }]
+unique = true
+primary_key = true
+
+[[schema.tables.indices]]
+id = { table = 5, index = 1 }
+name = "index_profiles_by_github_id"
+on = 5
+columns = [{ column = { table = 5, index = 1 }, op = "Eq", scope = "Partition" }]
+unique = true
+
+[[schema.tables.indices]]
+id = { table = 5, index = 2 }
+name = "index_profiles_by_username"
+on = 5
+columns = [{ column = { table = 5, index = 2 }, op = "Eq", scope = "Partition" }]
+unique = true
+
+[[schema.tables]]
+id = 6
+name = "repo_maintainers"
+primary_key = { columns = [{ table = 6, index = 0 }, { table = 6, index = 1 }], index = { table = 6, index = 0 } }
+
+[[schema.tables.columns]]
+id = { table = 6, index = 0 }
+name = "repo_id"
+ty = "Uuid"
+storage_ty = "Uuid"
+
+[[schema.tables.columns]]
+id = { table = 6, index = 1 }
+name = "profile_id"
+ty = "Uuid"
+storage_ty = "Uuid"
+
+[[schema.tables.columns]]
+id = { table = 6, index = 2 }
+name = "role"
+ty = "String"
+storage_ty = "Text"
+
+[[schema.tables.columns]]
+id = { table = 6, index = 3 }
+name = "added_at"
+ty = "Timestamp"
+storage_ty = { Timestamp = 6 }
+
+[[schema.tables.indices]]
+id = { table = 6, index = 0 }
+name = "index_repo_maintainers_by_repo_id_and_profile_id"
+on = 6
+columns = [{ column = { table = 6, index = 0 }, op = "Eq", scope = "Partition" }, { column = { table = 6, index = 1 }, op = "Eq", scope = "Partition" }]
+unique = true
+primary_key = true
+
+[[schema.tables.indices]]
+id = { table = 6, index = 1 }
+name = "index_repo_maintainers_by_profile_id"
+on = 6
+columns = [{ column = { table = 6, index = 1 }, op = "Eq", scope = "Partition" }]
+
+[[schema.tables]]
+id = 7
+name = "repositories"
+primary_key = { columns = [{ table = 7, index = 0 }], index = { table = 7, index = 0 } }
+
+[[schema.tables.columns]]
+id = { table = 7, index = 0 }
+name = "id"
+ty = "Uuid"
+storage_ty = "Uuid"
+
+[[schema.tables.columns]]
+id = { table = 7, index = 1 }
+name = "github_repo_id"
+ty = "I64"
+storage_ty = { Integer = 8 }
+
+[[schema.tables.columns]]
+id = { table = 7, index = 2 }
+name = "github_install_id"
+ty = "I64"
+storage_ty = { Integer = 8 }
+nullable = true
+
+[[schema.tables.columns]]
+id = { table = 7, index = 3 }
+name = "full_name"
+ty = "String"
+storage_ty = "Text"
+
+[[schema.tables.columns]]
+id = { table = 7, index = 4 }
+name = "escrow_contract_id"
+ty = "String"
+storage_ty = "Text"
+nullable = true
+
+[[schema.tables.columns]]
+id = { table = 7, index = 5 }
+name = "escrow_balance"
+ty = "Decimal"
+storage_ty = { Numeric = [] }
+nullable = true
+
+[[schema.tables.columns]]
+id = { table = 7, index = 6 }
+name = "balance_synced_at"
+ty = "Timestamp"
+storage_ty = { Timestamp = 6 }
+nullable = true
+
+[[schema.tables.columns]]
+id = { table = 7, index = 7 }
+name = "created_at"
+ty = "Timestamp"
+storage_ty = { Timestamp = 6 }
+
+[[schema.tables.indices]]
+id = { table = 7, index = 0 }
+name = "index_repositories_by_id"
+on = 7
+columns = [{ column = { table = 7, index = 0 }, op = "Eq", scope = "Partition" }]
+unique = true
+primary_key = true
+
+[[schema.tables.indices]]
+id = { table = 7, index = 1 }
+name = "index_repositories_by_github_repo_id"
+on = 7
+columns = [{ column = { table = 7, index = 1 }, op = "Eq", scope = "Partition" }]
+unique = true
+
+[[schema.tables.indices]]
+id = { table = 7, index = 2 }
+name = "index_repositories_by_full_name"
+on = 7
+columns = [{ column = { table = 7, index = 3 }, op = "Eq", scope = "Partition" }]
+unique = true
+
+[[schema.tables]]
+id = 8
+name = "reward_levels"
+primary_key = { columns = [{ table = 8, index = 0 }], index = { table = 8, index = 0 } }
+
+[[schema.tables.columns]]
+id = { table = 8, index = 0 }
+name = "id"
+ty = "Uuid"
+storage_ty = "Uuid"
+
+[[schema.tables.columns]]
+id = { table = 8, index = 1 }
+name = "repo_id"
+ty = "Uuid"
+storage_ty = "Uuid"
+
+[[schema.tables.columns]]
+id = { table = 8, index = 2 }
+name = "label"
+ty = "String"
+storage_ty = "Text"
+
+[[schema.tables.columns]]
+id = { table = 8, index = 3 }
+name = "amount"
+ty = "Decimal"
+storage_ty = { Numeric = [] }
+
+[[schema.tables.columns]]
+id = { table = 8, index = 4 }
+name = "updated_at"
+ty = "Timestamp"
+storage_ty = { Timestamp = 6 }
+
+[[schema.tables.indices]]
+id = { table = 8, index = 0 }
+name = "index_reward_levels_by_id"
+on = 8
+columns = [{ column = { table = 8, index = 0 }, op = "Eq", scope = "Partition" }]
+unique = true
+primary_key = true
+
+[[schema.tables.indices]]
+id = { table = 8, index = 1 }
+name = "index_reward_levels_by_repo_id_and_label"
+on = 8
+columns = [{ column = { table = 8, index = 1 }, op = "Eq", scope = "Partition" }, { column = { table = 8, index = 2 }, op = "Eq", scope = "Local" }]
+unique = true
+
+[[schema.tables.indices]]
+id = { table = 8, index = 2 }
+name = "index_reward_levels_by_repo_id"
+on = 8
+columns = [{ column = { table = 8, index = 1 }, op = "Eq", scope = "Partition" }]
+
+[[schema.tables]]
+id = 9
+name = "wallets"
+primary_key = { columns = [{ table = 9, index = 0 }], index = { table = 9, index = 0 } }
+
+[[schema.tables.columns]]
+id = { table = 9, index = 0 }
+name = "id"
+ty = "Uuid"
+storage_ty = "Uuid"
+
+[[schema.tables.columns]]
+id = { table = 9, index = 1 }
+name = "profile_id"
+ty = "Uuid"
+storage_ty = "Uuid"
+
+[[schema.tables.columns]]
+id = { table = 9, index = 2 }
+name = "chain"
+ty = "String"
+storage_ty = "Text"
+
+[[schema.tables.columns]]
+id = { table = 9, index = 3 }
+name = "address"
+ty = "String"
+storage_ty = "Text"
+
+[[schema.tables.columns]]
+id = { table = 9, index = 4 }
+name = "is_primary"
+ty = "Bool"
+storage_ty = "Boolean"
+
+[[schema.tables.columns]]
+id = { table = 9, index = 5 }
+name = "created_at"
+ty = "Timestamp"
+storage_ty = { Timestamp = 6 }
+
+[[schema.tables.columns]]
+id = { table = 9, index = 6 }
+name = "updated_at"
+ty = "Timestamp"
+storage_ty = { Timestamp = 6 }
+
+[[schema.tables.indices]]
+id = { table = 9, index = 0 }
+name = "index_wallets_by_id"
+on = 9
+columns = [{ column = { table = 9, index = 0 }, op = "Eq", scope = "Partition" }]
+unique = true
+primary_key = true
+
+[[schema.tables.indices]]
+id = { table = 9, index = 1 }
+name = "index_wallets_by_profile_id_and_chain_and_address"
+on = 9
+columns = [{ column = { table = 9, index = 1 }, op = "Eq", scope = "Partition" }, { column = { table = 9, index = 2 }, op = "Eq", scope = "Local" }, { column = { table = 9, index = 3 }, op = "Eq", scope = "Local" }]
+unique = true
+
+[[schema.tables.indices]]
+id = { table = 9, index = 2 }
+name = "index_wallets_by_profile_id"
+on = 9
+columns = [{ column = { table = 9, index = 1 }, op = "Eq", scope = "Partition" }]

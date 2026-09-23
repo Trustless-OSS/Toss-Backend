@@ -1,16 +1,16 @@
 //! Toasty ORM schema models — source of truth for the DB schema.
 //! Runtime DTOs live in [`super::entities`].
 
-mod activity;
-mod bounties;
-mod escrow_funder;
-mod failed_tasks;
-mod notification;
-mod profile;
-mod repo;
-mod repo_maintainers;
-mod rewards;
-mod wallet;
+pub mod activity;
+pub mod bounties;
+pub mod escrow_funder;
+pub mod failed_tasks;
+pub mod notification;
+pub mod profile;
+pub mod repo;
+pub mod repo_maintainers;
+pub mod rewards;
+pub mod wallet;
 
 pub use activity::Activity;
 pub use bounties::Bounty;

@@ -1,11 +1,6 @@
 version = 1
 
 [[migrations]]
-id = 6687151156926154146
-name = "0000_initial.sql"
+id = 8920828235533715757
+name = "0000_init_schema.sql"
 snapshot_name = "0000_snapshot.toml"
-
-[[migrations]]
-id = 9107816935773802316
-name = "0001_add_rewards_table.sql"
-snapshot_name = "0001_snapshot.toml"
