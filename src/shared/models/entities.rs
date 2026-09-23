@@ -6,13 +6,26 @@ use uuid::Uuid;
 
 use super::schema;
 
-fn timestamp_to_chrono(ts: jiff::Timestamp) -> DateTime<Utc> {
+fn ts(ts: jiff::Timestamp) -> DateTime<Utc> {
     DateTime::from_timestamp(ts.as_second(), ts.subsec_nanosecond().unsigned_abs())
         .unwrap_or(DateTime::UNIX_EPOCH)
 }
 
-fn optional_timestamp(ts: Option<jiff::Timestamp>) -> Option<DateTime<Utc>> {
-    ts.map(timestamp_to_chrono)
+fn opt_ts(t: Option<jiff::Timestamp>) -> Option<DateTime<Utc>> {
+    t.map(ts)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct Repo {
+    pub id: Uuid,
+    pub github_repo_id: i64,
+    pub github_install_id: Option<i64>,
+    pub full_name: String,
+    pub escrow_contract_id: Option<String>,
+    pub escrow_balance: Option<Decimal>,
+    pub balance_synced_at: Option<DateTime<Utc>>,
+    pub rewards: Vec<Reward>,
+    pub created_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -21,141 +34,190 @@ pub struct Reward {
     pub repo_id: Uuid,
     pub label: String,
     pub amount: Decimal,
-    pub created_at: Option<DateTime<Utc>>,
+    pub updated_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-pub struct Repo {
+pub struct Profile {
     pub id: Uuid,
-    pub github_repo_id: i64,
-    pub github_installation_id: Option<i64>,
-    pub full_name: String,
-    pub owner_github_id: i64,
-    pub owner_username: String,
-    pub owner_type: Option<String>,
-    pub installer_github_id: Option<i64>,
-    pub is_fork: Option<bool>,
-    pub is_private: Option<bool>,
-    pub escrow_contract_id: Option<String>,
-    pub escrow_funder_wallet: Option<String>,
-    pub escrow_balance: Decimal,
-    pub rewards: Vec<Reward>,
+    pub github_id: i64,
+    pub username: String,
+    pub full_name: Option<String>,
+    pub email: Option<String>,
+    pub avatar_url: Option<String>,
+    pub bio: Option<String>,
+    pub location: Option<String>,
+    pub skills: Option<Vec<String>>,
+    pub telegram: Option<String>,
+    pub discord: Option<String>,
+    pub twitter: Option<String>,
     pub created_at: Option<DateTime<Utc>>,
+    pub updated_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-pub struct Contributor {
+pub struct Wallet {
     pub id: Uuid,
-    pub github_user_id: i64,
-    pub github_username: String,
-    pub stellar_wallet: Option<String>,
-    pub payout_chain: Option<String>,
-    pub payout_address: Option<String>,
+    pub profile_id: Uuid,
+    pub chain: String,
+    pub address: String,
+    pub is_primary: bool,
     pub created_at: Option<DateTime<Utc>>,
+    pub updated_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-pub struct Issue {
+pub struct Bounty {
     pub id: Uuid,
     pub repo_id: Uuid,
+    pub reward_level_id: Option<Uuid>,
+    pub milestone_index: Option<i32>,
     pub github_issue_id: i64,
     pub github_issue_number: i32,
-    pub title: String,
-    pub reward_amount: Decimal,
-    pub difficulty_label: Option<String>,
-    pub milestone_index: Option<i32>,
+    pub title: Option<String>,
+    pub reward_amount: Option<Decimal>,
     pub status: String,
+    pub assignee_id: Option<Uuid>,
+    pub assigned_at: Option<DateTime<Utc>>,
+    pub merged_at: Option<DateTime<Utc>>,
+    pub paid_at: Option<DateTime<Utc>>,
     pub created_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-pub struct Assignment {
+pub struct EscrowFunder {
     pub id: Uuid,
-    pub issue_id: Uuid,
-    pub contributor_id: Option<Uuid>,
-    pub assigned_at: Option<DateTime<Utc>>,
-    pub pr_number: Option<i32>,
-    pub pr_merged_at: Option<DateTime<Utc>>,
-    pub payout_status: String,
-    pub completion_percentage: Option<Decimal>,
+    pub repo_id: Uuid,
+    pub wallet_address: String,
+    pub chain: String,
+    pub amount: Decimal,
+    pub tx_hash: String,
+    pub funded_at: Option<DateTime<Utc>>,
+    pub profile_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct Notification {
+    pub id: Uuid,
+    pub profile_id: Uuid,
+    pub kind: String,
+    pub title: String,
+    pub body: Option<String>,
+    pub ref_id: Option<Uuid>,
+    pub is_read: bool,
+    pub created_at: Option<DateTime<Utc>>,
+}
+
+impl From<schema::Repositories> for Repo {
+    fn from(v: schema::Repositories) -> Self {
+        Self {
+            id: v.id,
+            github_repo_id: v.github_repo_id,
+            github_install_id: v.github_install_id,
+            full_name: v.full_name,
+            escrow_contract_id: v.escrow_contract_id,
+            escrow_balance: v.escrow_balance,
+            balance_synced_at: v.balance_synced_at.map(ts),
+            rewards: vec![],
+            created_at: Some(ts(v.created_at)),
+        }
+    }
 }
 
 impl From<schema::Reward> for Reward {
-    fn from(value: schema::Reward) -> Self {
+    fn from(v: schema::Reward) -> Self {
         Self {
-            id: value.id,
-            repo_id: value.repo_id,
-            label: value.label,
-            amount: value.amount,
-            created_at: Some(timestamp_to_chrono(value.created_at)),
+            id: v.id,
+            repo_id: v.repo_id,
+            label: v.label,
+            amount: v.amount,
+            updated_at: Some(ts(v.updated_at)),
         }
     }
 }
 
-impl From<schema::Repo> for Repo {
-    fn from(value: schema::Repo) -> Self {
+impl From<schema::Profile> for Profile {
+    fn from(v: schema::Profile) -> Self {
         Self {
-            id: value.id,
-            github_repo_id: value.github_repo_id,
-            github_installation_id: value.github_installation_id,
-            full_name: value.full_name,
-            owner_github_id: value.owner_github_id,
-            owner_username: value.owner_username,
-            owner_type: value.owner_type,
-            installer_github_id: value.installer_github_id,
-            is_fork: Some(value.is_fork),
-            is_private: Some(value.is_private),
-            escrow_contract_id: value.escrow_contract_id,
-            escrow_funder_wallet: value.escrow_funder_wallet,
-            escrow_balance: value.escrow_balance,
-            rewards: vec![],
-            created_at: Some(timestamp_to_chrono(value.created_at)),
+            id: v.id,
+            github_id: v.github_id,
+            username: v.username,
+            full_name: v.full_name,
+            email: v.email,
+            avatar_url: v.avatar_url,
+            bio: v.bio,
+            location: v.location,
+            skills: v.skills,
+            telegram: v.telegram,
+            discord: v.discord,
+            twitter: v.twitter,
+            created_at: Some(ts(v.created_at)),
+            updated_at: Some(ts(v.updated_at)),
         }
     }
 }
 
-impl From<schema::Contributor> for Contributor {
-    fn from(value: schema::Contributor) -> Self {
+impl From<schema::Wallet> for Wallet {
+    fn from(v: schema::Wallet) -> Self {
         Self {
-            id: value.id,
-            github_user_id: value.github_user_id,
-            github_username: value.github_username,
-            stellar_wallet: value.stellar_wallet,
-            payout_chain: Some(value.payout_chain),
-            payout_address: value.payout_address,
-            created_at: Some(timestamp_to_chrono(value.created_at)),
+            id: v.id,
+            profile_id: v.profile_id,
+            chain: v.chain,
+            address: v.address,
+            is_primary: v.is_primary,
+            created_at: Some(ts(v.created_at)),
+            updated_at: Some(ts(v.updated_at)),
         }
     }
 }
 
-impl From<schema::Issue> for Issue {
-    fn from(value: schema::Issue) -> Self {
+impl From<schema::Bounty> for Bounty {
+    fn from(v: schema::Bounty) -> Self {
         Self {
-            id: value.id,
-            repo_id: value.repo_id,
-            github_issue_id: value.github_issue_id,
-            github_issue_number: value.github_issue_number,
-            title: value.title,
-            reward_amount: value.reward_amount,
-            difficulty_label: value.difficulty_label,
-            milestone_index: value.milestone_index,
-            status: value.status,
-            created_at: Some(timestamp_to_chrono(value.created_at)),
+            id: v.id,
+            repo_id: v.repo_id,
+            reward_level_id: v.reward_level_id,
+            milestone_index: v.milestone_index,
+            github_issue_id: v.github_issue_id,
+            github_issue_number: v.github_issue_number,
+            title: v.title,
+            reward_amount: v.reward_amount,
+            status: v.status,
+            assignee_id: v.assignee_id,
+            assigned_at: opt_ts(v.assigned_at),
+            merged_at: opt_ts(v.merged_at),
+            paid_at: opt_ts(v.paid_at),
+            created_at: Some(ts(v.created_at)),
         }
     }
 }
 
-impl From<schema::Assignment> for Assignment {
-    fn from(value: schema::Assignment) -> Self {
+impl From<schema::Notification> for Notification {
+    fn from(v: schema::Notification) -> Self {
         Self {
-            id: value.id,
-            issue_id: value.issue_id,
-            contributor_id: value.contributor_id,
-            assigned_at: optional_timestamp(value.assigned_at),
-            pr_number: value.pr_number,
-            pr_merged_at: optional_timestamp(value.pr_merged_at),
-            payout_status: value.payout_status,
-            completion_percentage: value.completion_percentage,
+            id: v.id,
+            profile_id: v.profile_id,
+            kind: v.kind,
+            title: v.title,
+            body: v.body,
+            ref_id: v.ref_id,
+            is_read: v.is_read,
+            created_at: Some(ts(v.created_at)),
+        }
+    }
+}
+
+impl From<schema::EscrowFunder> for EscrowFunder {
+    fn from(v: schema::EscrowFunder) -> Self {
+        Self {
+            id: v.id,
+            repo_id: v.repo_id,
+            wallet_address: v.wallet_address,
+            chain: v.chain,
+            amount: v.amount,
+            tx_hash: v.tx_hash,
+            funded_at: Some(ts(v.funded_at)),
+            profile_id: v.profile_id,
         }
     }
 }

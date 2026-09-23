@@ -1,8 +1,9 @@
 use rust_decimal::Decimal;
 use uuid::Uuid;
 
+// unique constraint: (repo_id, label)
 #[derive(Debug, toasty::Model)]
-#[table = "rewards"]
+#[table = "reward_levels"]
 #[unique(repo_id, label)]
 pub struct Reward {
     #[key]
@@ -13,8 +14,6 @@ pub struct Reward {
     pub repo_id: Uuid,
 
     pub label: String,
-
-    #[default(Decimal::ZERO)]
     pub amount: Decimal,
 
     #[default(jiff::Timestamp::now())]

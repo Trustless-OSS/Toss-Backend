@@ -1,22 +1,13 @@
-//! Domain and API-composition types built from database entities.
-
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use super::entities::{Assignment, Contributor, Issue};
+use super::entities::{Bounty, Profile};
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-pub struct IssueWithRelations {
+pub struct BountyWithAssignee {
     #[serde(flatten)]
-    pub issue: Issue,
-    pub assignments: Vec<AssignmentWithContributor>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-pub struct AssignmentWithContributor {
-    #[serde(flatten)]
-    pub assignment: Assignment,
-    pub contributors: Option<Contributor>,
+    pub bounty: Bounty,
+    pub assignee: Option<Profile>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

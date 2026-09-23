@@ -1,8 +1,9 @@
 use jiff::Timestamp;
 use uuid::Uuid;
 
-#[derive(toasty::Model, Debug)]
-#[table = "notification"]
+// kinds: assigned | paid | bounty_posted | mention | payout_failed
+#[derive(Debug, toasty::Model)]
+#[table = "notifications"]
 pub struct Notification {
     #[key]
     #[auto]
@@ -12,12 +13,9 @@ pub struct Notification {
     pub profile_id: Uuid,
 
     pub kind: String,
-
     pub title: String,
-
-    pub body: String,
-
-    pub ref_id: Uuid,
+    pub body: Option<String>,
+    pub ref_id: Option<Uuid>,
 
     #[default(false)]
     pub is_read: bool,

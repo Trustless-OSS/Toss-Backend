@@ -10,22 +10,17 @@ pub struct Repositories {
     pub id: Uuid,
 
     #[unique]
+    #[index]
     pub github_repo_id: i64,
 
-    #[index]
     pub github_install_id: Option<i64>,
 
+    #[unique]
     pub full_name: String,
 
-    #[default(false)]
-    pub is_fork: bool,
-
     pub escrow_contract_id: Option<String>,
-
-    #[default(Decimal::ZERO)]
-    pub escrow_balance: Decimal,
-
-    pub updated_at: Timestamp,
+    pub escrow_balance: Option<Decimal>,
+    pub balance_synced_at: Option<Timestamp>,
 
     #[default(Timestamp::now())]
     pub created_at: Timestamp,

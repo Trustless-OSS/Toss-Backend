@@ -1,8 +1,8 @@
 use jiff::Timestamp;
 use uuid::Uuid;
 
-#[derive(toasty::Model)]
-#[table = "profile"]
+#[derive(Debug, toasty::Model)]
+#[table = "profiles"]
 pub struct Profile {
     #[key]
     #[auto]
@@ -10,33 +10,25 @@ pub struct Profile {
 
     #[unique]
     #[index]
-    pub github_id: Uuid,
+    pub github_id: i64,
 
     #[unique]
     #[index]
     pub username: String,
 
-    full_name: String,
-
-    email: String,
-
-    avatar_url: Option<String>,
-
-    bio: Option<String>,
-
-    location: Option<String>,
-
-    skills: Option<Vec<String>>,
-
-    telegram: Option<String>,
-
-    discord: Option<String>,
-
-    twitter: Option<String>,
+    pub full_name: Option<String>,
+    pub email: Option<String>,
+    pub avatar_url: Option<String>,
+    pub bio: Option<String>,
+    pub location: Option<String>,
+    pub skills: Option<Vec<String>>,
+    pub telegram: Option<String>,
+    pub discord: Option<String>,
+    pub twitter: Option<String>,
 
     #[default(Timestamp::now())]
-    created_at: Timestamp,
+    pub created_at: Timestamp,
 
     #[default(Timestamp::now())]
-    updated_at: Timestamp,
+    pub updated_at: Timestamp,
 }
