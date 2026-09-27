@@ -253,7 +253,7 @@ pub async fn create_bounty_and_reserve_balance(
     let mut db = require_db(&state.db)?;
     let mut tx = db.transaction().await.map_err(map_db_err)?;
 
-    let mut schema_repo = schema::Repositories::get_by_id(&mut tx, &repo.id)
+    let mut schema_repo = schema::Repository::get_by_id(&mut tx, &repo.id)
         .await
         .map_err(map_db_err)?;
 
@@ -321,7 +321,7 @@ pub async fn update_pending_bounty_reward(
 
     let old_amount = bounty.reward_amount.unwrap_or(Decimal::ZERO);
     let difference = reward_amount - old_amount;
-    let mut schema_repo = schema::Repositories::get_by_id(&mut tx, &repo.id)
+    let mut schema_repo = schema::Repository::get_by_id(&mut tx, &repo.id)
         .await
         .map_err(map_db_err)?;
 

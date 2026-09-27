@@ -6,9 +6,16 @@ use uuid::Uuid;
 
 use super::schema;
 
-fn ts(ts: jiff::Timestamp) -> DateTime<Utc> {
-    DateTime::from_timestamp(ts.as_second(), ts.subsec_nanosecond().unsigned_abs())
-        .unwrap_or(DateTime::UNIX_EPOCH)
+fn ts(t: jiff::Timestamp) -> DateTime<Utc> {
+    DateTime::from_timestamp(t.as_second(), t.subsec_nanosecond().unsigned_abs()).unwrap_or_else(
+        || {
+            debug_assert!(
+                false,
+                "timestamp out of chrono's representable range: {t:?}"
+            );
+            DateTime::UNIX_EPOCH
+        },
+    )
 }
 
 fn opt_ts(t: Option<jiff::Timestamp>) -> Option<DateTime<Utc>> {
@@ -22,10 +29,30 @@ pub struct Repo {
     pub github_install_id: Option<i64>,
     pub full_name: String,
     pub escrow_contract_id: Option<String>,
+
+    #[schema(value_type = Option<String>)]
+    #[serde(with = "rust_decimal::serde::str_option")]
     pub escrow_balance: Option<Decimal>,
+
     pub balance_synced_at: Option<DateTime<Utc>>,
     pub rewards: Vec<Reward>,
-    pub created_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+}
+
+impl Repo {
+    pub fn from_parts(repo: schema::Repository, rewards: Vec<schema::Reward>) -> Self {
+        Self {
+            id: repo.id,
+            github_repo_id: repo.github_repo_id,
+            github_install_id: repo.github_install_id,
+            full_name: repo.full_name,
+            escrow_contract_id: repo.escrow_contract_id,
+            escrow_balance: repo.escrow_balance,
+            balance_synced_at: opt_ts(repo.balance_synced_at),
+            rewards: rewards.into_iter().map(Reward::from).collect(),
+            created_at: ts(repo.created_at),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -33,8 +60,12 @@ pub struct Reward {
     pub id: Uuid,
     pub repo_id: Uuid,
     pub label: String,
+
+    #[schema(value_type = String)]
+    #[serde(with = "rust_decimal::serde::str")]
     pub amount: Decimal,
-    pub updated_at: Option<DateTime<Utc>>,
+
+    pub updated_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -51,8 +82,8 @@ pub struct Profile {
     pub telegram: Option<String>,
     pub discord: Option<String>,
     pub twitter: Option<String>,
-    pub created_at: Option<DateTime<Utc>>,
-    pub updated_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -62,8 +93,8 @@ pub struct Wallet {
     pub chain: String,
     pub address: String,
     pub is_primary: bool,
-    pub created_at: Option<DateTime<Utc>>,
-    pub updated_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -75,13 +106,19 @@ pub struct Bounty {
     pub github_issue_id: i64,
     pub github_issue_number: i32,
     pub title: Option<String>,
+
+    #[schema(value_type = Option<String>)]
+    #[serde(with = "rust_decimal::serde::str_option")]
     pub reward_amount: Option<Decimal>,
+
     pub status: String,
     pub assignee_id: Option<Uuid>,
+
     pub assigned_at: Option<DateTime<Utc>>,
     pub merged_at: Option<DateTime<Utc>>,
     pub paid_at: Option<DateTime<Utc>>,
-    pub created_at: Option<DateTime<Utc>>,
+
+    pub created_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -90,9 +127,13 @@ pub struct EscrowFunder {
     pub repo_id: Uuid,
     pub wallet_address: String,
     pub chain: String,
+
+    #[schema(value_type = String)]
+    #[serde(with = "rust_decimal::serde::str")]
     pub amount: Decimal,
+
     pub tx_hash: String,
-    pub funded_at: Option<DateTime<Utc>>,
+    pub funded_at: DateTime<Utc>,
     pub profile_id: Option<Uuid>,
 }
 
@@ -105,23 +146,7 @@ pub struct Notification {
     pub body: Option<String>,
     pub ref_id: Option<Uuid>,
     pub is_read: bool,
-    pub created_at: Option<DateTime<Utc>>,
-}
-
-impl From<schema::Repositories> for Repo {
-    fn from(v: schema::Repositories) -> Self {
-        Self {
-            id: v.id,
-            github_repo_id: v.github_repo_id,
-            github_install_id: v.github_install_id,
-            full_name: v.full_name,
-            escrow_contract_id: v.escrow_contract_id,
-            escrow_balance: v.escrow_balance,
-            balance_synced_at: v.balance_synced_at.map(ts),
-            rewards: vec![],
-            created_at: Some(ts(v.created_at)),
-        }
-    }
+    pub created_at: DateTime<Utc>,
 }
 
 impl From<schema::Reward> for Reward {
@@ -131,8 +156,14 @@ impl From<schema::Reward> for Reward {
             repo_id: v.repo_id,
             label: v.label,
             amount: v.amount,
-            updated_at: Some(ts(v.updated_at)),
+            updated_at: ts(v.updated_at),
         }
+    }
+}
+
+impl From<schema::Repository> for Repo {
+    fn from(v: schema::Repository) -> Self {
+        Self::from_parts(v, vec![])
     }
 }
 
@@ -151,8 +182,8 @@ impl From<schema::Profile> for Profile {
             telegram: v.telegram,
             discord: v.discord,
             twitter: v.twitter,
-            created_at: Some(ts(v.created_at)),
-            updated_at: Some(ts(v.updated_at)),
+            created_at: ts(v.created_at),
+            updated_at: ts(v.updated_at),
         }
     }
 }
@@ -165,8 +196,8 @@ impl From<schema::Wallet> for Wallet {
             chain: v.chain,
             address: v.address,
             is_primary: v.is_primary,
-            created_at: Some(ts(v.created_at)),
-            updated_at: Some(ts(v.updated_at)),
+            created_at: ts(v.created_at),
+            updated_at: ts(v.updated_at),
         }
     }
 }
@@ -187,7 +218,7 @@ impl From<schema::Bounty> for Bounty {
             assigned_at: opt_ts(v.assigned_at),
             merged_at: opt_ts(v.merged_at),
             paid_at: opt_ts(v.paid_at),
-            created_at: Some(ts(v.created_at)),
+            created_at: ts(v.created_at),
         }
     }
 }
@@ -202,7 +233,7 @@ impl From<schema::Notification> for Notification {
             body: v.body,
             ref_id: v.ref_id,
             is_read: v.is_read,
-            created_at: Some(ts(v.created_at)),
+            created_at: ts(v.created_at),
         }
     }
 }
@@ -216,7 +247,7 @@ impl From<schema::EscrowFunder> for EscrowFunder {
             chain: v.chain,
             amount: v.amount,
             tx_hash: v.tx_hash,
-            funded_at: Some(ts(v.funded_at)),
+            funded_at: ts(v.funded_at),
             profile_id: v.profile_id,
         }
     }

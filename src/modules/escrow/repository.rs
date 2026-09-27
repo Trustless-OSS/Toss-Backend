@@ -18,7 +18,7 @@ pub async fn update_repo_escrow_contract(
     contract_id: &str,
 ) -> Result<(), AppError> {
     let mut db = require_db(&state.db)?;
-    toasty::update!(schema::Repositories::filter_by_id(repo_id) {
+    toasty::update!(schema::Repository::filter_by_id(repo_id) {
         escrow_contract_id: Some(contract_id.to_string()),
     })
     .exec(&mut db)
@@ -35,7 +35,7 @@ pub async fn update_repo_escrow_balance(
     github_repo_id: Option<i64>,
 ) -> Result<(), AppError> {
     let mut db = require_db(&state.db)?;
-    toasty::update!(schema::Repositories::filter_by_id(repo_id) {
+    toasty::update!(schema::Repository::filter_by_id(repo_id) {
         escrow_balance: Some(round_balance(balance)),
     })
     .exec(&mut db)
@@ -47,7 +47,7 @@ pub async fn update_repo_escrow_balance(
 
 pub async fn clear_repo_escrow(state: &AppState, repo_id: Uuid) -> Result<(), AppError> {
     let mut db = require_db(&state.db)?;
-    toasty::update!(schema::Repositories::filter_by_id(repo_id) {
+    toasty::update!(schema::Repository::filter_by_id(repo_id) {
         escrow_contract_id: Option::<String>::None,
         escrow_balance: Option::<Decimal>::None,
     })
@@ -60,22 +60,20 @@ pub async fn clear_repo_escrow(state: &AppState, repo_id: Uuid) -> Result<(), Ap
 
 pub async fn list_active_escrow_repos(state: &AppState) -> Result<Vec<Repo>, AppError> {
     let mut db = require_db(&state.db)?;
-    Ok(schema::Repositories::filter(
-        schema::Repositories::fields()
-            .escrow_contract_id()
-            .is_some(),
+    Ok(
+        schema::Repository::filter(schema::Repository::fields().escrow_contract_id().is_some())
+            .exec(&mut db)
+            .await
+            .map_err(map_db_err)?
+            .into_iter()
+            .map(|repo| Repo::from_parts(repo, vec![]))
+            .filter(|repo| {
+                repo.escrow_contract_id
+                    .as_deref()
+                    .is_some_and(|id| !id.trim().is_empty())
+            })
+            .collect(),
     )
-    .exec(&mut db)
-    .await
-    .map_err(map_db_err)?
-    .into_iter()
-    .map(Repo::from)
-    .filter(|repo| {
-        repo.escrow_contract_id
-            .as_deref()
-            .is_some_and(|id| !id.trim().is_empty())
-    })
-    .collect())
 }
 
 pub async fn refund_repo_balance(

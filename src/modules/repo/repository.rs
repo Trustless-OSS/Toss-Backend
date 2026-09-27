@@ -15,7 +15,7 @@ pub async fn get_repo_by_id(state: &AppState, repo_id: Uuid) -> Result<Option<Re
     }
 
     let mut db = require_db(&state.db)?;
-    let repo = schema::Repositories::filter_by_id(repo_id)
+    let repo = schema::Repository::filter_by_id(repo_id)
         .first()
         .exec(&mut db)
         .await
@@ -50,7 +50,7 @@ pub async fn get_repo_by_github_id(
     }
 
     let mut db = require_db(&state.db)?;
-    let repo = schema::Repositories::filter_by_github_repo_id(github_repo_id)
+    let repo = schema::Repository::filter_by_github_repo_id(github_repo_id)
         .first()
         .exec(&mut db)
         .await
@@ -93,6 +93,7 @@ pub async fn list_repos_for_user(
     offset: i64,
 ) -> Result<(Vec<Repo>, i64), AppError> {
     let mut db = require_db(&state.db)?;
+
     let limit = limit.max(0) as usize;
     let offset = offset.max(0) as usize;
 
@@ -115,7 +116,7 @@ pub async fn list_repos_for_user(
 
         let mut repos = Vec::new();
         for row in maintainer_rows {
-            if let Some(repo) = schema::Repositories::filter_by_id(row.repo_id)
+            if let Some(repo) = schema::Repository::filter_by_id(row.repo_id)
                 .first()
                 .exec(&mut db)
                 .await
@@ -128,7 +129,7 @@ pub async fn list_repos_for_user(
     } else if let Some(username) = github_username.filter(|v| !v.is_empty()) {
         // Fallback: match by full_name prefix (owner/*)
         let prefix = format!("{username}/");
-        let all = schema::Repositories::all()
+        let all = schema::Repository::all()
             .exec(&mut db)
             .await
             .map_err(map_db_err)?;
@@ -154,7 +155,7 @@ pub async fn upsert_repo(
     github_install_id: Option<i64>,
 ) -> Result<Repo, AppError> {
     let mut db = require_db(&state.db)?;
-    let repo = schema::Repositories::upsert_by_github_repo_id(github_repo_id)
+    let repo = schema::Repository::upsert_by_github_repo_id(github_repo_id)
         .full_name(full_name.to_string())
         .github_install_id(github_install_id)
         .exec(&mut db)
@@ -217,7 +218,7 @@ pub async fn update_repo_rewards(
         .await
         .map_err(map_db_err)?;
 
-    let schema_repo = schema::Repositories::get_by_id(&mut db, &repo_id)
+    let schema_repo = schema::Repository::get_by_id(&mut db, &repo_id)
         .await
         .map_err(map_db_err)?;
 
@@ -254,7 +255,7 @@ pub async fn delete_repo_cascade(state: &AppState, repo_id: Uuid) -> Result<(), 
         .await
         .map_err(map_db_err)?;
 
-    schema::Repositories::filter_by_id(repo_id)
+    schema::Repository::filter_by_id(repo_id)
         .delete()
         .exec(&mut tx)
         .await
@@ -271,8 +272,8 @@ pub async fn count_repos_for_installation(
     exclude_repo_id: Uuid,
 ) -> Result<i64, AppError> {
     let mut db = require_db(&state.db)?;
-    let repos = schema::Repositories::filter(
-        schema::Repositories::fields()
+    let repos = schema::Repository::filter(
+        schema::Repository::fields()
             .github_install_id()
             .eq(Some(installation_id)),
     )
@@ -313,7 +314,7 @@ pub async fn is_maintainer(
 
 pub async fn ping_db(state: &AppState) -> Result<(), AppError> {
     let mut db = require_db(&state.db)?;
-    let _ = schema::Repositories::all()
+    let _ = schema::Repository::all()
         .limit(1)
         .exec(&mut db)
         .await

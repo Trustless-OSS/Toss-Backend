@@ -18,7 +18,7 @@ pub async fn upsert_installation_repo(
     github_installation_id: i64,
 ) -> Result<(), AppError> {
     let mut db = require_db(&state.db)?;
-    let repo = schema::Repositories::upsert_by_github_repo_id(github_repo_id)
+    let repo = schema::Repository::upsert_by_github_repo_id(github_repo_id)
         .full_name(full_name.to_string())
         .github_install_id(Some(github_installation_id))
         .exec(&mut db)
@@ -72,8 +72,8 @@ pub async fn delete_repos_by_installation_id(
     installation_id: i64,
 ) -> Result<(), AppError> {
     let mut db = require_db(&state.db)?;
-    let repos = schema::Repositories::filter(
-        schema::Repositories::fields()
+    let repos = schema::Repository::filter(
+        schema::Repository::fields()
             .github_install_id()
             .eq(Some(installation_id)),
     )
@@ -81,8 +81,8 @@ pub async fn delete_repos_by_installation_id(
     .await
     .map_err(map_db_err)?;
 
-    schema::Repositories::filter(
-        schema::Repositories::fields()
+    schema::Repository::filter(
+        schema::Repository::fields()
             .github_install_id()
             .eq(Some(installation_id)),
     )
@@ -103,7 +103,7 @@ pub async fn delete_repo_by_github_id(
 ) -> Result<(), AppError> {
     let mut db = require_db(&state.db)?;
     let repo = get_repo_by_github_id(state, github_repo_id).await?;
-    schema::Repositories::filter_by_github_repo_id(github_repo_id)
+    schema::Repository::filter_by_github_repo_id(github_repo_id)
         .delete()
         .exec(&mut db)
         .await
@@ -120,7 +120,7 @@ pub async fn update_repo_installation_id(
     installation_id: i64,
 ) -> Result<(), AppError> {
     let mut db = require_db(&state.db)?;
-    toasty::update!(schema::Repositories::filter_by_github_repo_id(github_repo_id) {
+    toasty::update!(schema::Repository::filter_by_github_repo_id(github_repo_id) {
         github_install_id: Some(installation_id),
     })
     .exec(&mut db)
@@ -134,8 +134,8 @@ pub async fn get_github_repo_id_by_full_name(
     full_name: &str,
 ) -> Result<Option<i64>, AppError> {
     let mut db = require_db(&state.db)?;
-    let repo = schema::Repositories::filter(
-        schema::Repositories::fields()
+    let repo = schema::Repository::filter(
+        schema::Repository::fields()
             .full_name()
             .eq(full_name.to_string()),
     )

@@ -2,9 +2,28 @@ use jiff::Timestamp;
 use serde_json::Value;
 use uuid::Uuid;
 
-// status: pending | resolved | dead
-// task_type: sync | payout | notify | bounty
-// ref_id is untyped — points to whichever entity the job was processing
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskStatus {
+    Pending,
+    Resolved,
+    Dead,
+}
+
+impl TaskStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Resolved => "resolved",
+            Self::Dead => "dead",
+        }
+    }
+}
+
+// Generic dead-letter/retry queue, deliberately polymorphic — task_type
+// (sync | payout | notify | bounty) determines how ref_id + payload are
+// interpreted. This genericness is intentional: a single job-queue table
+// is the right call here, don't split it per task_type or try to FK ref_id
+// (it can't point at one table).
 #[derive(Debug, toasty::Model)]
 #[table = "failed_tasks"]
 pub struct FailedTask {
@@ -26,7 +45,6 @@ pub struct FailedTask {
     pub attempts: i32,
 
     #[default(String::from("pending"))]
-    #[index]
     pub status: String,
 
     pub last_attempt_at: Option<Timestamp>,

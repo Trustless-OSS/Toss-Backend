@@ -1,7 +1,8 @@
 use jiff::Timestamp;
 use uuid::Uuid;
 
-// kinds: assigned | paid | bounty_posted | mention | payout_failed
+use super::Profile;
+
 #[derive(Debug, toasty::Model)]
 #[table = "notifications"]
 pub struct Notification {
@@ -11,6 +12,8 @@ pub struct Notification {
 
     #[index]
     pub profile_id: Uuid,
+    #[belongs_to(key = profile_id, references = id)]
+    pub profile: toasty::Deferred<Profile>,
 
     pub kind: String,
     pub title: String,

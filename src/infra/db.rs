@@ -35,7 +35,7 @@ pub async fn connect(database_url: &str) -> Result<toasty::Db, AppError> {
     let url = normalize_database_url(database_url);
     toasty::Db::builder()
         .models(toasty::models!(
-            crate::shared::models::schema::Repositories,
+            crate::shared::models::schema::Repository,
             crate::shared::models::schema::Profile,
             crate::shared::models::schema::Wallet,
             crate::shared::models::schema::RepoMaintainer,

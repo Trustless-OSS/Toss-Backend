@@ -2,7 +2,8 @@ use jiff::Timestamp;
 use serde_json::Value;
 use uuid::Uuid;
 
-// append-only — never updated or deleted
+use super::{Profile, Repository};
+
 #[derive(Debug, toasty::Model)]
 #[table = "activity"]
 pub struct Activity {
@@ -12,10 +13,15 @@ pub struct Activity {
 
     #[index]
     pub repo_id: Option<Uuid>,
+    #[belongs_to(key = repo_id, references = id)]
+    pub repo: toasty::Deferred<Option<Repository>>,
 
     #[index]
     pub actor_id: Option<Uuid>,
+    #[belongs_to(key = actor_id, references = id)]
+    pub actor: toasty::Deferred<Option<Profile>>,
 
+    #[index]
     pub event_type: String,
 
     #[column(type = jsonb)]

@@ -2,6 +2,8 @@ use jiff::Timestamp;
 use rust_decimal::Decimal;
 use uuid::Uuid;
 
+use super::{Profile, Repository};
+
 #[derive(Debug, toasty::Model)]
 #[table = "escrow_funders"]
 pub struct EscrowFunder {
@@ -11,7 +13,10 @@ pub struct EscrowFunder {
 
     #[index]
     pub repo_id: Uuid,
+    #[belongs_to(key = repo_id, references = id)]
+    pub repo: toasty::Deferred<Repository>,
 
+    #[index]
     pub wallet_address: String,
 
     #[default(String::from("stellar"))]
@@ -19,14 +24,14 @@ pub struct EscrowFunder {
 
     pub amount: Decimal,
 
-    // blockchain tx id — idempotency guard
     #[unique]
     pub tx_hash: String,
 
     #[default(Timestamp::now())]
     pub funded_at: Timestamp,
 
-    // null for anonymous funders
     #[index]
     pub profile_id: Option<Uuid>,
+    #[belongs_to(key = profile_id, references = id)]
+    pub profile: toasty::Deferred<Option<Profile>>,
 }
