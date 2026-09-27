@@ -18,10 +18,11 @@ pub(crate) async fn run(state: &AppState) -> Result<serde_json::Value, AppError>
         {
             Ok(balance) => {
                 synced += 1;
-                if balance != repo.escrow_balance {
+                let prev = repo.escrow_balance.unwrap_or_default();
+                if balance != prev {
                     info!(
                         repo = %repo.full_name,
-                        previous = %repo.escrow_balance,
+                        previous = %prev,
                         current = %balance,
                         "escrow balance reconciled"
                     );

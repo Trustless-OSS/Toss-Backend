@@ -220,10 +220,7 @@ pub async fn refund(
         return Err(AppError::not_found("Repo or escrow not found"));
     }
 
-    let funder_wallet = repo
-        .escrow_funder_wallet
-        .as_deref()
-        .ok_or_else(|| AppError::bad_request("This escrow has no recorded funding wallet"))?;
+    let funder_wallet = body.maintainer_wallet.as_str();
 
     let issues_to_cancel = list_issues_to_cancel(&state, repo.id).await?;
     let contract_id = repo.escrow_contract_id.clone().unwrap_or_default();

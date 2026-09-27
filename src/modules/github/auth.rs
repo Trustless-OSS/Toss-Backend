@@ -155,7 +155,7 @@ pub async fn get_installation_token(
         .await?
         .ok_or_else(|| AppError::github("repository not found for installation token"))?;
 
-    if let Some(installation_id) = repo.github_installation_id {
+    if let Some(installation_id) = repo.github_install_id {
         match exchange_installation_token(state, installation_id).await {
             Ok(token) => {
                 cache_installation_token(state, &cache_key, &token).await;
@@ -173,7 +173,7 @@ pub async fn get_installation_token(
     }
 
     let installation_id = resolve_installation_id(state, &repo.full_name).await?;
-    if repo.github_installation_id != Some(installation_id) {
+    if repo.github_install_id != Some(installation_id) {
         update_repo_installation_id(state, github_repo_id, installation_id).await?;
         invalidate_repo_cache(state, repo.id, Some(github_repo_id)).await;
         info!(

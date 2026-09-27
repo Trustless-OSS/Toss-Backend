@@ -4,8 +4,8 @@ use tracing::info;
 use crate::{
     error::AppError,
     modules::{
-        bounty::repository::get_issue_by_repo_and_github_id,
-        github::handlers::helpers::{cancel_bounty_with_refund, zero_milestone_on_chain},
+        bounty::repository::{cancel_bounty_with_refund, get_issue_by_repo_and_github_id},
+        github::handlers::helpers::zero_milestone_on_chain,
         repo::repository::get_repo_by_github_id,
     },
     state::AppState,
@@ -40,20 +40,22 @@ pub async fn handle_issue_deleted(state: &AppState, payload: &Value) -> Result<(
         );
         return Ok(());
     };
-    if issue_record.status == "completed" || issue_record.status == "cancelled" {
+
+    if issue_record.status == "paid" || issue_record.status == "cancelled" {
         return Ok(());
     }
 
-    if issue_record.status == "active" {
+    if issue_record.status == "assigned" {
         if let Some(milestone_index) = issue_record.milestone_index {
             zero_milestone_on_chain(state, &repo, milestone_index).await?;
         }
     }
 
-    cancel_bounty_with_refund(state, &repo, issue_record.id, issue_record.reward_amount).await?;
+    let reward = issue_record.reward_amount;
+    cancel_bounty_with_refund(state, &repo, issue_record.id, reward).await?;
     info!(
         issue = issue_number,
-        reward = %issue_record.reward_amount,
+        reward = %reward.unwrap_or_default(),
         "deleted issue bounty cancelled and reserved balance restored"
     );
     Ok(())

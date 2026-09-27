@@ -22,7 +22,7 @@ use crate::{
             repository::{
                 count_repos_for_installation, delete_repo_cascade, get_repo_by_id,
                 invalidate_repo_cache, is_maintainer, list_repos_for_user, update_repo_rewards,
-                upsert_repo,
+                upsert_repo_with_maintainer,
             },
         },
     },
@@ -61,10 +61,11 @@ pub(crate) async fn connect_repo(
         error!(err = %error, repo = %input.full_name, "exception while installing webhook");
     }
 
-    let repo = upsert_repo(
+    let repo = upsert_repo_with_maintainer(
         state,
         input.github_repo_id,
         &input.full_name,
+        None,
         input.owner_github_id,
         &input.owner_username,
     )
@@ -125,9 +126,6 @@ pub(crate) async fn sync_installation(
             &repo.full_name,
             repo.owner.id,
             &repo.owner.login,
-            &repo.owner.account_type,
-            repo.fork,
-            repo.private,
             input.installer_github_id,
             input.installation_id,
         )
@@ -210,13 +208,14 @@ pub(crate) async fn delete_repo(
         .await?
         .ok_or_else(|| AppError::not_found("Repo not found"))?;
 
-    if repo.escrow_balance > Decimal::ZERO {
+    let balance = repo.escrow_balance.unwrap_or(Decimal::ZERO);
+    if balance > Decimal::ZERO {
         return Err(AppError::bad_request(
             "Repo still has escrow funds. Withdraw all funds before deleting.",
         ));
     }
 
-    if let Some(installation_id) = repo.github_installation_id {
+    if let Some(installation_id) = repo.github_install_id {
         match count_repos_for_installation(state, installation_id, input.repo_id).await {
             Ok(0) => {
                 if let Err(error) = delete_github_installation(state, installation_id).await {
@@ -236,7 +235,7 @@ pub(crate) async fn delete_repo(
                     error!(
                         %error,
                         repo = %repo.full_name,
-                        "could not remove repo from installation (might be 'All repositories' selection)"
+                        "could not remove repo from installation"
                     );
                 } else {
                     info!(

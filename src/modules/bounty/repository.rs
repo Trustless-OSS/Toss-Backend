@@ -4,11 +4,10 @@ use uuid::Uuid;
 use crate::{
     error::{is_unique_violation, map_db_err, require_db, AppError},
     modules::{
-        contributor::repository::get_contributor_by_id,
         escrow::repository::refund_repo_balance,
         repo::repository::{get_repo_by_id, invalidate_repo_cache},
     },
-    shared::models::{schema, Assignment, Contributor, Issue, Repo},
+    shared::models::{schema, Bounty, Profile, Repo},
     state::AppState,
 };
 
@@ -23,35 +22,31 @@ pub async fn is_assigned_contributor(
     github_issue_id: i64,
 ) -> Result<bool, AppError> {
     let mut db = require_db(&state.db)?;
-    let issue = schema::Issue::filter_by_repo_id_and_github_issue_id(repo_id, github_issue_id)
+    let bounty = schema::Bounty::filter_by_github_issue_id(github_issue_id)
+        .first()
+        .exec(&mut db)
+        .await
+        .map_err(map_db_err)?
+        .filter(|b| b.repo_id == repo_id);
+
+    let Some(bounty) = bounty else {
+        return Ok(false);
+    };
+
+    let Some(assignee_id) = bounty.assignee_id else {
+        return Ok(false);
+    };
+
+    let profile = schema::Profile::filter_by_id(assignee_id)
         .first()
         .exec(&mut db)
         .await
         .map_err(map_db_err)?;
 
-    let Some(issue) = issue else {
-        return Ok(false);
-    };
-
-    let assignment = schema::Assignment::filter_by_issue_id(issue.id)
-        .first()
-        .exec(&mut db)
-        .await
-        .map_err(map_db_err)?;
-
-    let Some(assignment) = assignment else {
-        return Ok(false);
-    };
-
-    let Some(contributor_id) = assignment.contributor_id else {
-        return Ok(false);
-    };
-
-    let contributor = get_contributor_by_id(state, contributor_id).await?;
-    Ok(contributor.is_some_and(|c| c.github_user_id == github_user_id))
+    Ok(profile.is_some_and(|p| p.github_id == github_user_id))
 }
 
-pub async fn list_issues_for_repo(
+pub async fn list_bounties_for_repo(
     state: &AppState,
     repo_id: Uuid,
     limit: i64,
@@ -61,140 +56,133 @@ pub async fn list_issues_for_repo(
     let limit = limit.max(0) as usize;
     let offset = offset.max(0) as usize;
 
-    let all = schema::Issue::filter_by_repo_id(repo_id)
+    let all = schema::Bounty::filter_by_repo_id(repo_id)
         .exec(&mut db)
         .await
         .map_err(map_db_err)?;
     let total = all.len() as i64;
 
-    let issues = schema::Issue::filter_by_repo_id(repo_id)
-        .order_by(schema::Issue::fields().created_at().desc())
+    let bounties = schema::Bounty::filter_by_repo_id(repo_id)
+        .order_by(schema::Bounty::fields().created_at().desc())
         .limit(limit)
         .offset(offset)
         .exec(&mut db)
         .await
         .map_err(map_db_err)?;
 
-    let mut rows = Vec::with_capacity(issues.len());
-    for issue in issues {
-        let issue_dto = Issue::from(issue);
-        let assignments = schema::Assignment::filter_by_issue_id(issue_dto.id)
-            .exec(&mut db)
-            .await
-            .map_err(map_db_err)?;
+    let mut rows = Vec::with_capacity(bounties.len());
+    for bounty in bounties {
+        let bounty_dto = Bounty::from(bounty);
 
-        let mut assignment_rows = Vec::new();
-        for assignment in assignments {
-            let assignment = Assignment::from(assignment);
-            let contributor = if let Some(contributor_id) = assignment.contributor_id {
-                get_contributor_by_id(state, contributor_id).await?
-            } else {
-                None
-            };
-
-            assignment_rows.push(serde_json::json!({
-                "id": assignment.id,
-                "issue_id": assignment.issue_id,
-                "contributor_id": assignment.contributor_id,
-                "assigned_at": assignment.assigned_at,
-                "pr_number": assignment.pr_number,
-                "pr_merged_at": assignment.pr_merged_at,
-                "payout_status": assignment.payout_status,
-                "completion_percentage": assignment.completion_percentage,
-                "contributors": contributor,
-            }));
-        }
+        let assignee = if let Some(assignee_id) = bounty_dto.assignee_id {
+            schema::Profile::filter_by_id(assignee_id)
+                .first()
+                .exec(&mut db)
+                .await
+                .map_err(map_db_err)?
+                .map(Profile::from)
+        } else {
+            None
+        };
 
         rows.push(serde_json::json!({
-            "id": issue_dto.id,
-            "repo_id": issue_dto.repo_id,
-            "github_issue_id": issue_dto.github_issue_id,
-            "github_issue_number": issue_dto.github_issue_number,
-            "title": issue_dto.title,
-            "reward_amount": issue_dto.reward_amount,
-            "difficulty_label": issue_dto.difficulty_label,
-            "milestone_index": issue_dto.milestone_index,
-            "status": issue_dto.status,
-            "created_at": issue_dto.created_at,
-            "assignments": assignment_rows,
+            "id": bounty_dto.id,
+            "repo_id": bounty_dto.repo_id,
+            "reward_level_id": bounty_dto.reward_level_id,
+            "milestone_index": bounty_dto.milestone_index,
+            "github_issue_id": bounty_dto.github_issue_id,
+            "github_issue_number": bounty_dto.github_issue_number,
+            "title": bounty_dto.title,
+            "reward_amount": bounty_dto.reward_amount,
+            "status": bounty_dto.status,
+            "assignee_id": bounty_dto.assignee_id,
+            "assigned_at": bounty_dto.assigned_at,
+            "merged_at": bounty_dto.merged_at,
+            "paid_at": bounty_dto.paid_at,
+            "created_at": bounty_dto.created_at,
+            "assignee": assignee,
         }));
     }
 
     Ok((rows, total))
 }
 
-pub async fn get_issue_by_id(state: &AppState, issue_id: Uuid) -> Result<Option<Issue>, AppError> {
+pub async fn get_bounty_by_id(
+    state: &AppState,
+    bounty_id: Uuid,
+) -> Result<Option<Bounty>, AppError> {
     let mut db = require_db(&state.db)?;
-    Ok(schema::Issue::filter_by_id(issue_id)
+    Ok(schema::Bounty::filter_by_id(bounty_id)
         .first()
         .exec(&mut db)
         .await
         .map_err(map_db_err)?
-        .map(Issue::from))
+        .map(Bounty::from))
 }
 
-pub async fn get_issue_with_repo(
+pub async fn get_bounty_with_repo(
     state: &AppState,
-    issue_id: Uuid,
-) -> Result<Option<(Issue, Repo)>, AppError> {
-    let issue = get_issue_by_id(state, issue_id).await?;
-    let Some(issue) = issue else {
+    bounty_id: Uuid,
+) -> Result<Option<(Bounty, Repo)>, AppError> {
+    let bounty = get_bounty_by_id(state, bounty_id).await?;
+    let Some(bounty) = bounty else {
         return Ok(None);
     };
-    let repo = get_repo_by_id(state, issue.repo_id).await?;
-    Ok(repo.map(|repo| (issue, repo)))
+    let repo = get_repo_by_id(state, bounty.repo_id).await?;
+    Ok(repo.map(|repo| (bounty, repo)))
 }
 
-pub async fn get_assignment_for_issue(
+pub async fn get_assignee_for_bounty(
     state: &AppState,
-    issue_id: Uuid,
-) -> Result<Option<(Assignment, Option<Contributor>)>, AppError> {
+    bounty_id: Uuid,
+) -> Result<Option<Profile>, AppError> {
     let mut db = require_db(&state.db)?;
-    let assignment = schema::Assignment::filter_by_issue_id(issue_id)
+    let bounty = schema::Bounty::filter_by_id(bounty_id)
         .first()
         .exec(&mut db)
         .await
         .map_err(map_db_err)?;
 
-    let Some(assignment) = assignment else {
+    let Some(bounty) = bounty else {
         return Ok(None);
     };
-    let assignment = Assignment::from(assignment);
 
-    let contributor = if let Some(contributor_id) = assignment.contributor_id {
-        get_contributor_by_id(state, contributor_id).await?
-    } else {
-        None
+    let Some(assignee_id) = bounty.assignee_id else {
+        return Ok(None);
     };
 
-    Ok(Some((assignment, contributor)))
+    Ok(schema::Profile::filter_by_id(assignee_id)
+        .first()
+        .exec(&mut db)
+        .await
+        .map_err(map_db_err)?
+        .map(Profile::from))
 }
 
-pub async fn get_issue_by_repo_and_github_id(
+pub async fn get_bounty_by_repo_and_github_id(
     state: &AppState,
     repo_id: Uuid,
     github_issue_id: i64,
-) -> Result<Option<Issue>, AppError> {
+) -> Result<Option<Bounty>, AppError> {
     let mut db = require_db(&state.db)?;
-    Ok(
-        schema::Issue::filter_by_repo_id_and_github_issue_id(repo_id, github_issue_id)
-            .first()
-            .exec(&mut db)
-            .await
-            .map_err(map_db_err)?
-            .map(Issue::from),
-    )
+    Ok(schema::Bounty::filter_by_github_issue_id(github_issue_id)
+        .first()
+        .exec(&mut db)
+        .await
+        .map_err(map_db_err)?
+        .filter(|b| b.repo_id == repo_id)
+        .map(Bounty::from))
 }
 
-pub async fn get_issue_by_repo_and_number(
+pub async fn get_bounty_by_repo_and_number(
     state: &AppState,
     repo_id: Uuid,
     github_issue_number: i32,
-) -> Result<Option<Issue>, AppError> {
+) -> Result<Option<Bounty>, AppError> {
     let mut db = require_db(&state.db)?;
-    Ok(schema::Issue::filter(
-        schema::Issue::fields().repo_id().eq(repo_id).and(
-            schema::Issue::fields()
+    Ok(schema::Bounty::filter(
+        schema::Bounty::fields().repo_id().eq(repo_id).and(
+            schema::Bounty::fields()
                 .github_issue_number()
                 .eq(github_issue_number),
         ),
@@ -203,18 +191,18 @@ pub async fn get_issue_by_repo_and_number(
     .exec(&mut db)
     .await
     .map_err(map_db_err)?
-    .map(Issue::from))
+    .map(Bounty::from))
 }
 
-pub async fn update_issue_status(
+pub async fn update_bounty_status(
     state: &AppState,
-    issue_id: Uuid,
+    bounty_id: Uuid,
     status: &str,
     milestone_index: Option<i32>,
 ) -> Result<(), AppError> {
     let mut db = require_db(&state.db)?;
     if let Some(milestone_index) = milestone_index {
-        toasty::update!(schema::Issue::filter_by_id(issue_id) {
+        toasty::update!(schema::Bounty::filter_by_id(bounty_id) {
             status: status.to_string(),
             milestone_index: Some(milestone_index),
         })
@@ -222,7 +210,7 @@ pub async fn update_issue_status(
         .await
         .map_err(map_db_err)?;
     } else {
-        toasty::update!(schema::Issue::filter_by_id(issue_id) {
+        toasty::update!(schema::Bounty::filter_by_id(bounty_id) {
             status: status.to_string(),
         })
         .exec(&mut db)
@@ -232,104 +220,70 @@ pub async fn update_issue_status(
     Ok(())
 }
 
-pub async fn fail_assignments_for_issues(
-    state: &AppState,
-    issue_ids: &[Uuid],
-) -> Result<(), AppError> {
-    if issue_ids.is_empty() {
-        return Ok(());
-    }
-
-    let mut db = require_db(&state.db)?;
-    for issue_id in issue_ids {
-        toasty::update!(schema::Assignment::filter_by_issue_id(issue_id) {
-            payout_status: "failed".to_string(),
-        })
-        .exec(&mut db)
-        .await
-        .map_err(map_db_err)?;
-    }
-    Ok(())
-}
-
-pub async fn update_assignment_payout_status(
-    state: &AppState,
-    assignment_id: Uuid,
-    payout_status: &str,
-) -> Result<(), AppError> {
-    let mut db = require_db(&state.db)?;
-    toasty::update!(schema::Assignment::filter_by_id(assignment_id) {
-        payout_status: payout_status.to_string(),
-    })
-    .exec(&mut db)
-    .await
-    .map_err(map_db_err)?;
-    Ok(())
-}
-
-pub async fn list_issues_to_cancel(
+pub async fn list_bounties_to_cancel(
     state: &AppState,
     repo_id: Uuid,
-) -> Result<Vec<Issue>, AppError> {
+) -> Result<Vec<Bounty>, AppError> {
     let mut db = require_db(&state.db)?;
-    Ok(schema::Issue::filter(
-        schema::Issue::fields().repo_id().eq(repo_id).and(
-            schema::Issue::fields()
+    Ok(schema::Bounty::filter(
+        schema::Bounty::fields().repo_id().eq(repo_id).and(
+            schema::Bounty::fields()
                 .status()
-                .eq("pending".to_string())
-                .or(schema::Issue::fields().status().eq("active".to_string())),
+                .eq("open".to_string())
+                .or(schema::Bounty::fields().status().eq("assigned".to_string())),
         ),
     )
     .exec(&mut db)
     .await
     .map_err(map_db_err)?
     .into_iter()
-    .map(Issue::from)
+    .map(Bounty::from)
     .collect())
 }
 
-pub async fn create_issue_and_reserve_balance(
+pub async fn create_bounty_and_reserve_balance(
     state: &AppState,
     repo: &Repo,
     github_issue_id: i64,
     github_issue_number: i32,
     title: &str,
     reward_amount: Decimal,
-    difficulty_label: &str,
-) -> Result<Option<Issue>, AppError> {
+    reward_level_id: Option<Uuid>,
+) -> Result<Option<Bounty>, AppError> {
     let mut db = require_db(&state.db)?;
     let mut tx = db.transaction().await.map_err(map_db_err)?;
 
-    let mut schema_repo = schema::Repo::get_by_id(&mut tx, &repo.id)
+    let mut schema_repo = schema::Repositories::get_by_id(&mut tx, &repo.id)
         .await
         .map_err(map_db_err)?;
 
-    if schema_repo.escrow_balance < reward_amount {
+    let current_balance = schema_repo.escrow_balance.unwrap_or(Decimal::ZERO);
+    if current_balance < reward_amount {
         return Err(AppError::bad_request("Insufficient escrow balance"));
     }
 
-    let new_balance = round_balance(schema_repo.escrow_balance - reward_amount);
+    let new_balance = round_balance(current_balance - reward_amount);
     toasty::update!(schema_repo {
-        escrow_balance: new_balance
+        escrow_balance: Some(new_balance),
     })
     .exec(&mut tx)
     .await
     .map_err(map_db_err)?;
 
-    let issue = toasty::create!(schema::Issue {
+    let bounty = toasty::create!(schema::Bounty {
         repo_id: repo.id,
         github_issue_id,
         github_issue_number,
-        title: title.to_string(),
-        reward_amount,
-        difficulty_label: Some(difficulty_label.to_string()),
-        status: "pending".to_string(),
+        title: Some(title.to_string()),
+        reward_amount: Some(reward_amount),
+        reward_level_id,
+        status: "open".to_string(),
     })
     .exec(&mut tx)
     .await;
 
-    let issue = match issue {
-        Ok(issue) => issue,
+    let bounty = match bounty {
+        Ok(bounty) => bounty,
         Err(error) if is_unique_violation(&error) => {
             return Ok(None);
         }
@@ -338,53 +292,55 @@ pub async fn create_issue_and_reserve_balance(
 
     tx.commit().await.map_err(map_db_err)?;
     invalidate_repo_cache(state, repo.id, Some(repo.github_repo_id)).await;
-    Ok(Some(Issue::from(issue)))
+    Ok(Some(Bounty::from(bounty)))
 }
 
-pub async fn update_pending_issue_reward(
+pub async fn update_pending_bounty_reward(
     state: &AppState,
     repo: &Repo,
-    issue_id: Uuid,
+    bounty_id: Uuid,
     reward_amount: Decimal,
-    difficulty_label: &str,
+    reward_level_id: Option<Uuid>,
 ) -> Result<bool, AppError> {
     let mut db = require_db(&state.db)?;
     let mut tx = db.transaction().await.map_err(map_db_err)?;
 
-    let mut issue = match schema::Issue::filter_by_id(issue_id)
+    let mut bounty = match schema::Bounty::filter_by_id(bounty_id)
         .first()
         .exec(&mut tx)
         .await
         .map_err(map_db_err)?
     {
-        Some(issue) if issue.repo_id == repo.id => issue,
+        Some(bounty) if bounty.repo_id == repo.id => bounty,
         _ => return Ok(false),
     };
 
-    if issue.status != "pending" {
+    if bounty.status != "open" {
         return Ok(false);
     }
 
-    let difference = reward_amount - issue.reward_amount;
-    let mut schema_repo = schema::Repo::get_by_id(&mut tx, &repo.id)
+    let old_amount = bounty.reward_amount.unwrap_or(Decimal::ZERO);
+    let difference = reward_amount - old_amount;
+    let mut schema_repo = schema::Repositories::get_by_id(&mut tx, &repo.id)
         .await
         .map_err(map_db_err)?;
 
-    if difference > Decimal::ZERO && schema_repo.escrow_balance < difference {
+    let current_balance = schema_repo.escrow_balance.unwrap_or(Decimal::ZERO);
+    if difference > Decimal::ZERO && current_balance < difference {
         return Ok(false);
     }
 
-    let new_balance = round_balance(schema_repo.escrow_balance - difference);
+    let new_balance = round_balance(current_balance - difference);
     toasty::update!(schema_repo {
-        escrow_balance: new_balance
+        escrow_balance: Some(new_balance),
     })
     .exec(&mut tx)
     .await
     .map_err(map_db_err)?;
 
-    toasty::update!(issue {
-        reward_amount,
-        difficulty_label: Some(difficulty_label.to_string()),
+    toasty::update!(bounty {
+        reward_amount: Some(reward_amount),
+        reward_level_id,
     })
     .exec(&mut tx)
     .await
@@ -395,19 +351,22 @@ pub async fn update_pending_issue_reward(
     Ok(true)
 }
 
-pub async fn cancel_issue(state: &AppState, issue_id: Uuid) -> Result<(), AppError> {
-    update_issue_status(state, issue_id, "cancelled", None).await
+pub async fn cancel_bounty(state: &AppState, bounty_id: Uuid) -> Result<(), AppError> {
+    update_bounty_status(state, bounty_id, "cancelled", None).await
 }
 
-pub async fn complete_issue(state: &AppState, issue_id: Uuid) -> Result<(), AppError> {
-    update_issue_status(state, issue_id, "completed", None).await
+pub async fn complete_bounty(state: &AppState, bounty_id: Uuid) -> Result<(), AppError> {
+    update_bounty_status(state, bounty_id, "paid", None).await
 }
 
-pub async fn reset_issue_to_pending(state: &AppState, issue_id: Uuid) -> Result<(), AppError> {
+pub async fn reset_bounty_to_open(state: &AppState, bounty_id: Uuid) -> Result<(), AppError> {
     let mut db = require_db(&state.db)?;
-    toasty::update!(schema::Issue::filter_by_id(issue_id) {
-        status: "pending".to_string(),
+    toasty::update!(schema::Bounty::filter_by_id(bounty_id) {
+        status: "open".to_string(),
         milestone_index: Option::<i32>::None,
+        assignee_id: Option::<Uuid>::None,
+        assigned_at: Option::<jiff::Timestamp>::None,
+        merged_at: Option::<jiff::Timestamp>::None,
     })
     .exec(&mut db)
     .await
@@ -415,41 +374,16 @@ pub async fn reset_issue_to_pending(state: &AppState, issue_id: Uuid) -> Result<
     Ok(())
 }
 
-pub async fn delete_assignments_for_issue(
+pub async fn assign_bounty(
     state: &AppState,
-    issue_id: Uuid,
+    bounty_id: Uuid,
+    assignee_id: Uuid,
 ) -> Result<(), AppError> {
     let mut db = require_db(&state.db)?;
-    schema::Assignment::filter_by_issue_id(issue_id)
-        .delete()
-        .exec(&mut db)
-        .await
-        .map_err(map_db_err)?;
-    Ok(())
-}
-
-pub async fn upsert_assignment(
-    state: &AppState,
-    issue_id: Uuid,
-    contributor_id: Uuid,
-) -> Result<(), AppError> {
-    let mut db = require_db(&state.db)?;
-    schema::Assignment::upsert_by_issue_id(issue_id)
-        .contributor_id(Some(contributor_id))
-        .exec(&mut db)
-        .await
-        .map_err(map_db_err)?;
-    Ok(())
-}
-
-pub async fn update_assignment_completion_percentage(
-    state: &AppState,
-    assignment_id: Uuid,
-    percentage: Decimal,
-) -> Result<(), AppError> {
-    let mut db = require_db(&state.db)?;
-    toasty::update!(schema::Assignment::filter_by_id(assignment_id) {
-        completion_percentage: Some(percentage),
+    toasty::update!(schema::Bounty::filter_by_id(bounty_id) {
+        assignee_id: Some(assignee_id),
+        assigned_at: Some(jiff::Timestamp::now()),
+        status: "assigned".to_string(),
     })
     .exec(&mut db)
     .await
@@ -457,15 +391,24 @@ pub async fn update_assignment_completion_percentage(
     Ok(())
 }
 
-pub async fn update_assignment_pr_merge(
-    state: &AppState,
-    assignment_id: Uuid,
-    pr_number: i32,
-) -> Result<(), AppError> {
+pub async fn unassign_bounty(state: &AppState, bounty_id: Uuid) -> Result<(), AppError> {
     let mut db = require_db(&state.db)?;
-    toasty::update!(schema::Assignment::filter_by_id(assignment_id) {
-        pr_number: Some(pr_number),
-        pr_merged_at: Some(jiff::Timestamp::now()),
+    toasty::update!(schema::Bounty::filter_by_id(bounty_id) {
+        assignee_id: Option::<Uuid>::None,
+        assigned_at: Option::<jiff::Timestamp>::None,
+        status: "open".to_string(),
+    })
+    .exec(&mut db)
+    .await
+    .map_err(map_db_err)?;
+    Ok(())
+}
+
+pub async fn mark_bounty_merged(state: &AppState, bounty_id: Uuid) -> Result<(), AppError> {
+    let mut db = require_db(&state.db)?;
+    toasty::update!(schema::Bounty::filter_by_id(bounty_id) {
+        merged_at: Some(jiff::Timestamp::now()),
+        status: "merged".to_string(),
     })
     .exec(&mut db)
     .await
@@ -476,10 +419,174 @@ pub async fn update_assignment_pr_merge(
 pub async fn cancel_bounty_with_refund(
     state: &AppState,
     repo: &Repo,
-    issue_id: Uuid,
-    reward_amount: Decimal,
+    bounty_id: Uuid,
+    reward_amount: Option<Decimal>,
 ) -> Result<(), AppError> {
-    cancel_issue(state, issue_id).await?;
-    delete_assignments_for_issue(state, issue_id).await?;
+    cancel_bounty(state, bounty_id).await?;
     refund_repo_balance(state, repo, reward_amount).await
+}
+
+pub async fn fail_bounties_for_ids(state: &AppState, bounty_ids: &[Uuid]) -> Result<(), AppError> {
+    if bounty_ids.is_empty() {
+        return Ok(());
+    }
+    let mut db = require_db(&state.db)?;
+    for bounty_id in bounty_ids {
+        toasty::update!(schema::Bounty::filter_by_id(bounty_id) {
+            status: "cancelled".to_string(),
+        })
+        .exec(&mut db)
+        .await
+        .map_err(map_db_err)?;
+    }
+    Ok(())
+}
+
+pub use assign_bounty as upsert_assignment;
+pub use cancel_bounty as cancel_issue;
+pub use complete_bounty as complete_issue;
+pub use fail_bounties_for_ids as fail_assignments_for_issues;
+pub use get_bounty_by_id as get_issue_by_id;
+pub use get_bounty_by_repo_and_github_id as get_issue_by_repo_and_github_id;
+pub use get_bounty_by_repo_and_number as get_issue_by_repo_and_number;
+pub use get_bounty_with_repo as get_issue_with_repo;
+pub use list_bounties_for_repo as list_issues_for_repo;
+pub use list_bounties_to_cancel as list_issues_to_cancel;
+pub use reset_bounty_to_open as reset_issue_to_pending;
+pub use unassign_bounty as delete_assignments_for_issue;
+pub use update_bounty_status as update_issue_status;
+
+// create_issue_and_reserve_balance — old callers pass (state, repo, github_issue_id,
+// github_issue_number, title, reward_amount, difficulty_label: &str).
+// The new function takes reward_level_id: Option<Uuid> instead of difficulty_label.
+// We keep a shim that accepts the string label and resolves the reward_level_id.
+pub async fn create_issue_and_reserve_balance(
+    state: &AppState,
+    repo: &Repo,
+    github_issue_id: i64,
+    github_issue_number: i32,
+    title: &str,
+    reward_amount: Decimal,
+    difficulty_label: &str,
+) -> Result<Option<Bounty>, AppError> {
+    let reward_level_id = resolve_reward_level_id(state, repo.id, difficulty_label).await?;
+    create_bounty_and_reserve_balance(
+        state,
+        repo,
+        github_issue_id,
+        github_issue_number,
+        title,
+        reward_amount,
+        reward_level_id,
+    )
+    .await
+}
+
+// update_pending_issue_reward — old callers pass difficulty_label: &str.
+pub async fn update_pending_issue_reward(
+    state: &AppState,
+    repo: &Repo,
+    bounty_id: Uuid,
+    reward_amount: Decimal,
+    difficulty_label: &str,
+) -> Result<bool, AppError> {
+    let reward_level_id = resolve_reward_level_id(state, repo.id, difficulty_label).await?;
+    update_pending_bounty_reward(state, repo, bounty_id, reward_amount, reward_level_id).await
+}
+
+// update_assignment_completion_percentage — completion_percentage is removed from the
+// new schema. This is a no-op shim so callers continue to compile.
+pub async fn update_assignment_completion_percentage(
+    _state: &AppState,
+    _bounty_id: Uuid,
+    _percentage: Decimal,
+) -> Result<(), AppError> {
+    Ok(())
+}
+
+// update_assignment_pr_merge — pr_number is removed from schema.
+// We record the merge event by setting merged_at on the bounty.
+pub async fn update_assignment_pr_merge(
+    state: &AppState,
+    bounty_id: Uuid,
+    _pr_number: i32,
+) -> Result<(), AppError> {
+    mark_bounty_merged(state, bounty_id).await
+}
+
+async fn resolve_reward_level_id(
+    state: &AppState,
+    repo_id: Uuid,
+    label: &str,
+) -> Result<Option<Uuid>, AppError> {
+    let mut db = require_db(&state.db)?;
+    Ok(
+        schema::Reward::filter_by_repo_id_and_label(repo_id, label.to_string())
+            .first()
+            .exec(&mut db)
+            .await
+            .map_err(map_db_err)?
+            .map(|r| r.id),
+    )
+}
+
+// update_assignment_payout_status now maps to updating the bounty paid_at + status
+pub async fn update_assignment_payout_status(
+    state: &AppState,
+    bounty_id: Uuid,
+    payout_status: &str,
+) -> Result<(), AppError> {
+    let mut db = require_db(&state.db)?;
+    match payout_status {
+        "released" => {
+            toasty::update!(schema::Bounty::filter_by_id(bounty_id) {
+                paid_at: Some(jiff::Timestamp::now()),
+                status: "paid".to_string(),
+            })
+            .exec(&mut db)
+            .await
+            .map_err(map_db_err)?;
+        }
+        _ => {
+            toasty::update!(schema::Bounty::filter_by_id(bounty_id) {
+                status: payout_status.to_string(),
+            })
+            .exec(&mut db)
+            .await
+            .map_err(map_db_err)?;
+        }
+    }
+    Ok(())
+}
+
+pub async fn get_assignment_for_issue(
+    state: &AppState,
+    bounty_id: Uuid,
+) -> Result<Option<(Bounty, Option<Profile>)>, AppError> {
+    let mut db = require_db(&state.db)?;
+    let bounty = schema::Bounty::filter_by_id(bounty_id)
+        .first()
+        .exec(&mut db)
+        .await
+        .map_err(map_db_err)?;
+
+    let Some(bounty) = bounty else {
+        return Ok(None);
+    };
+
+    let assignee_id = bounty.assignee_id;
+    let bounty = Bounty::from(bounty);
+
+    let profile = if let Some(id) = assignee_id {
+        schema::Profile::filter_by_id(id)
+            .first()
+            .exec(&mut db)
+            .await
+            .map_err(map_db_err)?
+            .map(Profile::from)
+    } else {
+        None
+    };
+
+    Ok(Some((bounty, profile)))
 }

@@ -12,7 +12,6 @@ use crate::{
         escrow::{
             repository::{
                 clear_repo_escrow, update_repo_escrow_balance, update_repo_escrow_contract,
-                update_repo_escrow_funder_wallet,
             },
             trustless_work::api_client::{decimal_json_number, tw_fetch},
         },
@@ -20,7 +19,7 @@ use crate::{
     },
     shared::{
         constants::{BASIS_POINTS, TRUSTLESS_WORK_FEE_BPS},
-        models::{Issue, Repo},
+        models::{Bounty, Repo},
     },
     state::AppState,
 };
@@ -49,7 +48,7 @@ impl TrustlessWorkAPI {
         &self,
         repo_id: Uuid,
         signed_xdr: &str,
-        funder_wallet: &str,
+        _funder_wallet: &str,
         funded_amount: Decimal,
     ) -> Result<Decimal, AppError> {
         self.submit_signed_transaction(signed_xdr).await?;
@@ -58,22 +57,16 @@ impl TrustlessWorkAPI {
             .await?
             .ok_or_else(|| AppError::not_found("Repo not found"))?;
 
-        if let Some(existing_funder_wallet) = repo.escrow_funder_wallet.as_deref() {
-            if existing_funder_wallet != funder_wallet {
-                return Err(AppError::bad_request(
-                    "This escrow must be funded from the original wallet",
-                ));
-            }
-        } else {
-            update_repo_escrow_funder_wallet(&self.state, repo_id, funder_wallet).await?;
-        }
-
         let contract_id = repo
             .escrow_contract_id
             .as_deref()
             .ok_or_else(|| AppError::bad_request("No escrow deployed"))?;
         let new_balance = self
-            .wait_for_balance_after_fund(contract_id, repo.escrow_balance, funded_amount)
+            .wait_for_balance_after_fund(
+                contract_id,
+                repo.escrow_balance.unwrap_or(Decimal::ZERO),
+                funded_amount,
+            )
             .await?;
         update_repo_escrow_balance(&self.state, repo_id, new_balance, Some(repo.github_repo_id))
             .await?;
@@ -108,7 +101,7 @@ impl TrustlessWorkAPI {
     pub async fn push_milestone(
         &self,
         repo: &Repo,
-        issue: &Issue,
+        issue: &Bounty,
         payout_address: &str,
         payout_chain: &str,
     ) -> Result<i32, AppError> {
@@ -131,9 +124,11 @@ impl TrustlessWorkAPI {
             )
             .await?;
         }
+        let reward = issue.reward_amount.unwrap_or(Decimal::ZERO);
+        let title = issue.title.as_deref().unwrap_or("");
         let milestone_data = json!({
-            "description": format!("Issue #{}: {}", issue.github_issue_number, issue.title),
-            "amount": decimal_json_number(issue.reward_amount, "milestone amount")?,
+            "description": format!("Issue #{}: {}", issue.github_issue_number, title),
+            "amount": decimal_json_number(reward, "milestone amount")?,
             "status": "pending",
             "evidence": "",
             "flags": { "approved": false, "released": false, "disputed": false, "resolved": false },
@@ -171,7 +166,7 @@ impl TrustlessWorkAPI {
         .await?;
         self.sign_platform_transaction(&response).await?;
 
-        update_issue_status(&self.state, issue.id, "active", Some(milestone_index)).await?;
+        update_issue_status(&self.state, issue.id, "assigned", Some(milestone_index)).await?;
         info!(
             issue = issue.github_issue_number,
             milestone_index, "issue pushed on-chain"
@@ -179,7 +174,7 @@ impl TrustlessWorkAPI {
         Ok(milestone_index)
     }
 
-    pub async fn release_milestone(&self, repo: &Repo, issue: &Issue) -> Result<String, AppError> {
+    pub async fn release_milestone(&self, repo: &Repo, issue: &Bounty) -> Result<String, AppError> {
         let platform_key = self.state.config.platform_stellar_public_key.as_str();
         let contract_id = repo
             .escrow_contract_id
@@ -192,9 +187,12 @@ impl TrustlessWorkAPI {
             ))
         })?;
 
-        if issue.reward_amount == Decimal::ZERO {
+        let reward = issue.reward_amount.unwrap_or(Decimal::ZERO);
+        if reward == Decimal::ZERO {
             return Ok("success".to_string());
         }
+
+        // let title = issue.title.as_deref().unwrap_or("");
 
         let mut state = self
             .require_milestone_state(contract_id, milestone_index)
@@ -237,7 +235,8 @@ impl TrustlessWorkAPI {
 
         let evidence = format!(
             "Trustless-OSS automatic payout: GitHub issue #{} closed after merged PR ({})",
-            issue.github_issue_number, issue.title
+            issue.github_issue_number,
+            issue.title.as_deref().unwrap_or("")
         );
 
         // 1) Complete — TW approve requires a non-empty milestone status

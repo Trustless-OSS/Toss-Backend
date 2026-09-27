@@ -131,7 +131,7 @@ pub async fn sync_repo_balance(state: &AppState, repo: &mut Repo) -> Result<(), 
     )
     .sync_balance(repo)
     .await?;
-    repo.escrow_balance = balance;
+    repo.escrow_balance = Some(balance);
     Ok(())
 }
 
@@ -337,8 +337,8 @@ pub fn split_amounts(reward: Decimal, percentage: i32) -> (Decimal, Decimal) {
     (contributor, maintainer)
 }
 
-pub fn maintainer_github_id(repo: &Repo) -> i64 {
-    repo.installer_github_id.unwrap_or(repo.owner_github_id)
+pub fn maintainer_github_id(_repo: &Repo) -> i64 {
+    0
 }
 
 pub async fn cancel_bounty_with_refund(
@@ -351,7 +351,7 @@ pub async fn cancel_bounty_with_refund(
         state,
         repo,
         issue_id,
-        reward_amount,
+        Some(reward_amount),
     )
     .await
 }

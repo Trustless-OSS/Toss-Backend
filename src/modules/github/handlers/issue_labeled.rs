@@ -55,10 +55,7 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
 
     if !is_trigger {
         info!(
-            action = payload
-                .get("action")
-                .and_then(|value| value.as_str())
-                .unwrap_or(""),
+            action = payload.get("action").and_then(|v| v.as_str()).unwrap_or(""),
             label = event_label.as_deref().unwrap_or("none"),
             "issue event does not contain a bounty-triggering label"
         );
@@ -93,17 +90,17 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
 
     if event_label.as_deref() == Some("rejected") {
         if let Some(ref existing) = existing {
-            if existing.status != "completed" && existing.status != "cancelled" {
+            if existing.status != "paid" && existing.status != "cancelled" {
                 cancel_issue(state, existing.id).await?;
                 delete_assignments_for_issue(state, existing.id).await?;
                 refund_repo_balance(state, &repo, existing.reward_amount).await?;
+                let reward = existing.reward_amount.unwrap_or_default();
                 post_comment(
                     state,
                     full_name,
                     issue_number,
                     &format!(
-                        "### 🛑 Bounty Cancelled\n\nThis issue was rejected by a maintainer. The **{} USDC** bounty has been returned to the pool.",
-                        existing.reward_amount
+                        "### 🛑 Bounty Cancelled\n\nThis issue was rejected by a maintainer. The **{reward} USDC** bounty has been returned to the pool."
                     ),
                 )
                 .await?;
@@ -126,7 +123,7 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
             %labels,
             rewarded = parsed.is_rewarded,
             has_difficulty = parsed.difficulty.is_some(),
-            "bounty not created; issue needs `rewarded` and one difficulty label: low, medium, high, or manual"
+            "bounty not created; issue needs `rewarded` and one difficulty label"
         );
         return Ok(());
     }
@@ -134,7 +131,7 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
     let difficulty = parsed.difficulty.unwrap();
 
     if let Some(ref existing) = existing {
-        if existing.status != "pending" {
+        if existing.status != "open" {
             return Ok(());
         }
     }
@@ -177,20 +174,12 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
             .await?;
             return Ok(());
         }
-        info!(
-            repo = full_name,
-            issue = issue_number,
-            %reward_amount,
-            "bounty amount updated"
-        );
+        info!(repo = full_name, issue = issue_number, %reward_amount, "bounty amount updated");
         post_comment(
             state,
             full_name,
             issue_number,
-            &format!(
-                "🔄 **Bounty Updated:** **{} USDC** (`{}`)",
-                reward_amount, diff_label
-            ),
+            &format!("🔄 **Bounty Updated:** **{reward_amount} USDC** (`{diff_label}`)"),
         )
         .await?;
         return Ok(());
@@ -198,11 +187,12 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
 
     sync_repo_balance(state, &mut repo).await?;
 
-    if reward_amount > Decimal::ZERO && repo.escrow_balance < reward_amount {
+    let balance = repo.escrow_balance.unwrap_or_default();
+    if reward_amount > Decimal::ZERO && balance < reward_amount {
         warn!(
             repo = full_name,
             issue = issue_number,
-            available_balance = %repo.escrow_balance,
+            available_balance = %balance,
             required_reward = %reward_amount,
             "bounty not created because escrow balance is insufficient"
         );
@@ -212,9 +202,9 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
             issue_number,
             &format!(
                 "### ⚠️ Insufficient Balance\n\n\
-                 Escrow balance (**{} USDC**) is too low for this **{} USDC** bounty.\n\n\
+                 Escrow balance (**{balance} USDC**) is too low for this **{reward_amount} USDC** bounty.\n\n\
                  [**Top Up Escrow →**]({}/dashboard)",
-                repo.escrow_balance, reward_amount, state.config.app_url
+                state.config.app_url
             ),
         )
         .await?;
@@ -245,19 +235,12 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
             "### 💰 Bounty Created!\n\n\
              | Reward | Level | Escrow |\n\
              | :--- | :--- | :--- |\n\
-             | **{} USDC** | `{}` | [View On-Chain →](https://viewer.trustlesswork.com/{}) |\n\n\
-             Assign a contributor to lock the funds.",
-            reward_amount, diff_label, contract_id
+             | **{reward_amount} USDC** | `{diff_label}` | [View On-Chain →](https://viewer.trustlesswork.com/{contract_id}) |\n\n\
+             Assign a contributor to lock the funds."
         ),
     )
     .await?;
 
-    info!(
-        repo = full_name,
-        issue = issue_number,
-        %reward_amount,
-        "bounty issue created"
-    );
-
+    info!(repo = full_name, issue = issue_number, %reward_amount, "bounty issue created");
     Ok(())
 }

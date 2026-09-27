@@ -17,13 +17,6 @@ use crate::{
     state::AppState,
 };
 
-/// Record a merged PR against its bounty and hand the issue to the automation.
-///
-/// The payout itself is decided and executed by the `advance-issue` /
-/// `release-payout` workers, which re-read GitHub, Postgres and the escrow
-/// contract first. This handler only establishes the one fact that is unique to
-/// the webhook payload — that the merge was authored by the assigned
-/// contributor — and then enqueues.
 pub async fn handle_pr_merged(state: &AppState, payload: &Value) -> Result<(), AppError> {
     let repository = payload
         .get("repository")
@@ -58,28 +51,29 @@ pub async fn handle_pr_merged(state: &AppState, payload: &Value) -> Result<(), A
     let Some(repo) = get_repo_by_github_id(state, repo_github_id).await? else {
         return Ok(());
     };
-    let Some(issue) = get_issue_by_repo_and_number(state, repo.id, issue_number).await? else {
+    let Some(bounty) = get_issue_by_repo_and_number(state, repo.id, issue_number).await? else {
         return Ok(());
     };
-    if issue.status != "pending" && issue.status != "active" {
+
+    if bounty.status == "paid" || bounty.status == "cancelled" {
         return Ok(());
     }
 
-    let Some((assignment, contributor)) = get_assignment_for_issue(state, issue.id).await? else {
+    let Some((assignment, assignee)) = get_assignment_for_issue(state, bounty.id).await? else {
         return Ok(());
     };
-    if assignment.payout_status == "released" {
+
+    // assignment is the Bounty itself — check it's not already paid
+    if assignment.status == "paid" {
         return Ok(());
     }
 
-    // The PR author must be the assigned contributor. This can only be checked
-    // against the signed webhook payload, so it belongs here rather than in the
-    // worker.
     let pr_author_id = pr
         .get("user")
         .and_then(|user| user.get("id"))
         .and_then(Value::as_i64);
-    let assigned_github_id = contributor.as_ref().map(|value| value.github_user_id);
+    let assigned_github_id = assignee.as_ref().map(|p| p.github_id);
+
     if pr_author_id.is_none() || pr_author_id != assigned_github_id {
         post_comment(
             state,
@@ -97,7 +91,7 @@ pub async fn handle_pr_merged(state: &AppState, payload: &Value) -> Result<(), A
 
     let outcome = state
         .queue
-        .enqueue_advance_issue(BountyJobData::new(issue.id, "pr-merged").notifying())
+        .enqueue_advance_issue(BountyJobData::new(bounty.id, "pr-merged").notifying())
         .await?;
 
     info!(

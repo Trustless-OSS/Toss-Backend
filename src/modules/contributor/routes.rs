@@ -3,16 +3,17 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-
 use tracing::{info, warn};
 
 use crate::{
     error::{AppError, ErrorResponse},
     infra::queue::BountyJobData,
     middleware::auth::AuthedUser,
-    modules::contributor::model::{ConnectWalletBody, ContributorMeResponse, OkResponse},
-    modules::contributor::repository::{
-        get_contributor_by_github_id, list_assignments_for_contributor, upsert_contributor_wallet,
+    modules::contributor::{
+        model::{ConnectWalletBody, ContributorMeResponse, OkResponse},
+        repository::{
+            get_profile_by_github_id, list_bounties_for_contributor, upsert_contributor_wallet,
+        },
     },
     state::AppState,
 };
@@ -59,57 +60,46 @@ pub(crate) async fn connect_wallet(
     )
     .await?;
 
-    // The wallet was the thing every parked bounty for this contributor was
-    // waiting on. Nudge each of them so the flow continues on its own — this is
-    // what removes the need for a maintainer `/retry`.
     resume_parked_bounties(&state, user.github_id).await;
 
     Ok(Json(OkResponse { ok: true }))
 }
 
-/// Queue an `advance-issue` pass for every bounty this contributor still owns.
-///
-/// Failures here are logged, never surfaced: the wallet *was* saved, and the
-/// scheduled re-checks will pick the issue up regardless.
 async fn resume_parked_bounties(state: &AppState, github_id: i64) {
-    let contributor = match get_contributor_by_github_id(state, github_id).await {
-        Ok(Some(contributor)) => contributor,
+    let profile = match get_profile_by_github_id(state, github_id).await {
+        Ok(Some(p)) => p,
         Ok(None) => return,
         Err(error) => {
-            warn!(%error, "failed to load contributor after wallet connect");
+            warn!(%error, "failed to load profile after wallet connect");
             return;
         }
     };
 
-    let assignments = match list_assignments_for_contributor(state, contributor.id).await {
-        Ok(assignments) => assignments,
+    let bounties = match list_bounties_for_contributor(state, profile.id).await {
+        Ok(b) => b,
         Err(error) => {
-            warn!(%error, "failed to list assignments after wallet connect");
+            warn!(%error, "failed to list bounties after wallet connect");
             return;
         }
     };
 
-    for (assignment, issue) in assignments {
-        let Some(issue) = issue else { continue };
-        if issue.status == "completed" || issue.status == "cancelled" {
-            continue;
-        }
-        if assignment.payout_status == "released" {
+    for bounty in bounties {
+        if bounty.status == "paid" || bounty.status == "cancelled" {
             continue;
         }
 
         match state
             .queue
-            .enqueue_advance_issue(BountyJobData::new(issue.id, "wallet-connected"))
+            .enqueue_advance_issue(BountyJobData::new(bounty.id, "wallet-connected"))
             .await
         {
             Ok(outcome) => info!(
-                issue = issue.github_issue_number,
+                issue = bounty.github_issue_number,
                 outcome = outcome.label(),
                 "wallet connected; bounty automation resumed"
             ),
             Err(error) => {
-                warn!(%error, issue = issue.github_issue_number, "failed to resume bounty automation")
+                warn!(%error, issue = bounty.github_issue_number, "failed to resume bounty automation")
             }
         }
     }
@@ -121,7 +111,7 @@ async fn resume_parked_bounties(state: &AppState, github_id: i64) {
     tag = "Contributor",
     security(("bearer_auth" = [])),
     responses(
-        (status = 200, description = "Authenticated contributor profile and assignments", body = ContributorMeResponse),
+        (status = 200, description = "Authenticated contributor profile and bounties", body = ContributorMeResponse),
         (status = 401, description = "Missing or invalid bearer token", body = ErrorResponse),
         (status = 500, description = "Failed to load contributor", body = ErrorResponse)
     )
@@ -130,38 +120,53 @@ pub(crate) async fn get_contributor_me(
     State(state): State<AppState>,
     user: AuthedUser,
 ) -> Result<Json<ContributorMeResponse>, AppError> {
-    let contributor = get_contributor_by_github_id(&state, user.github_id).await?;
+    use crate::modules::contributor::repository::get_wallets_for_profile;
 
-    let Some(contributor) = contributor else {
+    let profile = get_profile_by_github_id(&state, user.github_id).await?;
+
+    let Some(profile) = profile else {
         return Ok(Json(ContributorMeResponse { contributor: None }));
     };
 
-    let assignments = list_assignments_for_contributor(&state, contributor.id).await?;
+    let wallets = get_wallets_for_profile(&state, profile.id).await?;
+    let bounties = list_bounties_for_contributor(&state, profile.id).await?;
 
-    let mut assignment_rows = Vec::with_capacity(assignments.len());
-    for (assignment, issue) in assignments {
-        assignment_rows.push(serde_json::json!({
-            "id": assignment.id,
-            "issue_id": assignment.issue_id,
-            "contributor_id": assignment.contributor_id,
-            "assigned_at": assignment.assigned_at,
-            "pr_number": assignment.pr_number,
-            "pr_merged_at": assignment.pr_merged_at,
-            "payout_status": assignment.payout_status,
-            "completion_percentage": assignment.completion_percentage,
-            "issues": issue,
-        }));
-    }
+    let primary_wallet = wallets.iter().find(|w| w.is_primary);
+    let stellar_wallet = wallets
+        .iter()
+        .find(|w| w.chain == "stellar")
+        .map(|w| w.address.clone());
+
+    let bounty_rows: Vec<serde_json::Value> = bounties
+        .iter()
+        .map(|b| {
+            serde_json::json!({
+                "id": b.id,
+                "repo_id": b.repo_id,
+                "github_issue_id": b.github_issue_id,
+                "github_issue_number": b.github_issue_number,
+                "title": b.title,
+                "reward_amount": b.reward_amount,
+                "status": b.status,
+                "assigned_at": b.assigned_at,
+                "merged_at": b.merged_at,
+                "paid_at": b.paid_at,
+                "created_at": b.created_at,
+            })
+        })
+        .collect();
 
     let contributor_json = serde_json::json!({
-        "id": contributor.id,
-        "github_user_id": contributor.github_user_id,
-        "github_username": contributor.github_username,
-        "stellar_wallet": contributor.stellar_wallet,
-        "payout_chain": contributor.payout_chain,
-        "payout_address": contributor.payout_address,
-        "created_at": contributor.created_at,
-        "assignments": assignment_rows,
+        "id": profile.id,
+        "github_id": profile.github_id,
+        "username": profile.username,
+        "full_name": profile.full_name,
+        "avatar_url": profile.avatar_url,
+        "stellar_wallet": stellar_wallet,
+        "payout_chain": primary_wallet.map(|w| &w.chain),
+        "payout_address": primary_wallet.map(|w| &w.address),
+        "created_at": profile.created_at,
+        "bounties": bounty_rows,
     });
 
     Ok(Json(ContributorMeResponse {

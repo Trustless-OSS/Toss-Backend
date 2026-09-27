@@ -17,7 +17,7 @@ use crate::{
         service,
     },
     shared::{
-        models::{domain::IssueWithRelations, Repo},
+        models::Repo,
         pagination::{PaginatedQuery, PaginatedResponse, PaginationQuery},
     },
     state::AppState,
@@ -156,7 +156,7 @@ pub(crate) async fn sync_installation(
         PaginationQuery
     ),
     responses(
-        (status = 200, description = "Paginated issues for the repository", body = PaginatedResponse<IssueWithRelations>),
+        (status = 200, description = "Paginated issues for the repository", body = PaginatedResponse<serde_json::Value>),
         (status = 500, description = "Failed to list issues", body = ErrorResponse)
     )
 )]

@@ -18,24 +18,8 @@ pub async fn update_repo_escrow_contract(
     contract_id: &str,
 ) -> Result<(), AppError> {
     let mut db = require_db(&state.db)?;
-    toasty::update!(schema::Repo::filter_by_id(repo_id) {
+    toasty::update!(schema::Repositories::filter_by_id(repo_id) {
         escrow_contract_id: Some(contract_id.to_string()),
-    })
-    .exec(&mut db)
-    .await
-    .map_err(map_db_err)?;
-    invalidate_repo_cache(state, repo_id, None).await;
-    Ok(())
-}
-
-pub async fn update_repo_escrow_funder_wallet(
-    state: &AppState,
-    repo_id: Uuid,
-    funder_wallet: &str,
-) -> Result<(), AppError> {
-    let mut db = require_db(&state.db)?;
-    toasty::update!(schema::Repo::filter_by_id(repo_id) {
-        escrow_funder_wallet: Some(funder_wallet.to_string()),
     })
     .exec(&mut db)
     .await
@@ -51,8 +35,8 @@ pub async fn update_repo_escrow_balance(
     github_repo_id: Option<i64>,
 ) -> Result<(), AppError> {
     let mut db = require_db(&state.db)?;
-    toasty::update!(schema::Repo::filter_by_id(repo_id) {
-        escrow_balance: round_balance(balance),
+    toasty::update!(schema::Repositories::filter_by_id(repo_id) {
+        escrow_balance: Some(round_balance(balance)),
     })
     .exec(&mut db)
     .await
@@ -63,10 +47,9 @@ pub async fn update_repo_escrow_balance(
 
 pub async fn clear_repo_escrow(state: &AppState, repo_id: Uuid) -> Result<(), AppError> {
     let mut db = require_db(&state.db)?;
-    toasty::update!(schema::Repo::filter_by_id(repo_id) {
+    toasty::update!(schema::Repositories::filter_by_id(repo_id) {
         escrow_contract_id: Option::<String>::None,
-        escrow_funder_wallet: Option::<String>::None,
-        escrow_balance: Decimal::ZERO,
+        escrow_balance: Option::<Decimal>::None,
     })
     .exec(&mut db)
     .await
@@ -77,27 +60,30 @@ pub async fn clear_repo_escrow(state: &AppState, repo_id: Uuid) -> Result<(), Ap
 
 pub async fn list_active_escrow_repos(state: &AppState) -> Result<Vec<Repo>, AppError> {
     let mut db = require_db(&state.db)?;
-    Ok(
-        schema::Repo::filter(schema::Repo::fields().escrow_contract_id().is_some())
-            .exec(&mut db)
-            .await
-            .map_err(map_db_err)?
-            .into_iter()
-            .map(Repo::from)
-            .filter(|repo| {
-                repo.escrow_contract_id
-                    .as_deref()
-                    .is_some_and(|id| !id.trim().is_empty())
-            })
-            .collect(),
+    Ok(schema::Repositories::filter(
+        schema::Repositories::fields()
+            .escrow_contract_id()
+            .is_some(),
     )
+    .exec(&mut db)
+    .await
+    .map_err(map_db_err)?
+    .into_iter()
+    .map(Repo::from)
+    .filter(|repo| {
+        repo.escrow_contract_id
+            .as_deref()
+            .is_some_and(|id| !id.trim().is_empty())
+    })
+    .collect())
 }
 
 pub async fn refund_repo_balance(
     state: &AppState,
     repo: &Repo,
-    amount: Decimal,
+    amount: Option<Decimal>,
 ) -> Result<(), AppError> {
-    let new_balance = repo.escrow_balance + amount;
+    let current = repo.escrow_balance.unwrap_or(Decimal::ZERO);
+    let new_balance = current + amount.unwrap_or(Decimal::ZERO);
     update_repo_escrow_balance(state, repo.id, new_balance, Some(repo.github_repo_id)).await
 }

@@ -11,7 +11,7 @@ path = "src/main.rs"
 
 [[bin]]
 name = "migrate"
-path = "src/bin/migrate.rs"
+path = "src/bin/cli.rs"
 
 [dependencies]
 anyhow = "1"

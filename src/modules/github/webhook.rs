@@ -151,9 +151,6 @@ async fn handle_installation(
                 &repo.full_name,
                 installation.account.id,
                 &installation.account.login,
-                &installation.account.account_type,
-                repo.fork,
-                repo.private,
                 sender.id,
                 installation.id,
             )
@@ -241,9 +238,6 @@ async fn handle_installation_repositories(
                 &repo.full_name,
                 installation.account.id,
                 &installation.account.login,
-                &installation.account.account_type,
-                repo.fork,
-                repo.private,
                 sender.id,
                 installation.id,
             )

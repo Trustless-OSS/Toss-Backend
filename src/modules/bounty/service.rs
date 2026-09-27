@@ -6,7 +6,7 @@ use tracing::info;
 use uuid::Uuid;
 
 use crate::{
-    error::AppError,
+    error::{map_db_err, require_db, AppError},
     infra::queue::{BountyJobData, EnqueueOutcome},
     middleware::auth::AuthedUser,
     modules::{
@@ -14,12 +14,12 @@ use crate::{
             automation,
             model::{Milestone, MilestoneResponse, RetryIssueResponse},
             repository::{
-                get_issue_by_repo_and_github_id, get_issue_with_repo, is_assigned_contributor,
+                get_bounty_by_repo_and_github_id, get_bounty_with_repo, is_assigned_contributor,
             },
         },
-        contributor::repository::upsert_contributor_wallet,
         repo::repository::{get_repo_by_github_id, is_maintainer},
     },
+    shared::models::schema,
     state::AppState,
 };
 
@@ -53,7 +53,7 @@ impl BountyService {
             .unwrap_or(&body.wallet)
             .to_string();
 
-        upsert_contributor_wallet(
+        upsert_profile_wallet(
             &state,
             user.github_id,
             user.github_username.as_deref().unwrap_or(""),
@@ -62,13 +62,13 @@ impl BountyService {
         )
         .await?;
 
-        let issue = get_issue_by_repo_and_github_id(&state, repo.id, body.github_issue_id)
+        let bounty = get_bounty_by_repo_and_github_id(&state, repo.id, body.github_issue_id)
             .await?
             .ok_or_else(|| {
                 AppError::bad_request("Issue is not in a valid state to connect wallet")
             })?;
 
-        if issue.status != "pending" && issue.status != "active" {
+        if bounty.status != "open" && bounty.status != "assigned" {
             return Err(AppError::bad_request(
                 "Issue is not in a valid state to connect wallet",
             ));
@@ -76,15 +76,15 @@ impl BountyService {
 
         let outcome = state
             .queue
-            .enqueue_advance_issue(BountyJobData::new(issue.id, "milestone-push-requested"))
+            .enqueue_advance_issue(BountyJobData::new(bounty.id, "milestone-push-requested"))
             .await?;
 
         if outcome == EnqueueOutcome::Unavailable {
-            advance_inline(&state, issue.id).await?;
+            advance_inline(&state, bounty.id).await?;
         }
 
         info!(
-            issue = issue.github_issue_number,
+            issue = bounty.github_issue_number,
             outcome = outcome.label(),
             "wallet connected; bounty automation queued"
         );
@@ -92,16 +92,16 @@ impl BountyService {
         Ok(Json(MilestoneResponse {
             ok: true,
             repo_full_name: repo.full_name,
-            issue_number: issue.github_issue_number,
+            issue_number: bounty.github_issue_number,
         }))
     }
 
     pub async fn retry_issue(
         State(state): State<AppState>,
         user: AuthedUser,
-        Path(issue_id): Path<Uuid>,
+        Path(bounty_id): Path<Uuid>,
     ) -> Result<Json<RetryIssueResponse>, AppError> {
-        let (issue, repo) = get_issue_with_repo(&state, issue_id)
+        let (bounty, repo) = get_bounty_with_repo(&state, bounty_id)
             .await?
             .ok_or_else(|| AppError::not_found("Issue not found"))?;
 
@@ -113,11 +113,11 @@ impl BountyService {
 
         let outcome = state
             .queue
-            .enqueue_advance_issue(BountyJobData::new(issue.id, "manual-retry"))
+            .enqueue_advance_issue(BountyJobData::new(bounty.id, "manual-retry"))
             .await?;
 
         if outcome == EnqueueOutcome::Unavailable {
-            advance_inline(&state, issue.id).await?;
+            advance_inline(&state, bounty.id).await?;
             return Ok(Json(RetryIssueResponse {
                 ok: true,
                 step: Some("applied"),
@@ -128,7 +128,7 @@ impl BountyService {
         }
 
         info!(
-            issue = issue.github_issue_number,
+            issue = bounty.github_issue_number,
             outcome = outcome.label(),
             "manual retry requested"
         );
@@ -143,10 +143,38 @@ impl BountyService {
     }
 }
 
-async fn advance_inline(state: &AppState, issue_id: Uuid) -> Result<(), AppError> {
+async fn upsert_profile_wallet(
+    state: &AppState,
+    github_id: i64,
+    username: &str,
+    chain: &str,
+    address: &str,
+) -> Result<(), AppError> {
+    let mut db = require_db(&state.db)?;
+
+    let profile = schema::Profile::upsert_by_github_id(github_id)
+        .username(username.to_string())
+        .exec(&mut db)
+        .await
+        .map_err(map_db_err)?;
+
+    schema::Wallet::upsert_by_profile_id_and_chain_and_address(
+        profile.id,
+        chain.to_string(),
+        address.to_string(),
+    )
+    .is_primary(true)
+    .exec(&mut db)
+    .await
+    .map_err(map_db_err)?;
+
+    Ok(())
+}
+
+async fn advance_inline(state: &AppState, bounty_id: Uuid) -> Result<(), AppError> {
     use automation::Decision;
 
-    let Some(ctx) = automation::load_context(state, issue_id).await? else {
+    let Some(ctx) = automation::load_context(state, bounty_id).await? else {
         return Ok(());
     };
 

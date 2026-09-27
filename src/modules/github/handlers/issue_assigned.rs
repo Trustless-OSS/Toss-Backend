@@ -12,11 +12,6 @@ use crate::{
     state::AppState,
 };
 
-/// Record the assignment and hand the issue to the automation.
-///
-/// This handler is a producer only: it never touches escrow. Whether the bounty
-/// can be locked right now — or has to wait for a wallet — is decided by the
-/// `advance-issue` worker against live state.
 pub async fn handle_issue_assigned(state: &AppState, payload: &Value) -> Result<(), AppError> {
     let repository = payload
         .get("repository")
@@ -32,7 +27,7 @@ pub async fn handle_issue_assigned(state: &AppState, payload: &Value) -> Result<
 
     let repo_github_id = repository.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
     let github_issue_id = issue.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
-    let assignee_id = assignee.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+    let assignee_github_id = assignee.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
     let assignee_login = assignee
         .get("login")
         .and_then(|v| v.as_str())
@@ -48,12 +43,12 @@ pub async fn handle_issue_assigned(state: &AppState, payload: &Value) -> Result<
         return Ok(());
     };
 
-    if issue_record.status == "completed" || issue_record.status == "cancelled" {
+    if issue_record.status == "paid" || issue_record.status == "cancelled" {
         return Ok(());
     }
 
-    let contributor = ensure_contributor(state, assignee_id, assignee_login).await?;
-    upsert_assignment(state, issue_record.id, contributor.id).await?;
+    let profile = ensure_contributor(state, assignee_github_id, assignee_login).await?;
+    upsert_assignment(state, issue_record.id, profile.id).await?;
 
     let outcome = state
         .queue

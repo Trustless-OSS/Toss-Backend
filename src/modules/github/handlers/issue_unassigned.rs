@@ -39,13 +39,13 @@ pub async fn handle_issue_unassigned(state: &AppState, payload: &Value) -> Resul
         return Ok(());
     };
 
-    if issue_record.status == "completed" || issue_record.status == "cancelled" {
+    if issue_record.status == "paid" || issue_record.status == "cancelled" {
         return Ok(());
     }
 
     delete_assignments_for_issue(state, issue_record.id).await?;
 
-    if issue_record.status == "active" {
+    if issue_record.status == "assigned" {
         if let Some(milestone_index) = issue_record.milestone_index {
             if let Err(err) = zero_milestone_on_chain(state, &repo, milestone_index).await {
                 error!(%err, "failed to zero out milestone on unassign");
@@ -55,13 +55,13 @@ pub async fn handle_issue_unassigned(state: &AppState, payload: &Value) -> Resul
 
     reset_issue_to_pending(state, issue_record.id).await?;
 
+    let reward = issue_record.reward_amount.unwrap_or_default();
     post_comment(
         state,
         full_name,
         issue_number,
         &format!(
-            "🔄 Contributor unassigned. The milestone has been closed. The bounty of **{} USDC** remains available for the next assignee.",
-            issue_record.reward_amount
+            "🔄 Contributor unassigned. The milestone has been closed. The bounty of **{reward} USDC** remains available for the next assignee."
         ),
     )
     .await?;
