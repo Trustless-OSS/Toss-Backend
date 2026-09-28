@@ -18,9 +18,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let address = SocketAddr::from(([0, 0, 0, 0], config.port));
     let state = AppState::new(config).await?;
 
-    info!("running database migrations");
-    infra::db::apply_migrations(&state.db).await?;
-
     let workers = infra::queue::start_workers(state.clone()).await?;
     if let Err(error) = infra::queue::start_scheduler(&state).await {
         error!(%error, "failed to register repeating jobs");

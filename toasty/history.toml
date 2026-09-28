@@ -1,6 +1,6 @@
 version = 1
 
 [[migrations]]
-id = 8920828235533715757
-name = "0000_init_schema.sql"
+id = 6565463973012825117
+name = "0000_toss_migration.sql"
 snapshot_name = "0000_snapshot.toml"
