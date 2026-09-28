@@ -1,7 +1,3 @@
-//! Repository module API types (requests, responses, and view models).
-//!
-//! Database entities live in [`crate::shared::models::Repo`].
-
 use rust_decimal::Decimal;
 use serde::Serialize;
 use utoipa::ToSchema;

@@ -22,6 +22,7 @@ pub fn router() -> Router<AppState> {
             "/api/v1/repos/{repoId}/rewards",
             put(handlers::update_rewards),
         )
+        .route("/api/v1/repos/rewards/{repoId}", get(handlers::get_rewards))
         .route(
             "/api/v1/repos/{repoId}",
             get(handlers::repo_details).delete(handlers::delete_repo),

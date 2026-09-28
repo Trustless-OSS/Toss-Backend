@@ -4,6 +4,7 @@ use uuid::Uuid;
 use crate::{
     error::{map_db_err, require_db, AppError},
     infra::cache_keys,
+    modules::repo::datatypes::RewardQuery,
     shared::models::{schema, Repo, Reward},
     state::AppState,
 };
@@ -204,7 +205,7 @@ pub async fn upsert_repo_with_maintainer(
     Ok(repo)
 }
 
-pub async fn update_repo_rewards(
+pub async fn upsert_repo_rewards(
     state: &AppState,
     repo_id: Uuid,
     label: String,
@@ -235,6 +236,25 @@ pub async fn update_repo_rewards(
 
     invalidate_repo_cache(state, repo.id, Some(repo.github_repo_id)).await;
     Ok(repo)
+}
+
+pub async fn get_repo_rewards(
+    state: &AppState,
+    query: RewardQuery,
+) -> Result<Vec<Reward>, AppError> {
+    let mut db = require_db(&state.db)?;
+
+    let rows = match query {
+        RewardQuery::ByRepo(repo_id) => {
+            schema::Reward::filter_by_repo_id(repo_id)
+                .exec(&mut db)
+                .await
+        }
+        RewardQuery::ById(reward_id) => schema::Reward::filter_by_id(reward_id).exec(&mut db).await,
+    }
+    .map_err(map_db_err)?;
+
+    Ok(rows.into_iter().map(Reward::from).collect())
 }
 
 pub async fn delete_repo_cascade(state: &AppState, repo_id: Uuid) -> Result<(), AppError> {

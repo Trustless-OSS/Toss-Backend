@@ -14,6 +14,7 @@ use crate::{
             repository::upsert_installation_repo,
         },
         repo::{
+            datatypes::RewardQuery,
             model::{
                 ConnectRepoInput, InstallationRepoSummary, InstallationReposList, OkResponse,
                 RepoAccessInput, RepoDetails, RepoResponse, SyncInstallationInput,
@@ -21,13 +22,13 @@ use crate::{
             },
             repository::{
                 count_repos_for_installation, delete_repo_cascade, get_repo_by_id,
-                invalidate_repo_cache, is_maintainer, list_repos_for_user, update_repo_rewards,
-                upsert_repo_with_maintainer,
+                get_repo_rewards, invalidate_repo_cache, is_maintainer, list_repos_for_user,
+                upsert_repo_rewards, upsert_repo_with_maintainer,
             },
         },
     },
     shared::{
-        models::Repo,
+        models::{Repo, Reward},
         pagination::{PaginatedResponse, PaginationQuery},
     },
     state::AppState,
@@ -189,9 +190,16 @@ pub(crate) async fn update_rewards(
         return Err(AppError::bad_request("Reward Label must be non-negative"));
     }
 
-    let repo = update_repo_rewards(state, input.repo_id, input.label, input.amount).await?;
+    let repo = upsert_repo_rewards(state, input.repo_id, input.label, input.amount).await?;
 
     Ok(RepoResponse { repo })
+}
+
+pub(crate) async fn get_repo_rewards_by_repo_id(
+    state: &AppState,
+    repo_id: Uuid,
+) -> Result<Vec<Reward>, AppError> {
+    get_repo_rewards(state, RewardQuery::ByRepo(repo_id)).await
 }
 
 pub(crate) async fn delete_repo(

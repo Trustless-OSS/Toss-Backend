@@ -1,6 +1,7 @@
 use rust_decimal::Decimal;
 use serde::Deserialize;
 use utoipa::{IntoParams, ToSchema};
+use uuid::Uuid;
 
 #[derive(Debug, Deserialize, ToSchema)]
 #[schema(as = ConnectRepoBody)]
@@ -36,4 +37,9 @@ pub(crate) struct SyncInstallation {
 pub(crate) struct InstallationReposQuery {
     #[serde(alias = "installation_id")]
     pub installation_id: i64,
+}
+
+pub enum RewardQuery {
+    ByRepo(Uuid),
+    ById(Uuid),
 }

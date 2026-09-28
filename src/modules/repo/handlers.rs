@@ -17,7 +17,7 @@ use crate::{
         service,
     },
     shared::{
-        models::Repo,
+        models::{Repo, Reward as RewardEntity},
         pagination::{PaginatedQuery, PaginatedResponse, PaginationQuery},
     },
     state::AppState,
@@ -228,6 +228,29 @@ pub(crate) async fn update_rewards(
     };
     let response = service::update_rewards(&state, input).await?;
     Ok(Json(response))
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/repos/{repoId}/rewards",
+    tag = "Repos",
+    security(("bearer_auth" = [])),
+    params(("repoId" = Uuid, Path, description = "Repository UUID")),
+    responses(
+        (status = 200, description = "Reward tiers for the repository", body = Vec<RewardEntity>),
+        (status = 401, description = "Missing or invalid bearer token", body = ErrorResponse),
+        (status = 404, description = "Repository not found", body = ErrorResponse),
+        (status = 500, description = "Failed to fetch rewards", body = ErrorResponse)
+    )
+)]
+pub(crate) async fn get_rewards(
+    State(state): State<AppState>,
+    _user: AuthedUser,
+    Path(repo_id): Path<Uuid>,
+) -> Result<Json<Vec<RewardEntity>>, AppError> {
+    let rewards = service::get_repo_rewards_by_repo_id(&state, repo_id).await?;
+
+    Ok(Json(rewards))
 }
 
 #[utoipa::path(
