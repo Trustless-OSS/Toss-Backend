@@ -7,8 +7,9 @@ use crate::{
     modules::{
         bounty::labels::{difficulty_label, get_reward_amount, parse_labels},
         bounty::repository::{
-            cancel_issue, create_issue_and_reserve_balance, delete_assignments_for_issue,
-            get_issue_by_repo_and_github_id, update_pending_issue_reward,
+            cancel_issue, create_bounty_and_reserve_balance, create_issue_and_reserve_balance,
+            delete_assignments_for_issue, get_issue_by_repo_and_github_id,
+            update_pending_issue_reward,
         },
         escrow::repository::refund_repo_balance,
         github::{
@@ -110,56 +111,93 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
     }
 
     let parsed = parse_labels(&labels_from_payload(issue));
-    if !parsed.is_rewarded || parsed.difficulty.is_none() {
-        let labels = labels_from_payload(issue)
-            .iter()
-            .filter_map(|label| label.get("name").and_then(Value::as_str))
-            .map(str::to_owned)
-            .collect::<Vec<_>>()
-            .join(",");
+    if !parsed.is_rewarded {
         info!(
             repo = full_name,
             issue = issue_number,
-            %labels,
-            rewarded = parsed.is_rewarded,
-            has_difficulty = parsed.difficulty.is_some(),
-            "bounty not created; issue needs `rewarded` and one difficulty label"
+            "bounty label ignored; issue is missing `rewarded`"
         );
         return Ok(());
     }
 
-    let difficulty = parsed.difficulty.unwrap();
-
     if let Some(ref existing) = existing {
-        if existing.status != "open" {
+        // Once a milestone is locked, changing the reward would leave the database
+        // and escrow out of sync. Before that point, a maintainer may still choose
+        // or change the amount, including after assigning a contributor.
+        if existing.status != "open"
+            && !(existing.status == "assigned" && existing.milestone_index.is_none())
+        {
             return Ok(());
         }
     }
 
+    let Some(difficulty) = parsed.difficulty else {
+        if existing.is_some() {
+            return Ok(());
+        }
+
+        let Some(created) = create_bounty_and_reserve_balance(
+            state,
+            &repo,
+            github_issue_id,
+            issue_number,
+            title,
+            Decimal::ZERO,
+            None,
+        )
+        .await?
+        else {
+            return Ok(());
+        };
+
+        let contract_id = repo.escrow_contract_id.as_deref().unwrap_or("");
+        post_comment(
+            state,
+            full_name,
+            issue_number,
+            &format!(
+                "### 💰 Bounty Created\n\nNo reward level or amount is set yet. Add a `low`, `medium`, or `high` label, or comment `@toss <amount> USDC`. Assignments will wait until the amount is configured.\n\n[View Escrow →](https://viewer.trustlesswork.com/{contract_id})"
+            ),
+        )
+        .await?;
+        info!(repo = full_name, issue = issue_number, bounty = %created.id, "unpriced bounty issue created");
+        return Ok(());
+    };
+
     let manual_amount = if difficulty == Difficulty::Manual {
         let body = issue.get("body").and_then(|v| v.as_str());
-        match extract_manual_amount(body) {
-            Some(amount) => Some(amount),
-            None => {
-                if existing.is_none() {
-                    post_comment(
-                        state,
-                        full_name,
-                        issue_number,
-                        "### ⚠️ Missing Amount\n\n\
-                         Manual bounties require an amount. Please comment with `@Trustless-OSS <amount>` to set it.",
-                    )
-                    .await?;
-                }
-                return Ok(());
-            }
-        }
+        extract_manual_amount(body)
     } else {
         None
     };
 
     let reward_amount = get_reward_amount(Some(difficulty), &repo, manual_amount);
     let diff_label = difficulty_label(difficulty);
+
+    if difficulty == Difficulty::Manual && manual_amount.is_none() {
+        if existing.is_none() {
+            // Create the bounty in an unpriced state; the amount can be supplied
+            // later from an issue comment without requiring a new label event.
+            create_bounty_and_reserve_balance(
+                state,
+                &repo,
+                github_issue_id,
+                issue_number,
+                title,
+                Decimal::ZERO,
+                None,
+            )
+            .await?;
+        }
+        post_comment(
+            state,
+            full_name,
+            issue_number,
+            "### ⚠️ Amount Needed\n\nComment `@toss <amount> USDC` to configure this manual bounty. The contributor can be assigned now, but escrow locking waits for the amount.",
+        )
+        .await?;
+        return Ok(());
+    }
 
     if let Some(ref existing) = existing {
         if !update_pending_issue_reward(state, &repo, existing.id, reward_amount, diff_label)
@@ -182,6 +220,15 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
             &format!("🔄 **Bounty Updated:** **{reward_amount} USDC** (`{diff_label}`)"),
         )
         .await?;
+        if existing.status == "assigned" && existing.milestone_index.is_none() {
+            state
+                .queue
+                .enqueue_advance_issue(
+                    crate::infra::queue::BountyJobData::new(existing.id, "reward-configured")
+                        .notifying(),
+                )
+                .await?;
+        }
         return Ok(());
     }
 
@@ -236,7 +283,7 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
              | Reward | Level | Escrow |\n\
              | :--- | :--- | :--- |\n\
              | **{reward_amount} USDC** | `{diff_label}` | [View On-Chain →](https://viewer.trustlesswork.com/{contract_id}) |\n\n\
-             Assign a contributor to lock the funds."
+             Add or change the amount anytime before assignment. Assign a contributor to lock the funds."
         ),
     )
     .await?;

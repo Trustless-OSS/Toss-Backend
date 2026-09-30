@@ -147,6 +147,12 @@ pub async fn evaluate(state: &AppState, ctx: &IssueContext) -> Result<Decision, 
         });
     };
 
+    if issue.reward_amount.unwrap_or(Decimal::ZERO) <= Decimal::ZERO {
+        return Ok(Decision::Waiting {
+            reason: "bounty reward amount has not been configured yet".to_string(),
+        });
+    }
+
     let Some(contract_id) = repo.escrow_contract_id.as_deref() else {
         return Ok(Decision::Blocked {
             reason: "repository has no escrow deployed".to_string(),

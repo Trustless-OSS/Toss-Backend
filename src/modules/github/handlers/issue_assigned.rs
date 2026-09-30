@@ -1,3 +1,4 @@
+use rust_decimal::Decimal;
 use serde_json::Value;
 use tracing::info;
 
@@ -7,6 +8,7 @@ use crate::{
     modules::{
         bounty::repository::{get_issue_by_repo_and_github_id, upsert_assignment},
         contributor::repository::ensure_contributor,
+        github::auth::post_comment,
         repo::repository::get_repo_by_github_id,
     },
     state::AppState,
@@ -49,6 +51,24 @@ pub async fn handle_issue_assigned(state: &AppState, payload: &Value) -> Result<
 
     let profile = ensure_contributor(state, assignee_github_id, assignee_login).await?;
     upsert_assignment(state, issue_record.id, profile.id).await?;
+
+    if issue_record.reward_amount.unwrap_or(Decimal::ZERO) <= Decimal::ZERO {
+        post_comment(
+            state,
+            &repo.full_name,
+            issue_record.github_issue_number,
+            &format!(
+                "⏳ @{assignee_login} is assigned, but this bounty has no amount yet. A maintainer should add a reward level or comment `@toss <amount> USDC`; escrow locking will start automatically afterward."
+            ),
+        )
+        .await?;
+        info!(
+            issue = issue_record.github_issue_number,
+            assignee = assignee_login,
+            "contributor assigned while bounty amount is unconfigured"
+        );
+        return Ok(());
+    }
 
     let outcome = state
         .queue

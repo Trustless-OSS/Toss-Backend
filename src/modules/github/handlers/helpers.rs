@@ -22,25 +22,36 @@ static ISSUE_NUMBER_RE: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 static MANUAL_AMOUNT_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)@(?:toss|trustless-oss)\s+([\d.]+)").expect("valid manual amount regex")
+    Regex::new(r"(?i)@(?:toss|trustless-oss)\s+([0-9]+(?:\.[0-9]+)?)\b")
+        .expect("valid manual amount regex")
 });
 
 static WORK_COMPLETION_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)@(?:toss|trustless-oss)\s+/(pay|split|work|work-completion)\s+(\d+)")
+    Regex::new(
+        r"(?i)@(?:toss|trustless-oss)\s+/?(?:pay|split|work|work-completion|completion)\s+([0-9]+)\b",
+    )
         .expect("valid work completion regex")
 });
 
 static REJECTED_CMD_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)@(?:toss|trustless-oss)\s+/(reject|rejected|no)").expect("valid reject regex")
+    Regex::new(r"(?i)@(?:toss|trustless-oss)\s+/?(?:reject|rejected|no|invalid)\b")
+        .expect("valid reject regex")
 });
 
 static WALLET_CMD_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)@(?:toss|trustless-oss)\s+/(wallet|address|connect|change-address)")
+    Regex::new(
+        r"(?i)@(?:toss|trustless-oss)\s+/?(?:wallet|address|connect|change-address|ch-wallet|ch-address|ch-add)\b",
+    )
         .expect("valid wallet regex")
 });
 
-static HELP_CMD_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)@(?:toss|trustless-oss)\s+/help").expect("valid help regex"));
+static HELP_CMD_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)@(?:toss|trustless-oss)\s+/?(?:help|--h|h)\b").expect("valid help regex")
+});
+
+static RETRY_CMD_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)@(?:toss|trustless-oss)\s+/?retry\b").expect("valid retry regex")
+});
 
 pub fn extract_issue_number(body: Option<&str>) -> Option<i32> {
     let body = body?;
@@ -70,13 +81,16 @@ pub fn has_rejected_label(labels: &[Value]) -> bool {
 }
 
 pub fn is_privileged_association(association: &str) -> bool {
-    matches!(association, "OWNER" | "MEMBER" | "COLLABORATOR")
+    matches!(
+        association.trim().to_ascii_uppercase().as_str(),
+        "OWNER" | "MEMBER" | "COLLABORATOR"
+    )
 }
 
 pub fn work_completion_percentage(body: &str) -> Option<i32> {
     WORK_COMPLETION_RE
         .captures(body)
-        .and_then(|caps| caps.get(2))
+        .and_then(|caps| caps.get(1))
         .and_then(|m| m.as_str().parse().ok())
 }
 
@@ -93,7 +107,7 @@ pub fn is_help_command(body: &str) -> bool {
 }
 
 pub fn is_retry_command(body: &str) -> bool {
-    body.contains("@Trustless-OSS /retry")
+    RETRY_CMD_RE.is_match(body)
 }
 
 pub fn labels_from_payload(issue: &Value) -> Vec<Value> {
@@ -337,10 +351,6 @@ pub fn split_amounts(reward: Decimal, percentage: i32) -> (Decimal, Decimal) {
     (contributor, maintainer)
 }
 
-pub fn maintainer_github_id(_repo: &Repo) -> i64 {
-    0
-}
-
 pub async fn cancel_bounty_with_refund(
     state: &AppState,
     repo: &Repo,
@@ -387,9 +397,14 @@ mod tests {
             work_completion_percentage("@trustless-oss /WORK-COMPLETION 75"),
             Some(75)
         );
+        assert_eq!(work_completion_percentage("@toss pay 60"), Some(60));
         assert!(is_reject_command("@Trustless-OSS /rejected"));
+        assert!(is_reject_command("@toss invalid"));
         assert!(is_wallet_command("@Trustless-OSS /change-address"));
+        assert!(is_wallet_command("@toss wallet"));
         assert!(is_help_command("@trustless-oss /HELP"));
+        assert!(is_help_command("@toss help"));
+        assert!(is_retry_command("@TOSS retry"));
     }
 
     #[test]

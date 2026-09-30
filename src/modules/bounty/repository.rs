@@ -315,7 +315,9 @@ pub async fn update_pending_bounty_reward(
         _ => return Ok(false),
     };
 
-    if bounty.status != "open" {
+    let can_change_before_lock = bounty.status == "open"
+        || (bounty.status == "assigned" && bounty.milestone_index.is_none());
+    if !can_change_before_lock {
         return Ok(false);
     }
 

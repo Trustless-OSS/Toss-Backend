@@ -19,9 +19,8 @@ use crate::{
             handlers::helpers::{
                 cancel_bounty_with_refund, dispute_milestone, extract_issue_number,
                 extract_manual_amount, is_help_command, is_privileged_association,
-                is_reject_command, is_retry_command, is_wallet_command, maintainer_github_id,
-                resolve_milestone_dispute, split_amounts, sync_repo_balance,
-                work_completion_percentage,
+                is_reject_command, is_retry_command, is_wallet_command, resolve_milestone_dispute,
+                split_amounts, sync_repo_balance, work_completion_percentage,
             },
         },
         repo::repository::get_repo_by_github_id,
@@ -95,16 +94,16 @@ pub async fn handle_issue_comment_created(
             state,
             full_name,
             issue_number,
-            "🤖 **Trustless-OSS Bot Commands**\n\n\
+            "🤖 **TOSS Bot**\n\n\
              **For Maintainers:**\n\
-             - `@Trustless-OSS <amount>`: Set a manual bounty\n\
-             - `@Trustless-OSS /pay <percentage>`: Split bounty on merge\n\
-             - `@Trustless-OSS /reject`: Reject work and refund the escrow\n\
-             - `@Trustless-OSS /retry`: Force a re-check (rarely needed — payouts continue automatically)\n\n\
+             - `@toss <amount>`: Set a manual bounty\n\
+             - `@toss pay <percentage>`: Split bounty on merge\n\
+             - `@toss reject`: Reject work and refund the escrow\n\
+             - `@toss retry`: Force a re-check (rarely needed — payouts continue automatically)\n\n\
              **For Contributors:**\n\
-             - `@Trustless-OSS /wallet`: Connect or update your wallet\n\n\
+             - `@toss wallet`: Connect or update your wallet\n\n\
              **General:**\n\
-             - `@Trustless-OSS /help`: Show this command list",
+             - `@toss help`: Show this command list",
         )
         .await?;
         return Ok(());
@@ -227,9 +226,10 @@ async fn handle_payout_command(
         return Ok(());
     };
 
-    // Get maintainer wallet via profile lookup
-    let maintainer_id = maintainer_github_id(&repo);
-    let maintainer_wallet = if maintainer_id != 0 {
+    // The maintainer issuing the command is the wallet recipient. GitHub includes
+    // the comment author's numeric ID in every issue-comment webhook.
+    let maintainer_id = comment_user.get("id").and_then(Value::as_i64);
+    let maintainer_wallet = if let Some(maintainer_id) = maintainer_id {
         if let Some(profile) = get_profile_by_github_id(state, maintainer_id).await? {
             let wallets = get_wallets_for_profile(state, profile.id).await?;
             wallets
@@ -407,7 +407,9 @@ async fn create_or_update_manual_bounty(
 
     let existing = get_issue_by_repo_and_github_id(state, repo.id, github_issue_id).await?;
     if let Some(existing) = existing {
-        if existing.status == "open" {
+        let can_update = existing.status == "open"
+            || (existing.status == "assigned" && existing.milestone_index.is_none());
+        if can_update {
             if !update_pending_issue_reward(state, &repo, existing.id, manual_amount, "manual")
                 .await?
             {
@@ -427,6 +429,14 @@ async fn create_or_update_manual_bounty(
                 &format!("🔄 Bounty updated to **{manual_amount} USDC**!"),
             )
             .await?;
+            if existing.status == "assigned" && existing.milestone_index.is_none() {
+                state
+                    .queue
+                    .enqueue_advance_issue(
+                        BountyJobData::new(existing.id, "reward-configured").notifying(),
+                    )
+                    .await?;
+            }
         }
         return Ok(());
     }
