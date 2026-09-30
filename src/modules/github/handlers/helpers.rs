@@ -4,14 +4,10 @@ use regex::Regex;
 use reqwest::Method;
 use rust_decimal::Decimal;
 use serde_json::{json, Value};
-use tracing::warn;
 
 use crate::{
-    error::AppError,
-    infra::stellar::signer::sign_and_send_transaction,
-    modules::{escrow::trustless_work::api_client::tw_fetch, repo::repository::get_repo_by_id},
-    shared::models::Repo,
-    state::AppState,
+    error::AppError, infra::stellar::signer::sign_and_send_transaction,
+    modules::escrow::trustless_work::api_client::tw_fetch, shared::models::Repo, state::AppState,
 };
 
 static ISSUE_NUMBER_RE: LazyLock<Regex> = LazyLock::new(|| {
@@ -339,10 +335,6 @@ pub async fn zero_milestone_on_chain(
     Ok(())
 }
 
-pub async fn refresh_repo(state: &AppState, repo_id: uuid::Uuid) -> Result<Option<Repo>, AppError> {
-    get_repo_by_id(state, repo_id).await
-}
-
 pub fn split_amounts(reward: Decimal, percentage: i32) -> (Decimal, Decimal) {
     let pct = Decimal::from(percentage);
     let hundred = Decimal::from(100);
@@ -364,10 +356,6 @@ pub async fn cancel_bounty_with_refund(
         Some(reward_amount),
     )
     .await
-}
-
-pub fn log_warn_missing_milestone() {
-    warn!("missing milestone index for active issue");
 }
 
 #[cfg(test)]

@@ -72,18 +72,6 @@ pub async fn tw_fetch(
     })
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use rust_decimal::Decimal;
-
-    #[test]
-    fn decimal_json_string_formats_fund_amount() {
-        let value = decimal_json_string(Decimal::new(1, 2), "amount").unwrap();
-        assert_eq!(value, Value::String("0.01".into()));
-    }
-}
-
 pub async fn health_check(state: &AppState) -> Result<Value, AppError> {
     let escrow_address = state.config.trustless_work_health_escrow_contract.as_str();
     let path = format!(
@@ -100,5 +88,17 @@ pub async fn health_check(state: &AppState) -> Result<Value, AppError> {
             "TrustlessWork health check failed: {}",
             response
         )))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rust_decimal::Decimal;
+
+    #[test]
+    fn decimal_json_string_formats_fund_amount() {
+        let value = decimal_json_string(Decimal::new(1, 2), "amount").unwrap();
+        assert_eq!(value, Value::String("0.01".into()));
     }
 }

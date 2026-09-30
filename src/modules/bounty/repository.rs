@@ -132,33 +132,6 @@ pub async fn get_bounty_with_repo(
     Ok(repo.map(|repo| (bounty, repo)))
 }
 
-pub async fn get_assignee_for_bounty(
-    state: &AppState,
-    bounty_id: Uuid,
-) -> Result<Option<Profile>, AppError> {
-    let mut db = require_db(&state.db)?;
-    let bounty = schema::Bounty::filter_by_id(bounty_id)
-        .first()
-        .exec(&mut db)
-        .await
-        .map_err(map_db_err)?;
-
-    let Some(bounty) = bounty else {
-        return Ok(None);
-    };
-
-    let Some(assignee_id) = bounty.assignee_id else {
-        return Ok(None);
-    };
-
-    Ok(schema::Profile::filter_by_id(assignee_id)
-        .first()
-        .exec(&mut db)
-        .await
-        .map_err(map_db_err)?
-        .map(Profile::from))
-}
-
 pub async fn get_bounty_by_repo_and_github_id(
     state: &AppState,
     repo_id: Uuid,
@@ -357,10 +330,6 @@ pub async fn cancel_bounty(state: &AppState, bounty_id: Uuid) -> Result<(), AppE
     update_bounty_status(state, bounty_id, "cancelled", None).await
 }
 
-pub async fn complete_bounty(state: &AppState, bounty_id: Uuid) -> Result<(), AppError> {
-    update_bounty_status(state, bounty_id, "paid", None).await
-}
-
 pub async fn reset_bounty_to_open(state: &AppState, bounty_id: Uuid) -> Result<(), AppError> {
     let mut db = require_db(&state.db)?;
     toasty::update!(schema::Bounty::filter_by_id(bounty_id) {
@@ -446,7 +415,6 @@ pub async fn fail_bounties_for_ids(state: &AppState, bounty_ids: &[Uuid]) -> Res
 
 pub use assign_bounty as upsert_assignment;
 pub use cancel_bounty as cancel_issue;
-pub use complete_bounty as complete_issue;
 pub use fail_bounties_for_ids as fail_assignments_for_issues;
 pub use get_bounty_by_id as get_issue_by_id;
 pub use get_bounty_by_repo_and_github_id as get_issue_by_repo_and_github_id;
