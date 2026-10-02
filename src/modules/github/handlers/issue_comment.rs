@@ -202,7 +202,18 @@ async fn handle_payout_command(
     }
 
     let Some(milestone_index) = issue.milestone_index else {
-        tracing::warn!(issue = target_number, "active issue has no milestone index");
+        if is_reject_command(body) {
+            cancel_bounty_with_refund(state, &repo, issue.id, reward).await?;
+            post_comment(
+                state,
+                full_name,
+                target_number,
+                &comments::bounty_cancelled(reward),
+            )
+            .await?;
+        } else {
+            tracing::warn!(issue = target_number, "active issue has no milestone index");
+        }
         return Ok(());
     };
 

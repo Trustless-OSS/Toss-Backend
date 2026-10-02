@@ -9,9 +9,25 @@ use crate::{
     state::AppState,
 };
 
+async fn repo_with_rewards(
+    db: &mut toasty::Db,
+    repo: schema::Repository,
+) -> Result<Repo, AppError> {
+    let rewards = schema::Reward::filter_by_repo_id(repo.id)
+        .exec(db)
+        .await
+        .map_err(map_db_err)?;
+    Ok(Repo::from_parts(repo, rewards))
+}
+
 pub async fn get_repo_by_id(state: &AppState, repo_id: Uuid) -> Result<Option<Repo>, AppError> {
     let cache_key = cache_keys::repo(repo_id);
-    if let Some(cached) = state.cache.get::<Repo>(&cache_key).await {
+    if let Some(cached) = state
+        .cache
+        .get::<Repo>(&cache_key)
+        .await
+        .filter(|repo| !repo.rewards.is_empty())
+    {
         return Ok(Some(cached));
     }
 
@@ -20,8 +36,11 @@ pub async fn get_repo_by_id(state: &AppState, repo_id: Uuid) -> Result<Option<Re
         .first()
         .exec(&mut db)
         .await
-        .map_err(map_db_err)?
-        .map(Repo::from);
+        .map_err(map_db_err)?;
+    let repo = match repo {
+        Some(repo) => Some(repo_with_rewards(&mut db, repo).await?),
+        None => None,
+    };
 
     if let Some(ref repo) = repo {
         state
@@ -46,7 +65,12 @@ pub async fn get_repo_by_github_id(
     github_repo_id: i64,
 ) -> Result<Option<Repo>, AppError> {
     let cache_key = cache_keys::repo_by_github_id(github_repo_id);
-    if let Some(cached) = state.cache.get::<Repo>(&cache_key).await {
+    if let Some(cached) = state
+        .cache
+        .get::<Repo>(&cache_key)
+        .await
+        .filter(|repo| !repo.rewards.is_empty())
+    {
         return Ok(Some(cached));
     }
 
@@ -55,8 +79,11 @@ pub async fn get_repo_by_github_id(
         .first()
         .exec(&mut db)
         .await
-        .map_err(map_db_err)?
-        .map(Repo::from);
+        .map_err(map_db_err)?;
+    let repo = match repo {
+        Some(repo) => Some(repo_with_rewards(&mut db, repo).await?),
+        None => None,
+    };
 
     if let Some(ref repo) = repo {
         state
@@ -123,21 +150,25 @@ pub async fn list_repos_for_user(
                 .await
                 .map_err(map_db_err)?
             {
-                repos.push(Repo::from(repo));
+                repos.push(repo_with_rewards(&mut db, repo).await?);
             }
         }
         repos
     } else if let Some(username) = github_username.filter(|v| !v.is_empty()) {
         // Fallback: match by full_name prefix (owner/*)
         let prefix = format!("{username}/");
-        let all = schema::Repository::all()
+        let rows = schema::Repository::all()
             .exec(&mut db)
             .await
             .map_err(map_db_err)?;
-        all.into_iter()
-            .filter(|r| r.full_name.starts_with(&prefix))
-            .map(Repo::from)
-            .collect()
+        let mut repos = Vec::new();
+        for repo in rows
+            .into_iter()
+            .filter(|repo| repo.full_name.starts_with(&prefix))
+        {
+            repos.push(repo_with_rewards(&mut db, repo).await?);
+        }
+        repos
     } else {
         return Err(AppError::bad_request(
             "Could not determine GitHub identity from session",
@@ -175,7 +206,7 @@ pub async fn upsert_repo(
             .map_err(map_db_err)?;
     }
 
-    Ok(Repo::from(repo))
+    repo_with_rewards(&mut db, repo).await
 }
 
 pub async fn upsert_repo_with_maintainer(
