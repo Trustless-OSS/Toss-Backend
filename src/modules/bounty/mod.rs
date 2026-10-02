@@ -1,4 +1,5 @@
 pub mod automation;
+pub mod handler;
 pub mod labels;
 pub mod model;
 pub mod repository;

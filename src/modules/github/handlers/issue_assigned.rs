@@ -8,7 +8,7 @@ use crate::{
     modules::{
         bounty::repository::{get_issue_by_repo_and_github_id, upsert_assignment},
         contributor::repository::ensure_contributor,
-        github::auth::post_comment,
+        github::{auth::post_comment, comments},
         repo::repository::get_repo_by_github_id,
     },
     state::AppState,
@@ -57,9 +57,7 @@ pub async fn handle_issue_assigned(state: &AppState, payload: &Value) -> Result<
             state,
             &repo.full_name,
             issue_record.github_issue_number,
-            &format!(
-                "⏳ @{assignee_login} is assigned, but this bounty has no amount yet. A maintainer should add a reward level or comment `@toss <amount> USDC`; escrow locking will start automatically afterward."
-            ),
+            &comments::contributor_assigned_without_amount(assignee_login),
         )
         .await?;
         info!(

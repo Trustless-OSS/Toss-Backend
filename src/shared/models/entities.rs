@@ -145,6 +145,9 @@ pub struct Notification {
     pub title: String,
     pub body: Option<String>,
     pub ref_id: Option<Uuid>,
+    pub dedupe_key: String,
+    pub email_status: String,
+    pub email_sent_at: Option<DateTime<Utc>>,
     pub is_read: bool,
     pub created_at: DateTime<Utc>,
 }
@@ -232,6 +235,9 @@ impl From<schema::Notification> for Notification {
             title: v.title,
             body: v.body,
             ref_id: v.ref_id,
+            dedupe_key: v.dedupe_key,
+            email_status: v.email_status,
+            email_sent_at: opt_ts(v.email_sent_at),
             is_read: v.is_read,
             created_at: ts(v.created_at),
         }

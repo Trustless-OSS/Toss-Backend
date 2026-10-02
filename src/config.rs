@@ -9,17 +9,11 @@ pub struct Config {
     pub node_env: String,
     pub database_url: String,
     pub redis_url: String,
-    /// Redis key prefix for every BullMQ queue (`bull` matches the BullMQ default).
     pub bullmq_prefix: String,
-    /// How many jobs each BullMQ worker processes concurrently.
     pub bullmq_concurrency: usize,
-    /// How long a worker holds a job lock before it can be considered stalled.
     pub bullmq_lock_duration_ms: u64,
-    /// How often workers scan for stalled `active` jobs.
     pub bullmq_stalled_interval_ms: u64,
-    /// How many times a stalled job is re-queued before it is failed.
     pub bullmq_max_stalled_count: u32,
-    /// Unused: repeating `escrow-balance-sync` was removed (sync is on fund/release).
     pub escrow_sync_interval_secs: u64,
     pub supabase_url: String,
     pub supabase_auth_api_key: String,
@@ -41,6 +35,7 @@ pub struct Config {
     pub smee_source_url: String,
     pub smee_target_url: String,
     pub resend_api_key: String,
+    pub email_from: String,
 }
 
 impl Config {
@@ -104,6 +99,8 @@ impl Config {
             smee_source_url: required_env("SMEE_SOURCE_URL")?,
             smee_target_url: required_env("SMEE_TARGET_URL")?,
             resend_api_key: required_env("RESEND_API_KEY")?,
+            email_from: optional_env("EMAIL_FROM")
+                .unwrap_or_else(|| "TOSS <onboarding@resend.dev>".to_string()),
         })
     }
 

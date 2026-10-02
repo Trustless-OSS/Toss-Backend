@@ -7,7 +7,7 @@ use crate::{
         bounty::repository::{
             delete_assignments_for_issue, get_issue_by_repo_and_github_id, reset_issue_to_pending,
         },
-        github::{auth::post_comment, handlers::helpers::zero_milestone_on_chain},
+        github::{auth::post_comment, comments, handlers::helpers::zero_milestone_on_chain},
         repo::repository::get_repo_by_github_id,
     },
     state::AppState,
@@ -60,9 +60,7 @@ pub async fn handle_issue_unassigned(state: &AppState, payload: &Value) -> Resul
         state,
         full_name,
         issue_number,
-        &format!(
-            "🔄 Contributor unassigned. The milestone has been closed. The bounty of **{reward} USDC** remains available for the next assignee."
-        ),
+        &comments::contributor_unassigned(reward),
     )
     .await?;
 

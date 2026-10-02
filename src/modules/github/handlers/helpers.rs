@@ -18,36 +18,32 @@ static ISSUE_NUMBER_RE: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 static MANUAL_AMOUNT_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)@(?:toss|trustless-oss)\s+([0-9]+(?:\.[0-9]+)?)\b")
-        .expect("valid manual amount regex")
+    Regex::new(r"(?i)@trustless-oss\s+([0-9]+(?:\.[0-9]+)?)\b").expect("valid manual amount regex")
 });
 
 static WORK_COMPLETION_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r"(?i)@(?:toss|trustless-oss)\s+/?(?:pay|split|work|work-completion|completion)\s+([0-9]+)\b",
-    )
+    Regex::new(r"(?i)@trustless-oss\s+/?(?:pay|split|work|work-completion|completion)\s+([0-9]+)\b")
         .expect("valid work completion regex")
 });
 
 static REJECTED_CMD_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)@(?:toss|trustless-oss)\s+/?(?:reject|rejected|no|invalid)\b")
+    Regex::new(r"(?i)@trustless-oss\s+/?(?:reject|rejected|no|invalid)\b")
         .expect("valid reject regex")
 });
 
 static WALLET_CMD_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"(?i)@(?:toss|trustless-oss)\s+/?(?:wallet|address|connect|change-address|ch-wallet|ch-address|ch-add)\b",
+        r"(?i)@trustless-oss\s+/?(?:wallet|address|connect|change-address|ch-wallet|ch-address|ch-add)\b",
     )
         .expect("valid wallet regex")
 });
 
 static HELP_CMD_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)@(?:toss|trustless-oss)\s+/?(?:help|--h|h)\b").expect("valid help regex")
+    Regex::new(r"(?i)@trustless-oss\s+/?(?:help|--h|h)\b").expect("valid help regex")
 });
 
-static RETRY_CMD_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)@(?:toss|trustless-oss)\s+/?retry\b").expect("valid retry regex")
-});
+static RETRY_CMD_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)@trustless-oss\s+/?retry\b").expect("valid retry regex"));
 
 pub fn extract_issue_number(body: Option<&str>) -> Option<i32> {
     let body = body?;
@@ -385,14 +381,17 @@ mod tests {
             work_completion_percentage("@trustless-oss /WORK-COMPLETION 75"),
             Some(75)
         );
-        assert_eq!(work_completion_percentage("@toss pay 60"), Some(60));
+        assert_eq!(
+            work_completion_percentage("@trustless-oss pay 60"),
+            Some(60)
+        );
         assert!(is_reject_command("@Trustless-OSS /rejected"));
-        assert!(is_reject_command("@toss invalid"));
+        assert!(is_reject_command("@trustless-oss invalid"));
         assert!(is_wallet_command("@Trustless-OSS /change-address"));
-        assert!(is_wallet_command("@toss wallet"));
+        assert!(is_wallet_command("@trustless-oss wallet"));
         assert!(is_help_command("@trustless-oss /HELP"));
-        assert!(is_help_command("@toss help"));
-        assert!(is_retry_command("@TOSS retry"));
+        assert!(is_help_command("@trustless-oss help"));
+        assert!(is_retry_command("@TRUSTLESS-OSS retry"));
     }
 
     #[test]

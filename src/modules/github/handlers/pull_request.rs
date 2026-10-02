@@ -10,6 +10,7 @@ use crate::{
         },
         github::{
             auth::post_comment,
+            comments,
             handlers::helpers::{extract_issue_number, has_rejected_label, labels_from_payload},
         },
         repo::repository::get_repo_by_github_id,
@@ -79,9 +80,7 @@ pub async fn handle_pr_merged(state: &AppState, payload: &Value) -> Result<(), A
             state,
             full_name,
             issue_number,
-            &format!(
-                "⚠️ The author of this PR does not match the assigned contributor for issue #{issue_number}. Payout aborted."
-            ),
+            &comments::payout_aborted_for_pr_author(issue_number),
         )
         .await?;
         return Ok(());

@@ -134,8 +134,12 @@ CREATE TABLE "notifications" (
     "title" TEXT NOT NULL,
     "body" TEXT,
     "ref_id" UUID,
+    "dedupe_key" TEXT NOT NULL,
+    "email_status" TEXT NOT NULL,
+    "email_sent_at" TIMESTAMPTZ(6),
     "is_read" BOOLEAN NOT NULL,
     "created_at" TIMESTAMPTZ(6) NOT NULL,
     PRIMARY KEY ("id")
 );
 CREATE INDEX "index_notifications_by_profile_id" ON "notifications" ("profile_id");
+CREATE UNIQUE INDEX "index_notifications_by_dedupe_key" ON "notifications" ("dedupe_key");

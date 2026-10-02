@@ -20,6 +20,14 @@ pub struct Notification {
     pub body: Option<String>,
     pub ref_id: Option<Uuid>,
 
+    #[unique]
+    pub dedupe_key: String,
+
+    #[default(String::from("not_requested"))]
+    pub email_status: String,
+
+    pub email_sent_at: Option<Timestamp>,
+
     #[default(false)]
     pub is_read: bool,
 

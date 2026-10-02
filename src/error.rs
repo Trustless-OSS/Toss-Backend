@@ -149,7 +149,7 @@ pub fn unauthorized_response() -> Response {
         .into_response()
 }
 
-/// Cheap clone of the Toasty pool handle (for `let mut db = require_db(&state.db)?;`).
+///  Cheap clone of the Toasty pool handle (for `let mut db = require_db(&state.db)?;`).
 pub fn require_db(db: &toasty::Db) -> Result<toasty::Db, AppError> {
     Ok(db.clone())
 }

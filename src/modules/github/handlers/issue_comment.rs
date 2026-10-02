@@ -16,6 +16,7 @@ use crate::{
         escrow::repository::refund_repo_balance,
         github::{
             auth::post_comment,
+            comments,
             handlers::helpers::{
                 cancel_bounty_with_refund, dispute_milestone, extract_issue_number,
                 extract_manual_amount, is_help_command, is_privileged_association,
@@ -81,31 +82,14 @@ pub async fn handle_issue_comment_created(
             state,
             full_name,
             issue_number,
-            &format!(
-                "👋 Hey @{commenter_login}! You can update your wallet address here: [**Update Wallet →**]({connect_url})"
-            ),
+            &comments::wallet_update(commenter_login, &connect_url),
         )
         .await?;
         return Ok(());
     }
 
     if is_help_command(body) {
-        post_comment(
-            state,
-            full_name,
-            issue_number,
-            "🤖 **TOSS Bot**\n\n\
-             **For Maintainers:**\n\
-             - `@toss <amount>`: Set a manual bounty\n\
-             - `@toss pay <percentage>`: Split bounty on merge\n\
-             - `@toss reject`: Reject work and refund the escrow\n\
-             - `@toss retry`: Force a re-check (rarely needed — payouts continue automatically)\n\n\
-             **For Contributors:**\n\
-             - `@toss wallet`: Connect or update your wallet\n\n\
-             **General:**\n\
-             - `@toss help`: Show this command list",
-        )
-        .await?;
+        post_comment(state, full_name, issue_number, comments::HELP).await?;
         return Ok(());
     }
 
@@ -192,9 +176,7 @@ async fn handle_payout_command(
                 state,
                 full_name,
                 target_number,
-                &format!(
-                    "### 🛑 Bounty Cancelled\n\nThis issue was rejected by a maintainer. The **{reward} USDC** bounty has been returned to the pool."
-                ),
+                &comments::bounty_cancelled(reward),
             )
             .await?;
         }
@@ -213,9 +195,7 @@ async fn handle_payout_command(
             state,
             full_name,
             comment_issue_number,
-            &format!(
-                "⚠️ The author of this PR does not match the assigned contributor for issue #{target_number}."
-            ),
+            &comments::pr_author_mismatch(target_number),
         )
         .await?;
         return Ok(());
@@ -252,10 +232,7 @@ async fn handle_payout_command(
             state,
             full_name,
             comment_issue_number,
-            &format!(
-                "### 🔑 Wallet Required\n\n@{login}, connect your Stellar wallet before using this command: [**Connect Wallet →**]({}/connect)",
-                state.config.app_url
-            ),
+            &comments::maintainer_wallet_required(login, &state.config.app_url),
         )
         .await?;
         return Ok(());
@@ -267,7 +244,7 @@ async fn handle_payout_command(
                 state,
                 full_name,
                 comment_issue_number,
-                "⚠️ **Invalid Split:** Percentage must be between 1 and 99.",
+                comments::INVALID_SPLIT,
             )
             .await?;
             return Ok(());
@@ -284,10 +261,7 @@ async fn handle_payout_command(
                 state,
                 full_name,
                 comment_issue_number,
-                &format!(
-                    "### 🔑 Contributor Wallet Missing\n\n@{} must connect a Stellar wallet before a split can be configured.",
-                    contributor.username
-                ),
+                &comments::contributor_wallet_missing(&contributor.username),
             )
             .await?;
             return Ok(());
@@ -299,13 +273,11 @@ async fn handle_payout_command(
             state,
             full_name,
             target_number,
-            &format!(
-                "### 📋 Payout Intent Saved ({percentage}%)\n\n\
-                 When this PR is merged, the bounty will be split:\n\
-                 - **{contributor_amount} USDC** → @{}\n\
-                 - **{maintainer_amount} USDC** → maintainer\n\n\
-                 _Update anytime with `/pay <percentage>` before merging._",
-                contributor.username
+            &comments::payout_intent_saved(
+                percentage,
+                contributor_amount,
+                maintainer_amount,
+                &contributor.username,
             ),
         )
         .await?;
@@ -339,9 +311,7 @@ async fn handle_payout_command(
             state,
             full_name,
             target_number,
-            &format!(
-                "### 🛑 Bounty Rejected\n\nThe maintainer rejected the work. **{reward} USDC** has been returned to the maintainer's wallet.\n\n[View Escrow](https://viewer.trustlesswork.com/{contract_id})"
-            ),
+            &comments::bounty_rejected(reward, contract_id),
         )
         .await?;
     }
@@ -375,14 +345,7 @@ async fn retry_bounty(
         "manual retry command received"
     );
 
-    post_comment(
-        state,
-        full_name,
-        issue_number,
-        "🔄 Re-checking this bounty now. Note that you should not normally need this — \
-         the payout continues by itself once its conditions are met.",
-    )
-    .await?;
+    post_comment(state, full_name, issue_number, comments::RETRYING_BOUNTY).await?;
 
     Ok(())
 }
@@ -417,7 +380,7 @@ async fn create_or_update_manual_bounty(
                     state,
                     full_name,
                     issue_number,
-                    "⚠️ The bounty could not be updated because the available escrow balance is too low.",
+                    comments::BOUNTY_UPDATE_FAILED,
                 )
                 .await?;
                 return Ok(());
@@ -426,7 +389,7 @@ async fn create_or_update_manual_bounty(
                 state,
                 full_name,
                 issue_number,
-                &format!("🔄 Bounty updated to **{manual_amount} USDC**!"),
+                &comments::manual_bounty_updated(manual_amount),
             )
             .await?;
             if existing.status == "assigned" && existing.milestone_index.is_none() {
@@ -450,10 +413,7 @@ async fn create_or_update_manual_bounty(
             state,
             full_name,
             issue_number,
-            &format!(
-                "⚠️ Insufficient escrow balance (**{balance} USDC**). Need **{manual_amount} USDC**.\n\n[Top up your escrow →]({}/dashboard)",
-                state.config.app_url
-            ),
+            &comments::manual_insufficient_balance(balance, manual_amount, &state.config.app_url),
         )
         .await?;
         return Ok(());
@@ -479,14 +439,7 @@ async fn create_or_update_manual_bounty(
         state,
         full_name,
         issue_number,
-        &format!(
-            "🎯 Bounty of **{manual_amount} USDC** created by @{commenter_login}!\n\n\
-             | Detail | Value |\n|---|---|\n\
-             | 💰 Reward | **{manual_amount} USDC** |\n\
-             | 📊 Level | `manual` |\n\
-             | 📋 Escrow | [View on-chain →](https://viewer.trustlesswork.com/{contract_id}) |\n\n\
-             Assign a contributor to get started."
-        ),
+        &comments::manual_bounty_created(manual_amount, contract_id, commenter_login),
     )
     .await?;
 

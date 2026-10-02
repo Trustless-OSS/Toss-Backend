@@ -14,6 +14,7 @@ use crate::{
         escrow::repository::refund_repo_balance,
         github::{
             auth::post_comment,
+            comments,
             handlers::helpers::{extract_manual_amount, labels_from_payload, sync_repo_balance},
         },
         repo::repository::get_repo_by_github_id,
@@ -100,9 +101,7 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
                     state,
                     full_name,
                     issue_number,
-                    &format!(
-                        "### 🛑 Bounty Cancelled\n\nThis issue was rejected by a maintainer. The **{reward} USDC** bounty has been returned to the pool."
-                    ),
+                    &comments::bounty_cancelled(reward),
                 )
                 .await?;
             }
@@ -150,14 +149,11 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
             return Ok(());
         };
 
-        let contract_id = repo.escrow_contract_id.as_deref().unwrap_or("");
         post_comment(
             state,
             full_name,
             issue_number,
-            &format!(
-                "### 💰 Bounty Created\n\nNo reward level or amount is set yet. Add a `low`, `medium`, or `high` label, or comment `@toss <amount> USDC`. Assignments will wait until the amount is configured.\n\n[View Escrow →](https://viewer.trustlesswork.com/{contract_id})"
-            ),
+            comments::UNPRICED_BOUNTY_CREATED,
         )
         .await?;
         info!(repo = full_name, issue = issue_number, bounty = %created.id, "unpriced bounty issue created");
@@ -193,7 +189,7 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
             state,
             full_name,
             issue_number,
-            "### ⚠️ Amount Needed\n\nComment `@toss <amount> USDC` to configure this manual bounty. The contributor can be assigned now, but escrow locking waits for the amount.",
+            comments::MANUAL_AMOUNT_NEEDED,
         )
         .await?;
         return Ok(());
@@ -207,7 +203,7 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
                 state,
                 full_name,
                 issue_number,
-                "⚠️ The bounty could not be updated because the available escrow balance is too low.",
+                comments::BOUNTY_UPDATE_FAILED,
             )
             .await?;
             return Ok(());
@@ -217,7 +213,7 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
             state,
             full_name,
             issue_number,
-            &format!("🔄 **Bounty Updated:** **{reward_amount} USDC** (`{diff_label}`)"),
+            &comments::labeled_bounty_updated(reward_amount, diff_label),
         )
         .await?;
         if existing.status == "assigned" && existing.milestone_index.is_none() {
@@ -247,12 +243,7 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
             state,
             full_name,
             issue_number,
-            &format!(
-                "### ⚠️ Insufficient Balance\n\n\
-                 Escrow balance (**{balance} USDC**) is too low for this **{reward_amount} USDC** bounty.\n\n\
-                 [**Top Up Escrow →**]({}/dashboard)",
-                state.config.app_url
-            ),
+            &comments::labeled_insufficient_balance(balance, reward_amount, &state.config.app_url),
         )
         .await?;
         return Ok(());
@@ -278,13 +269,7 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
         state,
         full_name,
         issue_number,
-        &format!(
-            "### 💰 Bounty Created!\n\n\
-             | Reward | Level | Escrow |\n\
-             | :--- | :--- | :--- |\n\
-             | **{reward_amount} USDC** | `{diff_label}` | [View On-Chain →](https://viewer.trustlesswork.com/{contract_id}) |\n\n\
-             Add or change the amount anytime before assignment. Assign a contributor to lock the funds."
-        ),
+        &comments::labeled_bounty_created(reward_amount, diff_label, contract_id),
     )
     .await?;
 
