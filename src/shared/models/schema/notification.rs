@@ -18,6 +18,8 @@ pub struct Notification {
     pub kind: String,
     pub title: String,
     pub body: Option<String>,
+    #[column(type = jsonb)]
+    pub data: Option<serde_json::Value>,
     pub ref_id: Option<Uuid>,
 
     #[unique]
