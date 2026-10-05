@@ -41,6 +41,24 @@ pub async fn invalidate_contributor_cache(state: &AppState, github_id: i64) {
         .await;
 }
 
+pub async fn set_profile_email(
+    state: &AppState,
+    github_id: i64,
+    email: &str,
+) -> Result<(), AppError> {
+    let mut db = require_db(&state.db)?;
+
+    toasty::update!(schema::Profile::filter_by_github_id(github_id) {
+        email: Some(email.to_string()),
+    })
+    .exec(&mut db)
+    .await
+    .map_err(map_db_err)?;
+
+    invalidate_contributor_cache(state, github_id).await;
+    Ok(())
+}
+
 pub async fn upsert_contributor_wallet(
     state: &AppState,
     github_id: i64,

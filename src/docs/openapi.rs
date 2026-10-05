@@ -40,6 +40,7 @@ impl Modify for SecurityAddon {
         (name = "Contributor", description = "Contributor profile and payout wallet"),
         (name = "Bounty", description = "Milestones and issue bounty retries"),
         (name = "Escrow", description = "Stellar escrow deploy, fund, refund, and close"),
+        (name = "Notifications", description = "In-app and email notifications"),
         (name = "GitHub", description = "GitHub App webhook ingestion")
     ),
     paths(
@@ -69,6 +70,10 @@ impl Modify for SecurityAddon {
         crate::modules::escrow::handler::refund,
         crate::modules::escrow::handler::close_unsigned,
         crate::modules::escrow::handler::submit_close,
+        crate::modules::notification::handlers::list_notifications,
+        crate::modules::notification::handlers::unread_count,
+        crate::modules::notification::handlers::read_all,
+        crate::modules::notification::handlers::read_one,
         crate::modules::github::routes::handle_github_webhook,
     ),
     components(schemas(
@@ -110,6 +115,8 @@ impl Modify for SecurityAddon {
         crate::modules::escrow::dto::ContractIdResponse,
         crate::modules::escrow::dto::SubmitFundResponse,
         crate::modules::escrow::dto::RefundResponse,
+        crate::modules::notification::handlers::NotificationResponse,
+        crate::modules::notification::handlers::UnreadCountResponse,
         crate::modules::github::routes::GitHubWebhookPayload,
     ))
 )]
@@ -146,6 +153,10 @@ mod tests {
         "/api/v1/escrow/refund",
         "/api/v1/escrow/close-unsigned",
         "/api/v1/escrow/submit-close",
+        "/api/v1/notifications",
+        "/api/v1/notifications/unread-count",
+        "/api/v1/notifications/read-all",
+        "/api/v1/notifications/{id}/read",
         "/api/v1/webhooks/github",
     ];
 
@@ -168,6 +179,10 @@ mod tests {
         ("/api/v1/escrow/refund", "post"),
         ("/api/v1/escrow/close-unsigned", "post"),
         ("/api/v1/escrow/submit-close", "post"),
+        ("/api/v1/notifications", "get"),
+        ("/api/v1/notifications/unread-count", "get"),
+        ("/api/v1/notifications/read-all", "post"),
+        ("/api/v1/notifications/{id}/read", "post"),
     ];
 
     #[test]

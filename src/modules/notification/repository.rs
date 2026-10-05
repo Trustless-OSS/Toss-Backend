@@ -3,12 +3,15 @@ use crate::shared::models::{entities::Notification, schema};
 use crate::state::AppState;
 use uuid::Uuid;
 
+use super::kinds::Delivery;
+
 pub struct Repository;
 
 impl Repository {
     pub async fn insert(
         state: &AppState,
         n: &super::kinds::Notify,
+        delivery: &Delivery,
     ) -> Result<Option<Notification>, AppError> {
         let mut db = require_db(&state.db)?;
         match toasty::create!(schema::Notification {
@@ -19,7 +22,10 @@ impl Repository {
             ref_id: n.ref_id,
             dedupe_key: n.dedupe_key.clone(),
             data: Some(n.data.clone()),
-            email_status: if n.email { "pending" } else { "not_requested" }.to_string(),
+            email_status: match delivery {
+                Delivery::BellAndEmail => "pending".to_string(),
+                _ => "not_requested".to_string(),
+            },
         })
         .exec(&mut db)
         .await
@@ -109,7 +115,7 @@ impl Repository {
         let mut db = require_db(&state.db)?;
 
         if let Some(id) = id {
-            toasty::update!(schema::Notification::filter_by_id(id) {
+            toasty::update!(schema::Notification::filter_by_id(id).filter_by_profile_id(profile_id) {
                 is_read: true
             })
             .exec(&mut db)

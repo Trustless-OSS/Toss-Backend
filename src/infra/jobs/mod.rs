@@ -6,8 +6,8 @@ use tracing::{error, info, warn};
 use crate::{
     error::AppError,
     infra::queue::{
-        BountyJobData, JOB_ADVANCE_ISSUE, JOB_GITHUB_WEBHOOK, JOB_PUSH_MILESTONE,
-        JOB_RELEASE_PAYOUT,
+        BountyJobData, NotificationJobData, JOB_ADVANCE_ISSUE, JOB_GITHUB_WEBHOOK,
+        JOB_NOTIFY_EMAIL, JOB_PUSH_MILESTONE, JOB_RELEASE_PAYOUT,
     },
     state::AppState,
 };
@@ -47,6 +47,25 @@ pub async fn process(
         JOB_RELEASE_PAYOUT => advance::run_release_payout(state, &job)
             .await
             .map(JobOutcome::Done),
+        JOB_NOTIFY_EMAIL => {
+            if let Ok(data) = payload::<NotificationJobData>(&job) {
+                match crate::modules::notification::service::Service::deliver_email(
+                    state,
+                    data.notification_id,
+                )
+                .await
+                {
+                    Ok(_) => Ok(JobOutcome::Done(serde_json::json!({
+                        "notificationId": data.notification_id,
+                    }))),
+                    Err(e) => Err(e),
+                }
+            } else {
+                Err(AppError::webhook(
+                    "invalid notification job payload".to_string(),
+                ))
+            }
+        }
         other => {
             warn!(job = other, job_id = %id, "unknown job name ignored");
             Ok(JobOutcome::Done(serde_json::json!({ "skipped": other })))

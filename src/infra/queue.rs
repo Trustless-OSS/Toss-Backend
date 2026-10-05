@@ -33,9 +33,11 @@ const BOUNTY_ATTEMPTS: u32 = 5;
 
 const WEBHOOK_BACKOFF_MS: u64 = 2_000;
 const BOUNTY_BACKOFF_MS: u64 = 5_000;
+const NOTIFY_BACKOFF_MS: u64 = 5_000;
 
 const WEBHOOK_KEEP_COMPLETED_MS: u64 = 24 * 60 * 60 * 1_000;
 const KEEP_FAILED_MS: u64 = 7 * 24 * 60 * 60 * 1_000;
+const NOTIFY_ATTEMPTS: u32 = 5;
 
 const DIRTY_FLAG_SUFFIX: &str = "toss:advance:dirty:";
 const DIRTY_FLAG_TTL_SECS: u64 = 3_600;
@@ -64,6 +66,12 @@ pub struct BountyJobData {
     pub notify: bool,
     #[serde(default)]
     pub hops: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NotificationJobData {
+    pub notification_id: Uuid,
 }
 
 pub const MAX_HOPS: u32 = 6;
@@ -135,6 +143,7 @@ impl EnqueueOutcome {
 struct Queues {
     webhooks: Queue,
     bounty: Queue,
+    notify: Queue,
 }
 
 #[derive(Clone)]
@@ -142,6 +151,42 @@ pub struct QueueInfra {
     queues: Option<Arc<Queues>>,
     redis: Option<RedisClient>,
     prefix: String,
+}
+
+#[derive(Clone)]
+pub struct NotifyQueue {
+    queue: Option<Arc<Queue>>,
+}
+
+impl NotifyQueue {
+    pub async fn add(
+        &self,
+        job_name: &str,
+        data: NotificationJobData,
+        job_id: &str,
+    ) -> Result<(), AppError> {
+        let Some(queue) = self.queue.as_ref() else {
+            return Ok(());
+        };
+
+        let options = JobOptions::new()
+            .attempts(NOTIFY_ATTEMPTS)
+            .backoff(BackoffStrategy::Exponential(NOTIFY_BACKOFF_MS))
+            .remove_on_complete(RemoveOnFinish::Bool(true))
+            .remove_on_fail(RemoveOnFinish::Options(KeepJobs {
+                age: Some(KEEP_FAILED_MS),
+                count: Some(1_000),
+                limit: None,
+            }));
+
+        queue
+            .add(job_name, &data)
+            .options(options)
+            .job_id(job_id)
+            .await
+            .map(|_| ())
+            .map_err(queue_error)
+    }
 }
 
 impl QueueInfra {
@@ -175,6 +220,9 @@ impl QueueInfra {
                 bounty: Queue::with_options(BOUNTY_QUEUE, options())
                     .await
                     .map_err(queue_error)?,
+                notify: Queue::with_options(NOTIFY_QUEUE, options())
+                    .await
+                    .map_err(queue_error)?,
             })),
             redis,
             prefix: prefix.to_string(),
@@ -183,6 +231,12 @@ impl QueueInfra {
 
     pub fn is_enabled(&self) -> bool {
         self.queues.is_some()
+    }
+
+    pub fn notify_queue(&self) -> NotifyQueue {
+        NotifyQueue {
+            queue: self.queues.as_ref().map(|q| Arc::new(q.notify.clone())),
+        }
     }
 
     pub async fn enqueue_webhook(
@@ -549,6 +603,7 @@ impl QueueInfra {
         };
         queues.webhooks.close().await;
         queues.bounty.close().await;
+        queues.notify.close().await;
     }
 }
 
@@ -649,9 +704,23 @@ pub async fn start_workers(state: AppState) -> Result<Workers, AppError> {
     .await
     .map_err(queue_error)?;
 
+    // notification email queue with concurrency 4
+    let notify_state = state.clone();
+    let notify = Worker::with_options(
+        NOTIFY_QUEUE,
+        move |job: bullmq::Job, _token| {
+            let state = notify_state.clone();
+            async move { crate::infra::jobs::process(&state, job).await }
+        },
+        worker_options(NOTIFY_QUEUE, 4),
+    )
+    .await
+    .map_err(queue_error)?;
+
     tracing::info!(
         webhooks = WEBHOOK_QUEUE,
         bounty = BOUNTY_QUEUE,
+        notify = NOTIFY_QUEUE,
         concurrency,
         lock_duration_ms = lock_duration.as_millis() as u64,
         stalled_interval_ms = stalled_interval.as_millis() as u64,
@@ -660,7 +729,7 @@ pub async fn start_workers(state: AppState) -> Result<Workers, AppError> {
     );
 
     Ok(Workers {
-        workers: vec![webhooks, bounty],
+        workers: vec![webhooks, bounty, notify],
     })
 }
 

@@ -60,6 +60,18 @@ pub(crate) async fn connect_wallet(
     )
     .await?;
 
+    // Update email if provided
+    if let Some(email) = user.email {
+        if !email.is_empty() {
+            let _ = crate::modules::contributor::repository::set_profile_email(
+                &state,
+                user.github_id,
+                &email,
+            )
+            .await;
+        }
+    }
+
     resume_parked_bounties(&state, user.github_id).await;
 
     Ok(Json(OkResponse { ok: true }))
@@ -124,9 +136,22 @@ pub(crate) async fn get_contributor_me(
 
     let profile = get_profile_by_github_id(&state, user.github_id).await?;
 
-    let Some(profile) = profile else {
+    let Some(mut profile) = profile else {
         return Ok(Json(ContributorMeResponse { contributor: None }));
     };
+
+    // Update email if provided and different
+    if let Some(email) = &user.email {
+        if !email.is_empty() && profile.email.as_ref() != Some(email) {
+            let _ = crate::modules::contributor::repository::set_profile_email(
+                &state,
+                user.github_id,
+                email,
+            )
+            .await;
+            profile.email = Some(email.clone());
+        }
+    }
 
     let wallets = get_wallets_for_profile(&state, profile.id).await?;
     let bounties = list_bounties_for_contributor(&state, profile.id).await?;
