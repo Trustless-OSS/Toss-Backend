@@ -17,6 +17,10 @@ use crate::{
             comments,
             handlers::helpers::{extract_manual_amount, labels_from_payload, sync_repo_balance},
         },
+        notification::{
+            kinds::{Kind, Notify},
+            service::Service,
+        },
         repo::repository::get_repo_by_github_id,
     },
     shared::models::Difficulty,
@@ -93,6 +97,24 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
     if event_label.as_deref() == Some("rejected") {
         if let Some(ref existing) = existing {
             if existing.status != "paid" && existing.status != "cancelled" {
+                // Send BountyRejected notification to assignee
+                if let Some(assignee_id) = existing.assignee_id {
+                    let n = Notify {
+                        recipient: assignee_id,
+                        kind: Kind::BountyRejected,
+                        title: format!("Bounty Rejected: #{}", issue_number),
+                        body: format!("Your work on issue #{} has been rejected", issue_number),
+                        ref_id: Some(existing.id),
+                        data: serde_json::json!({
+                            "repoId": repo.id,
+                            "issueNumber": issue_number,
+                        }),
+                        dedupe_key: format!("rejected:{}", existing.id),
+                        actor: None,
+                    };
+                    Service::notify_contributor_quiet(state, n).await;
+                }
+
                 cancel_issue(state, existing.id).await?;
                 delete_assignments_for_issue(state, existing.id).await?;
                 refund_repo_balance(state, &repo, existing.reward_amount).await?;
@@ -199,6 +221,25 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
         if !update_pending_issue_reward(state, &repo, existing.id, reward_amount, diff_label)
             .await?
         {
+            // Send InsufficientFunds notification to maintainers
+            let n = Notify {
+                recipient: repo.id, // Placeholder; Service::notify_maintainers will set actual recipients
+                kind: Kind::InsufficientFunds,
+                title: "Insufficient Escrow Balance".to_string(),
+                body: format!(
+                    "Cannot update bounty for issue #{} due to insufficient escrow balance",
+                    issue_number
+                ),
+                ref_id: Some(existing.id),
+                data: serde_json::json!({
+                    "repoId": repo.id,
+                    "issueNumber": issue_number,
+                }),
+                dedupe_key: format!("insufficient:{}:{}", github_issue_id, reward_amount),
+                actor: None,
+            };
+            Service::notify_maintainers_quiet(state, repo.id, n).await;
+
             post_comment(
                 state,
                 full_name,
@@ -209,6 +250,29 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
             return Ok(());
         }
         info!(repo = full_name, issue = issue_number, %reward_amount, "bounty amount updated");
+
+        // Send AmountUpdated notification to assignee
+        if let Some(assignee_id) = existing.assignee_id {
+            let n = Notify {
+                recipient: assignee_id,
+                kind: Kind::AmountUpdated,
+                title: format!("Bounty Amount Updated: #{}", issue_number),
+                body: format!(
+                    "The reward for issue #{} has been updated to {} USDC",
+                    issue_number, reward_amount
+                ),
+                ref_id: Some(existing.id),
+                data: serde_json::json!({
+                    "repoId": repo.id,
+                    "issueNumber": issue_number,
+                    "amount": reward_amount.to_string(),
+                }),
+                dedupe_key: format!("amount:{}:{}", existing.id, reward_amount),
+                actor: None,
+            };
+            Service::notify_contributor_quiet(state, n).await;
+        }
+
         post_comment(
             state,
             full_name,
@@ -239,6 +303,26 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
             required_reward = %reward_amount,
             "bounty not created because escrow balance is insufficient"
         );
+
+        // Send InsufficientFunds notification to maintainers
+        let n = Notify {
+            recipient: repo.id, // Placeholder; Service::notify_maintainers will set actual recipients
+            kind: Kind::InsufficientFunds,
+            title: "Insufficient Escrow Balance".to_string(),
+            body: format!(
+                "Cannot create bounty for issue #{}: balance {} < required {}",
+                issue_number, balance, reward_amount
+            ),
+            ref_id: None,
+            data: serde_json::json!({
+                "repoId": repo.id,
+                "issueNumber": issue_number,
+            }),
+            dedupe_key: format!("insufficient:{}:{}", github_issue_id, reward_amount),
+            actor: None,
+        };
+        Service::notify_maintainers_quiet(state, repo.id, n).await;
+
         post_comment(
             state,
             full_name,

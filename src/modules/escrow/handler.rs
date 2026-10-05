@@ -16,6 +16,10 @@ use crate::{
             trustless_work::{escrow_service::TrustlessWorkAPI, tx_builder::TxBuilder},
         },
         github::auth::post_comment,
+        notification::{
+            kinds::{Kind, Notify},
+            service::Service,
+        },
         repo::repository::{get_repo_by_id, is_maintainer},
     },
     state::AppState,
@@ -174,6 +178,22 @@ pub async fn submit_fund(
         )
         .await?;
 
+    // Send EscrowFunded notification to maintainers
+    let n = Notify {
+        recipient: body.repo_id, // Placeholder; Service::notify_maintainers will set actual recipients
+        kind: Kind::EscrowFunded,
+        title: "Escrow Funded".to_string(),
+        body: format!("Escrow has been funded with {} USDC", body.amount),
+        ref_id: None,
+        data: serde_json::json!({
+            "repoId": body.repo_id,
+            "amount": body.amount.to_string(),
+        }),
+        dedupe_key: format!("escrow-funded:{}:{}", body.repo_id, body.amount),
+        actor: None,
+    };
+    Service::notify_maintainers_quiet(&state, body.repo_id, n).await;
+
     Ok(Json(SubmitFundResponse {
         ok: true,
         new_balance: Some(new_balance),
@@ -223,6 +243,22 @@ pub async fn refund(
         .refund(&repo, funder_wallet)
         .await?;
 
+    // Send EscrowRefunded notification to maintainers
+    let n = Notify {
+        recipient: repo.id, // Placeholder; Service::notify_maintainers will set actual recipients
+        kind: Kind::EscrowRefunded,
+        title: "Escrow Refunded".to_string(),
+        body: format!("Escrow has been refunded with {} USDC", refunded_amount),
+        ref_id: None,
+        data: serde_json::json!({
+            "repoId": repo.id,
+            "amount": refunded_amount.to_string(),
+        }),
+        dedupe_key: format!("escrow-refunded:{}:{}", repo.id, refunded_amount),
+        actor: None,
+    };
+    Service::notify_maintainers_quiet(&state, repo.id, n).await;
+
     for issue in &issues_to_cancel {
         let comment = format!(
             "## 🚫 Bounty Cancelled\n\n\
@@ -234,6 +270,25 @@ pub async fn refund(
              ### Escrow\n\n\
              [View escrow contract →](https://viewer.trustlesswork.com/{contract_id})"
         );
+
+        // Send BountyCancelled notification to assignee
+        if let Some(assignee_id) = issue.assignee_id {
+            let n = Notify {
+                recipient: assignee_id,
+                kind: Kind::BountyCancelled,
+                title: format!("Bounty Cancelled: #{}", issue.github_issue_number),
+                body: "A repository maintainer withdrew the escrowed funds".to_string(),
+                ref_id: Some(issue.id),
+                data: serde_json::json!({
+                    "repoId": repo.id,
+                    "issueNumber": issue.github_issue_number,
+                }),
+                dedupe_key: format!("cancelled:{}:refund", issue.id),
+                actor: None,
+            };
+            Service::notify_contributor_quiet(&state, n).await;
+        }
+
         if let Err(error) =
             post_comment(&state, &repo.full_name, issue.github_issue_number, &comment).await
         {

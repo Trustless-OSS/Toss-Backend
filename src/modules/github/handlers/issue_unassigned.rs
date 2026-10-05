@@ -8,6 +8,10 @@ use crate::{
             delete_assignments_for_issue, get_issue_by_repo_and_github_id, reset_issue_to_pending,
         },
         github::{auth::post_comment, comments, handlers::helpers::zero_milestone_on_chain},
+        notification::{
+            kinds::{Kind, Notify},
+            service::Service,
+        },
         repo::repository::get_repo_by_github_id,
     },
     state::AppState,
@@ -43,6 +47,9 @@ pub async fn handle_issue_unassigned(state: &AppState, payload: &Value) -> Resul
         return Ok(());
     }
 
+    // Capture assignee before deletion for notification
+    let assignee_id = issue_record.assignee_id;
+
     delete_assignments_for_issue(state, issue_record.id).await?;
 
     if issue_record.status == "assigned" {
@@ -54,6 +61,32 @@ pub async fn handle_issue_unassigned(state: &AppState, payload: &Value) -> Resul
     }
 
     reset_issue_to_pending(state, issue_record.id).await?;
+
+    // Send BountyUnassigned notification to the ex-assignee
+    if let Some(assignee_uuid) = assignee_id {
+        let now_unix = jiff::Timestamp::now().as_second();
+        let dedup_suffix = now_unix / 600;
+        let n = Notify {
+            recipient: assignee_uuid,
+            kind: Kind::BountyUnassigned,
+            title: format!("Bounty Unassigned: #{}", issue_number),
+            body: format!(
+                "You have been unassigned from a bounty on {}",
+                repo.full_name
+            ),
+            ref_id: Some(issue_record.id),
+            data: serde_json::json!({
+                "repoId": repo.id,
+                "issueNumber": issue_number,
+            }),
+            dedupe_key: format!(
+                "unassigned:{}:{}:{}",
+                issue_record.id, assignee_uuid, dedup_suffix
+            ),
+            actor: None,
+        };
+        Service::notify_contributor_quiet(state, n).await;
+    }
 
     let reward = issue_record.reward_amount.unwrap_or_default();
     post_comment(

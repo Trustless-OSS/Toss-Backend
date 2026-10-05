@@ -21,6 +21,8 @@ pub struct NotificationResponse {
     pub title: String,
     pub body: Option<String>,
     pub is_read: bool,
+    pub ref_id: Option<Uuid>,
+    pub data: Option<serde_json::Value>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -32,6 +34,8 @@ impl From<Notification> for NotificationResponse {
             title: n.title,
             body: n.body,
             is_read: n.is_read,
+            ref_id: n.ref_id,
+            data: n.data,
             created_at: n.created_at,
         }
     }

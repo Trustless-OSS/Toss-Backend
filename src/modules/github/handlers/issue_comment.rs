@@ -24,6 +24,10 @@ use crate::{
                 split_amounts, sync_repo_balance, work_completion_percentage,
             },
         },
+        notification::{
+            kinds::{Kind, Notify},
+            service::Service,
+        },
         repo::repository::get_repo_by_github_id,
     },
     state::AppState,
@@ -318,6 +322,25 @@ async fn handle_payout_command(
         update_assignment_payout_status(state, issue.id, "failed").await?;
         refund_repo_balance(state, &repo, issue.reward_amount).await?;
 
+        // Send BountyRejected notification to assignee
+        let n = Notify {
+            recipient: contributor.id,
+            kind: Kind::BountyRejected,
+            title: format!("Bounty Rejected: #{}", issue.github_issue_number),
+            body: format!(
+                "Your work on issue #{} has been rejected",
+                issue.github_issue_number
+            ),
+            ref_id: Some(issue.id),
+            data: serde_json::json!({
+                "repoId": repo.id,
+                "issueNumber": issue.github_issue_number,
+            }),
+            dedupe_key: format!("rejected:{}", issue.id),
+            actor: None,
+        };
+        Service::notify_contributor_quiet(state, n).await;
+
         post_comment(
             state,
             full_name,
@@ -430,7 +453,7 @@ async fn create_or_update_manual_bounty(
         return Ok(());
     }
 
-    if create_issue_and_reserve_balance(
+    let created_issue = create_issue_and_reserve_balance(
         state,
         &repo,
         github_issue_id,
@@ -439,13 +462,37 @@ async fn create_or_update_manual_bounty(
         manual_amount,
         "manual",
     )
-    .await?
-    .is_none()
-    {
+    .await?;
+
+    if created_issue.is_none() {
         return Ok(());
     }
 
     let contract_id = repo.escrow_contract_id.as_deref().unwrap_or("");
+
+    // Send AmountUpdated notification to assignee if one exists and insufficient funds if not enough
+    let balance_after = repo.escrow_balance.unwrap_or_default();
+    if balance_after < manual_amount {
+        // Send InsufficientFunds notification to maintainers
+        let n = Notify {
+            recipient: repo.id, // Placeholder; Service::notify_maintainers will set actual recipients
+            kind: Kind::InsufficientFunds,
+            title: "Insufficient Escrow Balance".to_string(),
+            body: format!(
+                "Escrow balance is now insufficient after reserving {} USDC for issue #{}",
+                manual_amount, issue_number
+            ),
+            ref_id: created_issue.as_ref().map(|i| i.id),
+            data: serde_json::json!({
+                "repoId": repo.id,
+                "issueNumber": issue_number,
+            }),
+            dedupe_key: format!("insufficient:{}:{}", github_issue_id, manual_amount),
+            actor: None,
+        };
+        Service::notify_maintainers_quiet(state, repo.id, n).await;
+    }
+
     post_comment(
         state,
         full_name,

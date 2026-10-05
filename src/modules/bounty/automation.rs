@@ -18,6 +18,10 @@ use crate::{
                 resolve_milestone_dispute, split_amounts,
             },
         },
+        notification::{
+            kinds::{Kind, Notify},
+            service::Service,
+        },
     },
     shared::models::{Bounty, Profile, Repo, Wallet},
     state::AppState,
@@ -348,6 +352,48 @@ pub async fn push_milestone(
         .map(|p| p.username.as_str())
         .unwrap_or("contributor");
 
+    // Send BountyLocked notification to assignee and maintainers
+    if let Some(assignee) = &ctx.assignee {
+        let n = Notify {
+            recipient: assignee.id,
+            kind: Kind::BountyLocked,
+            title: format!("Bounty Locked: #{}", ctx.issue.github_issue_number),
+            body: format!(
+                "Your bounty of {} USDC is now locked in escrow",
+                ctx.issue.reward_amount.unwrap_or(Decimal::ZERO)
+            ),
+            ref_id: Some(ctx.issue.id),
+            data: serde_json::json!({
+                "repoId": ctx.repo.id,
+                "issueNumber": ctx.issue.github_issue_number,
+                "milestoneIndex": milestone_index,
+            }),
+            dedupe_key: format!("locked:{}:{}", ctx.issue.id, milestone_index),
+            actor: None,
+        };
+        Service::notify_contributor_quiet(state, n).await;
+    }
+
+    let n_maintainers = Notify {
+        recipient: ctx.repo.id, // Placeholder; Service::notify_maintainers will set actual recipients
+        kind: Kind::BountyLocked,
+        title: format!("Bounty Locked: #{}", ctx.issue.github_issue_number),
+        body: format!(
+            "Bounty of {} USDC locked in escrow at milestone {}",
+            ctx.issue.reward_amount.unwrap_or(Decimal::ZERO),
+            milestone_index
+        ),
+        ref_id: Some(ctx.issue.id),
+        data: serde_json::json!({
+            "repoId": ctx.repo.id,
+            "issueNumber": ctx.issue.github_issue_number,
+            "milestoneIndex": milestone_index,
+        }),
+        dedupe_key: format!("locked:{}:{}", ctx.issue.id, milestone_index),
+        actor: None,
+    };
+    Service::notify_maintainers_quiet(state, ctx.repo.id, n_maintainers).await;
+
     if let Err(error) = post_comment(
         state,
         &ctx.repo.full_name,
@@ -396,6 +442,42 @@ async fn release_full(state: &AppState, ctx: &IssueContext) -> Result<(), AppErr
     let contract_id = ctx.repo.escrow_contract_id.as_deref().unwrap_or("");
     let explorer_url = explorer_tx_url(state, &tx_hash, contract_id);
     let reward = ctx.issue.reward_amount.unwrap_or(Decimal::ZERO);
+
+    // Send PayoutReleased notification to assignee
+    if let Some(assignee) = &ctx.assignee {
+        let n = Notify {
+            recipient: assignee.id,
+            kind: Kind::PayoutReleased,
+            title: format!("Bounty Payout Released: #{}", ctx.issue.github_issue_number),
+            body: format!("Your bounty payout of {} USDC has been released", reward),
+            ref_id: Some(ctx.issue.id),
+            data: serde_json::json!({
+                "repoId": ctx.repo.id,
+                "issueNumber": ctx.issue.github_issue_number,
+                "amount": reward.to_string(),
+            }),
+            dedupe_key: format!("released:{}:{}", ctx.issue.id, reward),
+            actor: None,
+        };
+        Service::notify_contributor_quiet(state, n).await;
+    }
+
+    // Send PayoutReleased notification to maintainers
+    let n_maintainers = Notify {
+        recipient: ctx.repo.id, // Placeholder; Service::notify_maintainers will set actual recipients
+        kind: Kind::PayoutReleased,
+        title: format!("Bounty Payout Released: #{}", ctx.issue.github_issue_number),
+        body: format!("Bounty payout of {} USDC released to @{}", reward, username),
+        ref_id: Some(ctx.issue.id),
+        data: serde_json::json!({
+            "repoId": ctx.repo.id,
+            "issueNumber": ctx.issue.github_issue_number,
+            "amount": reward.to_string(),
+        }),
+        dedupe_key: format!("released:{}:{}", ctx.issue.id, reward),
+        actor: None,
+    };
+    Service::notify_maintainers_quiet(state, ctx.repo.id, n_maintainers).await;
 
     if let Err(error) = post_comment(
         state,
@@ -502,6 +584,46 @@ async fn release_split(
 
     update_assignment_payout_status(state, ctx.issue.id, "released").await?;
     update_bounty_status(state, ctx.issue.id, "paid", None).await?;
+
+    // Send PayoutReleased notification to assignee
+    let n = Notify {
+        recipient: assignee.id,
+        kind: Kind::PayoutReleased,
+        title: format!("Bounty Payout Released: #{}", ctx.issue.github_issue_number),
+        body: format!(
+            "Your portion ({percentage}%) of the bounty payout of {} USDC has been released",
+            contributor_amount
+        ),
+        ref_id: Some(ctx.issue.id),
+        data: serde_json::json!({
+            "repoId": ctx.repo.id,
+            "issueNumber": ctx.issue.github_issue_number,
+            "amount": contributor_amount.to_string(),
+        }),
+        dedupe_key: format!("released:{}:{}:{}", ctx.issue.id, reward, percentage),
+        actor: None,
+    };
+    Service::notify_contributor_quiet(state, n).await;
+
+    // Send PayoutReleased notification to maintainers
+    let n_maintainers = Notify {
+        recipient: ctx.repo.id, // Placeholder; Service::notify_maintainers will set actual recipients
+        kind: Kind::PayoutReleased,
+        title: format!("Bounty Payout Released: #{}", ctx.issue.github_issue_number),
+        body: format!(
+            "Split bounty payout released: contributor gets {} USDC, maintainer gets {} USDC",
+            contributor_amount, maintainer_amount
+        ),
+        ref_id: Some(ctx.issue.id),
+        data: serde_json::json!({
+            "repoId": ctx.repo.id,
+            "issueNumber": ctx.issue.github_issue_number,
+            "amount": reward.to_string(),
+        }),
+        dedupe_key: format!("released:{}:{}:{}", ctx.issue.id, reward, percentage),
+        actor: None,
+    };
+    Service::notify_maintainers_quiet(state, ctx.repo.id, n_maintainers).await;
 
     if let Err(error) = post_comment(
         state,

@@ -47,6 +47,25 @@ impl Kind {
         }
     }
 
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "bounty_assigned" => Some(Self::BountyAssigned),
+            "bounty_unassigned" => Some(Self::BountyUnassigned),
+            "amount_updated" => Some(Self::AmountUpdated),
+            "amount_missing" => Some(Self::AmountMissing),
+            "wallet_required" => Some(Self::WalletRequired),
+            "bounty_locked" => Some(Self::BountyLocked),
+            "payout_released" => Some(Self::PayoutReleased),
+            "payout_blocked" => Some(Self::PayoutBlocked),
+            "bounty_cancelled" => Some(Self::BountyCancelled),
+            "bounty_rejected" => Some(Self::BountyRejected),
+            "insufficient_funds" => Some(Self::InsufficientFunds),
+            "escrow_funded" => Some(Self::EscrowFunded),
+            "escrow_refunded" => Some(Self::EscrowRefunded),
+            _ => None,
+        }
+    }
+
     pub fn delivery(&self, role: Role) -> Delivery {
         match (self, role) {
             (Self::BountyAssigned, Role::Contributor) => Delivery::BellAndEmail,

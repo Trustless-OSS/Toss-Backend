@@ -58,7 +58,19 @@ pub async fn process(
                     Ok(_) => Ok(JobOutcome::Done(serde_json::json!({
                         "notificationId": data.notification_id,
                     }))),
-                    Err(e) => Err(e),
+                    Err(e) => {
+                        // On final attempt, mark notification as failed
+                        if job.attempts_made() >= 5 {
+                            let _ = crate::modules::notification::repository::Repository::set_email_status(
+                                state,
+                                data.notification_id,
+                                "failed",
+                                false,
+                            )
+                            .await;
+                        }
+                        Err(e)
+                    }
                 }
             } else {
                 Err(AppError::webhook(

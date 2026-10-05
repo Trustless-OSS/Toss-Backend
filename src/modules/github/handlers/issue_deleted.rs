@@ -6,6 +6,10 @@ use crate::{
     modules::{
         bounty::repository::{cancel_bounty_with_refund, get_issue_by_repo_and_github_id},
         github::handlers::helpers::zero_milestone_on_chain,
+        notification::{
+            kinds::{Kind, Notify},
+            service::Service,
+        },
         repo::repository::get_repo_by_github_id,
     },
     state::AppState,
@@ -52,6 +56,28 @@ pub async fn handle_issue_deleted(state: &AppState, payload: &Value) -> Result<(
     }
 
     let reward = issue_record.reward_amount;
+
+    // Send BountyCancelled notification to assignee
+    if let Some(assignee_id) = issue_record.assignee_id {
+        let n = Notify {
+            recipient: assignee_id,
+            kind: Kind::BountyCancelled,
+            title: format!("Bounty Cancelled: #{}", issue_number),
+            body: format!(
+                "The bounty for issue #{} has been cancelled (issue deleted)",
+                issue_number
+            ),
+            ref_id: Some(issue_record.id),
+            data: serde_json::json!({
+                "repoId": repo.id,
+                "issueNumber": issue_number,
+            }),
+            dedupe_key: format!("cancelled:{}:deleted", issue_record.id),
+            actor: None,
+        };
+        Service::notify_contributor_quiet(state, n).await;
+    }
+
     cancel_bounty_with_refund(state, &repo, issue_record.id, reward).await?;
     info!(
         issue = issue_number,

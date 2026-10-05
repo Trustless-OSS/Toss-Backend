@@ -93,7 +93,22 @@ pub async fn ensure_contributor(
     github_id: i64,
     username: &str,
 ) -> Result<Profile, AppError> {
+    ensure_contributor_with_email(state, github_id, username, None).await
+}
+
+pub async fn ensure_contributor_with_email(
+    state: &AppState,
+    github_id: i64,
+    username: &str,
+    email: Option<&str>,
+) -> Result<Profile, AppError> {
     if let Some(profile) = get_profile_by_github_id(state, github_id).await? {
+        // Update email if provided and not already set
+        if let Some(email) = email {
+            if !email.is_empty() && profile.email.is_none() {
+                let _ = set_profile_email(state, github_id, email).await;
+            }
+        }
         return Ok(profile);
     }
 
@@ -101,6 +116,7 @@ pub async fn ensure_contributor(
     let profile = match toasty::create!(schema::Profile {
         github_id,
         username: username.to_string(),
+        email: email.map(|e| e.to_string()),
     })
     .exec(&mut db)
     .await

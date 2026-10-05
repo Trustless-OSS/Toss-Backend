@@ -8,7 +8,13 @@ use crate::{
         jobs::{payload, queue_error, JobOutcome},
         queue::BountyJobData,
     },
-    modules::bounty::automation::{self, Decision, IssueContext},
+    modules::{
+        bounty::automation::{self, Decision, IssueContext},
+        notification::{
+            kinds::{Kind, Notify},
+            service::Service,
+        },
+    },
     state::AppState,
 };
 
@@ -122,6 +128,27 @@ async fn apply(
         Decision::WaitForWallet { github_username } => {
             // notify once on first park, not on rechecks
             if data.notify && data.recheck == 0 {
+                // Send WalletRequired notification to assignee
+                if let Some(assignee) = &ctx.assignee {
+                    let n = Notify {
+                        recipient: assignee.id,
+                        kind: Kind::WalletRequired,
+                        title: "Wallet Required to Release Bounty".to_string(),
+                        body: format!(
+                            "Your bounty payout for issue #{} is ready but requires a connected wallet",
+                            ctx.issue.github_issue_number
+                        ),
+                        ref_id: Some(ctx.issue.id),
+                        data: serde_json::json!({
+                            "repoId": ctx.repo.id,
+                            "issueNumber": ctx.issue.github_issue_number,
+                        }),
+                        dedupe_key: format!("wallet-required:{}:0", ctx.issue.id),
+                        actor: None,
+                    };
+                    Service::notify_contributor_quiet(state, n).await;
+                }
+
                 if let Err(error) =
                     automation::notify_waiting_for_wallet(state, ctx, github_username).await
                 {
@@ -141,6 +168,39 @@ async fn apply(
         }
 
         Decision::Blocked { reason } => {
+            // Send PayoutBlocked notification to maintainers and assignee
+            if let Some(assignee) = &ctx.assignee {
+                let n = Notify {
+                    recipient: assignee.id,
+                    kind: Kind::PayoutBlocked,
+                    title: format!("Bounty Payout Blocked: #{}", ctx.issue.github_issue_number),
+                    body: format!("Bounty payout is blocked: {}", reason),
+                    ref_id: Some(ctx.issue.id),
+                    data: serde_json::json!({
+                        "repoId": ctx.repo.id,
+                        "issueNumber": ctx.issue.github_issue_number,
+                    }),
+                    dedupe_key: format!("blocked:{}:{}", ctx.issue.id, reason),
+                    actor: None,
+                };
+                Service::notify_contributor_quiet(state, n).await;
+            }
+
+            let n = Notify {
+                recipient: ctx.repo.id, // Placeholder; Service::notify_maintainers will set actual recipients
+                kind: Kind::PayoutBlocked,
+                title: format!("Bounty Payout Blocked: #{}", ctx.issue.github_issue_number),
+                body: format!("Bounty payout is blocked: {}", reason),
+                ref_id: Some(ctx.issue.id),
+                data: serde_json::json!({
+                    "repoId": ctx.repo.id,
+                    "issueNumber": ctx.issue.github_issue_number,
+                }),
+                dedupe_key: format!("blocked:{}:{}", ctx.issue.id, reason),
+                actor: None,
+            };
+            Service::notify_maintainers_quiet(state, ctx.repo.id, n).await;
+
             warn!(
                 %issue_id,
                 issue = ctx.issue.github_issue_number,

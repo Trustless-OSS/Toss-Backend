@@ -81,30 +81,38 @@ impl Repository {
     ) -> Result<Vec<Notification>, AppError> {
         let mut db = require_db(&state.db)?;
 
-        let list = schema::Notification::filter_by_profile_id(profile_id)
+        let mut list = schema::Notification::filter_by_profile_id(profile_id)
             .order_by(schema::Notification::fields().created_at().desc())
-            .limit(limit.max(1) as usize)
-            .offset(offset.max(0) as usize)
             .exec(&mut db)
             .await
             .map_err(map_db_err)?;
 
-        Ok(list
+        // Filter by is_read if needed
+        if unread_only {
+            list.retain(|n| !n.is_read);
+        }
+
+        let list = list
             .into_iter()
-            .filter(|n| !unread_only || !n.is_read)
+            .skip(offset.max(0) as usize)
+            .take(limit.max(1) as usize)
             .map(Notification::from)
-            .collect())
+            .collect();
+
+        Ok(list)
     }
 
     pub async fn unread_count(state: &AppState, profile_id: Uuid) -> Result<i64, AppError> {
         let mut db = require_db(&state.db)?;
 
-        let x = schema::Notification::filter_by_profile_id(profile_id)
+        let list = schema::Notification::filter_by_profile_id(profile_id)
             .exec(&mut db)
             .await
             .map_err(map_db_err)?;
 
-        Ok(x.into_iter().filter(|n| !n.is_read).count() as i64)
+        let count = list.iter().filter(|n| !n.is_read).count();
+
+        Ok(count as i64)
     }
 
     pub async fn mark_read(
