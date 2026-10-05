@@ -1,9 +1,7 @@
 # Background jobs
 
 All background work runs on [BullMQ for Rust](https://docs.bullmq.io/rust/introduction)
-(`bullmq-official`), against the same Redis as the cache (`REDIS_URL`). The
-custom `queue:webhooks` / `queue:sync` Redis lists and their sequential poller
-are gone; there is one job system, not two.
+(`bullmq-official`), against the same Redis as the cache (`REDIS_URL`).
 
 The goal this serves: **a bounty advances by itself.** Maintainers and
 contributors do normal GitHub and wallet actions — label, assign, connect a
@@ -37,7 +35,6 @@ BullMQ is the runner, not the rules.
 | `toss-bounty` | `advance-issue` | 1 | Evaluates the rules, queues the next step, or parks itself |
 | `toss-bounty` | `push-milestone` | 1 | Re-checks, then pushes the milestone on-chain |
 | `toss-bounty` | `release-payout` | 1 | Re-checks, then releases the bounty |
-| `toss-sync` | `escrow-balance-sync` | 1 | Reconciles every deployed escrow's balance |
 
 The bounty queue runs at concurrency **1** on purpose: it is the queue that moves
 money, and serialising it keeps the on-chain call sequence predictable.
@@ -91,7 +88,6 @@ reads 0 by design.
 | --- | --- | --- |
 | `toss-webhooks` | 5 | exponential, 2s base |
 | `toss-bounty` | 5 | exponential, 5s base |
-| `toss-sync` | 3 | exponential, 5s base |
 
 Errors are classified in [`src/infra/jobs/mod.rs`](../src/infra/jobs/mod.rs):
 
@@ -193,16 +189,6 @@ a merged PR **promotes** the parked job so it resumes immediately.
 | `modules/contributor/routes.rs` | `advance-issue` for every parked bounty, after wallet connect |
 | `modules/bounty/service.rs` | `advance-issue` from `/api/v1/milestones/push` and `/api/v1/issues/{id}/retry` |
 | `infra/jobs/advance.rs` | `push-milestone`, `release-payout`, and a follow-up `advance-issue` after a push |
-| `infra/queue.rs` scheduler | _(none)_ — repeating `escrow-balance-sync` removed; balance syncs on fund/release |
-
----
-
-## Scheduled work
-
-Repeating `escrow-balance-sync` is **disabled**. Escrow balances are updated
-when fund/release (or other explicit sync paths) run. On startup the backend
-removes any leftover BullMQ job scheduler for that job so Redis does not keep
-firing it.
 
 ---
 
@@ -231,13 +217,11 @@ The cases that used to require a manual retry are handled automatically:
 ```json
 {
   "webhooks":          { "waiting": 0, "active": 1, "completed": 42, "failed": 0, "delayed": 0 },
-  "escrow-operations": { "waiting": 0, "active": 0, "completed": 0,  "failed": 1, "delayed": 2 },
-  "sync":              { "waiting": 0, "active": 0, "completed": 17, "failed": 0, "delayed": 1 }
+  "escrow-operations": { "waiting": 0, "active": 0, "completed": 0,  "failed": 1, "delayed": 2 }
 }
 ```
 
-`webhooks` is `toss-webhooks`, `escrow-operations` is `toss-bounty`, `sync` is
-`toss-sync`. As noted above, `escrow-operations.completed` stays at 0 because
+`webhooks` is `toss-webhooks`, `escrow-operations` is `toss-bounty`. As noted above, `escrow-operations.completed` stays at 0 because
 completed bounty jobs are removed to free their per-issue id.
 
 ---
@@ -249,14 +233,23 @@ completed bounty jobs are removed to free their per-issue id.
 | `REDIS_URL` | — | Shared by the cache and every queue |
 | `BULLMQ_PREFIX` | `bull` | Redis key prefix for all queues **and** dirty-flag keys |
 | `BULLMQ_CONCURRENCY` | `4` | Webhook worker concurrency (bounty is always 1) |
-| `BULLMQ_LOCK_DURATION_MS` | `30000` | How long a worker holds a job lock |
-| `BULLMQ_STALLED_INTERVAL_MS` | `30000` | How often workers scan for stalled `active` jobs |
-| `BULLMQ_MAX_STALLED_COUNT` | `1` | Stall recoveries before the job is failed |
-| `ESCROW_SYNC_INTERVAL_SECS` | `60` | Interval of the repeating sync job |
 
 If Redis is unreachable at boot the API still starts: the hub is disabled,
 workers do not start, webhooks are processed inline and `/api/v1/queue/stats`
 reports zeros — the same degraded behaviour as before.
+
+---
+
+## Worker Tuning
+
+Worker behavior (lock duration, stall detection intervals) uses hardcoded defaults
+tuned for typical usage, defined in `src/shared/constants.rs`:
+
+- `BULLMQ_LOCK_DURATION_MS = 30000ms` — How long a worker holds a job lock before re-running stall detection
+- `BULLMQ_STALLED_INTERVAL_MS = 30000ms` — How often workers scan for stalled jobs
+- `BULLMQ_MAX_STALLED_COUNT = 1` — Stall recoveries before failure (strict: fails after one stall)
+
+These rarely need adjustment and are built into the code, not environment variables.
 
 ---
 

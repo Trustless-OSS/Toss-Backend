@@ -9,17 +9,24 @@ use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{error::AppError, infra::redis::RedisClient, state::AppState};
+use crate::{
+    error::AppError,
+    infra::redis::RedisClient,
+    shared::constants::{
+        BULLMQ_LOCK_DURATION_MS, BULLMQ_MAX_STALLED_COUNT, BULLMQ_STALLED_INTERVAL_MS,
+    },
+    state::AppState,
+};
 
 pub const WEBHOOK_QUEUE: &str = "toss-webhooks";
 pub const BOUNTY_QUEUE: &str = "toss-bounty";
-pub const SYNC_QUEUE: &str = "toss-sync";
+pub const NOTIFY_QUEUE: &str = "toss-notify";
 
 pub const JOB_GITHUB_WEBHOOK: &str = "github-webhook";
 pub const JOB_ADVANCE_ISSUE: &str = "advance-issue";
 pub const JOB_PUSH_MILESTONE: &str = "push-milestone";
 pub const JOB_RELEASE_PAYOUT: &str = "release-payout";
-pub const JOB_ESCROW_BALANCE_SYNC: &str = "escrow-balance-sync";
+pub const JOB_NOTIFY_EMAIL: &str = "send-notification-email";
 
 const WEBHOOK_ATTEMPTS: u32 = 5;
 const BOUNTY_ATTEMPTS: u32 = 5;
@@ -128,7 +135,6 @@ impl EnqueueOutcome {
 struct Queues {
     webhooks: Queue,
     bounty: Queue,
-    sync: Queue,
 }
 
 #[derive(Clone)]
@@ -167,9 +173,6 @@ impl QueueInfra {
                     .await
                     .map_err(queue_error)?,
                 bounty: Queue::with_options(BOUNTY_QUEUE, options())
-                    .await
-                    .map_err(queue_error)?,
-                sync: Queue::with_options(SYNC_QUEUE, options())
                     .await
                     .map_err(queue_error)?,
             })),
@@ -529,47 +532,15 @@ impl QueueInfra {
             }));
         };
 
-        let (webhooks, bounty, sync) = tokio::join!(
+        let (webhooks, bounty) = tokio::join!(
             queues.webhooks.get_job_counts(),
-            queues.bounty.get_job_counts(),
-            queues.sync.get_job_counts(),
+            queues.bounty.get_job_counts()
         );
 
         Ok(serde_json::json!({
             "webhooks": counts_json(webhooks.map_err(queue_error)?),
             "escrow-operations": counts_json(bounty.map_err(queue_error)?),
-            "sync": counts_json(sync.map_err(queue_error)?),
         }))
-    }
-
-    pub async fn register_schedulers(&self, _interval: Duration) -> Result<(), AppError> {
-        let Some(queues) = self.queues.as_ref() else {
-            return Ok(());
-        };
-
-        match queues
-            .sync
-            .remove_job_scheduler(JOB_ESCROW_BALANCE_SYNC)
-            .await
-        {
-            Ok(removed) => {
-                if removed {
-                    tracing::info!(
-                        job = JOB_ESCROW_BALANCE_SYNC,
-                        "removed repeating escrow-balance-sync scheduler"
-                    );
-                }
-            }
-            Err(error) => {
-                tracing::warn!(
-                    %error,
-                    job = JOB_ESCROW_BALANCE_SYNC,
-                    "could not remove escrow-balance-sync scheduler (may already be gone)"
-                );
-            }
-        }
-
-        Ok(())
     }
 
     pub async fn close(&self) {
@@ -578,7 +549,6 @@ impl QueueInfra {
         };
         queues.webhooks.close().await;
         queues.bounty.close().await;
-        queues.sync.close().await;
     }
 }
 
@@ -636,9 +606,9 @@ pub async fn start_workers(state: AppState) -> Result<Workers, AppError> {
     let redis_url = state.config.redis_url.clone();
     let prefix = state.config.bullmq_prefix.clone();
     let concurrency = state.config.bullmq_concurrency.max(1);
-    let lock_duration = Duration::from_millis(state.config.bullmq_lock_duration_ms.max(1));
-    let stalled_interval = Duration::from_millis(state.config.bullmq_stalled_interval_ms.max(1));
-    let max_stalled_count = state.config.bullmq_max_stalled_count.max(1);
+    let lock_duration = Duration::from_millis(BULLMQ_LOCK_DURATION_MS);
+    let stalled_interval = Duration::from_millis(BULLMQ_STALLED_INTERVAL_MS);
+    let max_stalled_count = BULLMQ_MAX_STALLED_COUNT;
 
     let worker_options = |name: &str, concurrency: usize| {
         WorkerOptions::new()
@@ -679,22 +649,9 @@ pub async fn start_workers(state: AppState) -> Result<Workers, AppError> {
     .await
     .map_err(queue_error)?;
 
-    let sync_state = state.clone();
-    let sync = Worker::with_options(
-        SYNC_QUEUE,
-        move |job: bullmq::Job, _token| {
-            let state = sync_state.clone();
-            async move { crate::infra::jobs::process(&state, job).await }
-        },
-        worker_options(SYNC_QUEUE, 1),
-    )
-    .await
-    .map_err(queue_error)?;
-
     tracing::info!(
         webhooks = WEBHOOK_QUEUE,
         bounty = BOUNTY_QUEUE,
-        sync = SYNC_QUEUE,
         concurrency,
         lock_duration_ms = lock_duration.as_millis() as u64,
         stalled_interval_ms = stalled_interval.as_millis() as u64,
@@ -703,19 +660,8 @@ pub async fn start_workers(state: AppState) -> Result<Workers, AppError> {
     );
 
     Ok(Workers {
-        workers: vec![webhooks, bounty, sync],
+        workers: vec![webhooks, bounty],
     })
-}
-
-pub async fn start_scheduler(state: &AppState) -> Result<(), AppError> {
-    // Interval config is ignored: continuous balance polling was removed.
-    let interval = Duration::from_secs(state.config.escrow_sync_interval_secs.max(1));
-    state.queue.register_schedulers(interval).await?;
-    tracing::info!(
-        job = JOB_ESCROW_BALANCE_SYNC,
-        "repeating escrow-balance-sync disabled (sync runs on fund/release only)"
-    );
-    Ok(())
 }
 
 #[cfg(test)]

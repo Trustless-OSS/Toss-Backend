@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 
 use tokio::net::TcpListener;
-use tracing::{error, info};
+use tracing::info;
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
@@ -19,9 +19,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let state = AppState::new(config).await?;
 
     let workers = infra::queue::start_workers(state.clone()).await?;
-    if let Err(error) = infra::queue::start_scheduler(&state).await {
-        error!(%error, "failed to register repeating jobs");
-    }
     info!("background workers started");
 
     let listener = TcpListener::bind(address).await?;

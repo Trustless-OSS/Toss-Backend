@@ -1,4 +1,5 @@
 use crate::error::AppError;
+use crate::shared::constants::DEFAULT_EMAIL_FROM;
 
 const DEFAULT_ALLOWED_ORIGINS: [&str; 1] = ["http://localhost:3000"];
 
@@ -11,10 +12,6 @@ pub struct Config {
     pub redis_url: String,
     pub bullmq_prefix: String,
     pub bullmq_concurrency: usize,
-    pub bullmq_lock_duration_ms: u64,
-    pub bullmq_stalled_interval_ms: u64,
-    pub bullmq_max_stalled_count: u32,
-    pub escrow_sync_interval_secs: u64,
     pub supabase_url: String,
     pub supabase_auth_api_key: String,
     pub github_app_id: String,
@@ -60,11 +57,6 @@ impl Config {
             redis_url: required_env("REDIS_URL")?,
             bullmq_prefix: optional_env("BULLMQ_PREFIX").unwrap_or_else(|| "bull".to_string()),
             bullmq_concurrency: optional_parsed("BULLMQ_CONCURRENCY")?.unwrap_or(4),
-            bullmq_lock_duration_ms: optional_parsed("BULLMQ_LOCK_DURATION_MS")?.unwrap_or(30_000),
-            bullmq_stalled_interval_ms: optional_parsed("BULLMQ_STALLED_INTERVAL_MS")?
-                .unwrap_or(30_000),
-            bullmq_max_stalled_count: optional_parsed("BULLMQ_MAX_STALLED_COUNT")?.unwrap_or(1),
-            escrow_sync_interval_secs: optional_parsed("ESCROW_SYNC_INTERVAL_SECS")?.unwrap_or(60),
             supabase_url: required_env("SUPABASE_URL")?,
             supabase_auth_api_key: first_env(&[
                 "SUPABASE_PUBLISHABLE_KEY",
@@ -100,7 +92,7 @@ impl Config {
             smee_target_url: required_env("SMEE_TARGET_URL")?,
             resend_api_key: required_env("RESEND_API_KEY")?,
             email_from: optional_env("EMAIL_FROM")
-                .unwrap_or_else(|| "TOSS <onboarding@resend.dev>".to_string()),
+                .unwrap_or_else(|| DEFAULT_EMAIL_FROM.to_string()),
         })
     }
 

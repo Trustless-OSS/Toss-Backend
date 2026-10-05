@@ -1,5 +1,4 @@
 pub mod advance;
-pub mod sync;
 pub mod webhook;
 
 use tracing::{error, info, warn};
@@ -7,8 +6,8 @@ use tracing::{error, info, warn};
 use crate::{
     error::AppError,
     infra::queue::{
-        BountyJobData, JOB_ADVANCE_ISSUE, JOB_ESCROW_BALANCE_SYNC, JOB_GITHUB_WEBHOOK,
-        JOB_PUSH_MILESTONE, JOB_RELEASE_PAYOUT,
+        BountyJobData, JOB_ADVANCE_ISSUE, JOB_GITHUB_WEBHOOK, JOB_PUSH_MILESTONE,
+        JOB_RELEASE_PAYOUT,
     },
     state::AppState,
 };
@@ -48,7 +47,6 @@ pub async fn process(
         JOB_RELEASE_PAYOUT => advance::run_release_payout(state, &job)
             .await
             .map(JobOutcome::Done),
-        JOB_ESCROW_BALANCE_SYNC => sync::run(state).await.map(JobOutcome::Done),
         other => {
             warn!(job = other, job_id = %id, "unknown job name ignored");
             Ok(JobOutcome::Done(serde_json::json!({ "skipped": other })))
