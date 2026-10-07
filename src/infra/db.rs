@@ -24,7 +24,7 @@ pub fn normalize_database_url(url: &str) -> String {
 
 pub async fn connect(database_url: &str) -> Result<toasty::Db, AppError> {
     let url = normalize_database_url(database_url);
-    toasty::Db::builder()
+    let db = toasty::Db::builder()
         .models(toasty::models!(
             crate::shared::models::schema::Repository,
             crate::shared::models::schema::Profile,
@@ -39,5 +39,9 @@ pub async fn connect(database_url: &str) -> Result<toasty::Db, AppError> {
         ))
         .connect(&url)
         .await
-        .map_err(|error| AppError::database(error.to_string()))
+        .map_err(|error| AppError::database(error.to_string()))?;
+
+    crate::infra::migrate::run_pending(&db).await?;
+
+    Ok(db)
 }
