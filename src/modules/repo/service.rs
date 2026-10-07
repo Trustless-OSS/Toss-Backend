@@ -8,8 +8,8 @@ use crate::{
         bounty::repository::list_issues_for_repo,
         github::{
             auth::{
-                delete_github_installation, install_repo_webhook, list_installation_repos,
-                remove_repo_from_installation,
+                delete_github_installation, delete_github_label, install_repo_webhook,
+                list_github_labels, list_installation_repos, remove_repo_from_installation,
             },
             repository::upsert_installation_repo,
         },
@@ -21,9 +21,9 @@ use crate::{
                 SyncInstallationResult, UpdateRewardsInput,
             },
             repository::{
-                count_repos_for_installation, delete_repo_cascade, get_repo_by_id,
-                get_repo_rewards, invalidate_repo_cache, is_maintainer, list_repos_for_user,
-                upsert_repo_rewards, upsert_repo_with_maintainer,
+                count_repos_for_installation, delete_repo_cascade, delete_repo_reward,
+                get_repo_by_id, get_repo_rewards, invalidate_repo_cache, is_maintainer,
+                list_repos_for_user, upsert_repo_rewards, upsert_repo_with_maintainer,
             },
         },
     },
@@ -262,6 +262,55 @@ pub(crate) async fn delete_repo(
     delete_repo_cascade(state, input.repo_id).await?;
     invalidate_repo_cache(state, input.repo_id, Some(repo.github_repo_id)).await;
     info!(repo = %repo.full_name, repo_id = %input.repo_id, "repo deleted");
+
+    Ok(OkResponse { ok: true })
+}
+
+pub(crate) async fn get_github_labels(
+    state: &AppState,
+    repo_id: Uuid,
+    github_id: i64,
+) -> Result<Vec<crate::modules::github::auth::GitHubLabel>, AppError> {
+    let repo = get_repo_by_id(state, repo_id)
+        .await?
+        .ok_or_else(|| AppError::not_found("Repo not found"))?;
+    if !is_maintainer(state, github_id, repo_id).await? {
+        return Err(AppError::forbidden(
+            "Forbidden: Only maintainers can view GitHub labels",
+        ));
+    }
+    list_github_labels(state, repo.github_repo_id, &repo.full_name).await
+}
+
+pub(crate) async fn delete_reward(
+    state: &AppState,
+    repo_id: Uuid,
+    maintainer_github_id: i64,
+    label: String,
+    also_delete_github_label: bool,
+) -> Result<OkResponse, AppError> {
+    if !is_maintainer(state, maintainer_github_id, repo_id).await? {
+        return Err(AppError::forbidden(
+            "Forbidden: Only maintainers can delete reward levels",
+        ));
+    }
+
+    delete_repo_reward(state, repo_id, &label).await?;
+    invalidate_repo_cache(state, repo_id, None).await;
+
+    if also_delete_github_label {
+        if let Some(repo) = get_repo_by_id(state, repo_id).await? {
+            if let Err(e) =
+                delete_github_label(state, repo.github_repo_id, &repo.full_name, &label).await
+            {
+                tracing::warn!(
+                    err = %e,
+                    label = %label,
+                    "could not delete GitHub label (continuing)"
+                );
+            }
+        }
+    }
 
     Ok(OkResponse { ok: true })
 }

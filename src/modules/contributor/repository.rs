@@ -193,3 +193,57 @@ pub async fn list_assignments_for_contributor(
     let bounties = list_bounties_for_contributor(state, profile_id).await?;
     Ok(bounties.into_iter().map(|b| (b.clone(), Some(b))).collect())
 }
+
+/// Fields a contributor can edit on their own profile. `None` = leave unchanged.
+#[derive(Debug, Default)]
+pub struct ProfileUpdate {
+    pub full_name: Option<String>,
+    pub bio: Option<String>,
+    pub location: Option<String>,
+    pub website: Option<String>,
+    pub skills: Option<String>,
+    pub telegram: Option<String>,
+    pub discord: Option<String>,
+    pub twitter: Option<String>,
+}
+
+pub async fn update_profile(
+    state: &AppState,
+    github_id: i64,
+    username: &str,
+    update: ProfileUpdate,
+) -> Result<Profile, AppError> {
+    let mut db = require_db(&state.db)?;
+
+    // Ensure the profile row exists first (contributors may not have one yet).
+    schema::Profile::upsert_by_github_id(github_id)
+        .username(username.to_string())
+        .exec(&mut db)
+        .await
+        .map_err(map_db_err)?;
+
+    toasty::update!(schema::Profile::filter_by_github_id(github_id) {
+        full_name: update.full_name,
+        bio: update.bio,
+        location: update.location,
+        website: update.website,
+        skills: update.skills,
+        telegram: update.telegram,
+        discord: update.discord,
+        twitter: update.twitter,
+        updated_at: jiff::Timestamp::now(),
+    })
+    .exec(&mut db)
+    .await
+    .map_err(map_db_err)?;
+
+    invalidate_contributor_cache(state, github_id).await;
+
+    schema::Profile::filter_by_github_id(github_id)
+        .first()
+        .exec(&mut db)
+        .await
+        .map_err(map_db_err)?
+        .map(Profile::from)
+        .ok_or_else(|| AppError::database("profile missing after update"))
+}

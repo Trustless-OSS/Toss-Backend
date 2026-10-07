@@ -1,13 +1,11 @@
+use crate::infra::redis::{check_health, RedisClient, RedisHealthStatus};
+use redis::AsyncCommands;
+use serde::{de::DeserializeOwned, Serialize};
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex},
 };
-
-use redis::AsyncCommands;
-use serde::{de::DeserializeOwned, Serialize};
 use tracing::{debug, error, warn};
-
-use crate::infra::redis::{check_health, RedisClient, RedisHealthStatus};
 
 const DEFAULT_TTL: u64 = 300;
 

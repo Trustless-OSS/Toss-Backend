@@ -204,12 +204,12 @@ impl Service {
         // Get email template for this notification type
         let kind_str = notification.kind.as_str();
         let kind =
-            super::kinds::Kind::from_str(kind_str).unwrap_or(super::kinds::Kind::BountyAssigned); // Fallback to default
+            super::kinds::Kind::parse(kind_str).unwrap_or(super::kinds::Kind::BountyAssigned); // Fallback to default
 
         let template = crate::modules::notification::email_templates::email_template_for(
             kind,
             &notification.title,
-            &notification.body.as_deref().unwrap_or(""),
+            notification.body.as_deref().unwrap_or(""),
             &notification.data.clone().unwrap_or(serde_json::json!({})),
             &state.config.app_url,
         );

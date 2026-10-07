@@ -1,6 +1,6 @@
 use axum::{
     extract::State,
-    routing::{get, post},
+    routing::{get, post, put},
     Json, Router,
 };
 use tracing::{info, warn};
@@ -10,9 +10,10 @@ use crate::{
     infra::queue::BountyJobData,
     middleware::auth::AuthedUser,
     modules::contributor::{
-        model::{ConnectWalletBody, ContributorMeResponse, OkResponse},
+        model::{ConnectWalletBody, ContributorMeResponse, OkResponse, UpdateProfileBody},
         repository::{
-            get_profile_by_github_id, list_bounties_for_contributor, upsert_contributor_wallet,
+            get_profile_by_github_id, list_bounties_for_contributor, update_profile,
+            upsert_contributor_wallet, ProfileUpdate,
         },
     },
     state::AppState,
@@ -186,7 +187,15 @@ pub(crate) async fn get_contributor_me(
         "github_id": profile.github_id,
         "username": profile.username,
         "full_name": profile.full_name,
+        "email": profile.email,
         "avatar_url": profile.avatar_url,
+        "bio": profile.bio,
+        "location": profile.location,
+        "website": profile.website,
+        "skills": profile.skills,
+        "telegram": profile.telegram,
+        "discord": profile.discord,
+        "twitter": profile.twitter,
         "stellar_wallet": stellar_wallet,
         "payout_chain": primary_wallet.map(|w| &w.chain),
         "payout_address": primary_wallet.map(|w| &w.address),
@@ -199,8 +208,69 @@ pub(crate) async fn get_contributor_me(
     }))
 }
 
+#[utoipa::path(
+    put,
+    path = "/api/v1/contributor/profile",
+    tag = "Contributor",
+    security(("bearer_auth" = [])),
+    request_body = UpdateProfileBody,
+    responses(
+        (status = 200, description = "Profile updated", body = ContributorMeResponse),
+        (status = 401, description = "Missing or invalid bearer token", body = ErrorResponse),
+        (status = 500, description = "Failed to update profile", body = ErrorResponse)
+    )
+)]
+pub(crate) async fn update_contributor_profile(
+    State(state): State<AppState>,
+    user: AuthedUser,
+    Json(body): Json<UpdateProfileBody>,
+) -> Result<Json<ContributorMeResponse>, AppError> {
+    let username = user.github_username.clone().unwrap_or_default();
+
+    let profile = update_profile(
+        &state,
+        user.github_id,
+        &username,
+        ProfileUpdate {
+            full_name: body.full_name,
+            bio: body.bio,
+            location: body.location,
+            website: body.website,
+            skills: body.skills,
+            telegram: body.telegram,
+            discord: body.discord,
+            twitter: body.twitter,
+        },
+    )
+    .await?;
+
+    let contributor_json = serde_json::json!({
+        "id": profile.id,
+        "github_id": profile.github_id,
+        "username": profile.username,
+        "full_name": profile.full_name,
+        "email": profile.email,
+        "avatar_url": profile.avatar_url,
+        "bio": profile.bio,
+        "location": profile.location,
+        "website": profile.website,
+        "skills": profile.skills,
+        "telegram": profile.telegram,
+        "discord": profile.discord,
+        "twitter": profile.twitter,
+    });
+
+    Ok(Json(ContributorMeResponse {
+        contributor: Some(contributor_json),
+    }))
+}
+
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/v1/wallet/connect", post(connect_wallet))
         .route("/api/v1/contributor/me", get(get_contributor_me))
+        .route(
+            "/api/v1/contributor/profile",
+            put(update_contributor_profile),
+        )
 }

@@ -372,3 +372,29 @@ pub async fn ping_db(state: &AppState) -> Result<(), AppError> {
         .map_err(map_db_err)?;
     Ok(())
 }
+
+pub async fn delete_repo_reward(
+    state: &AppState,
+    repo_id: Uuid,
+    label: &str,
+) -> Result<(), AppError> {
+    let mut db = require_db(&state.db)?;
+
+    let rewards = schema::Reward::filter_by_repo_id(repo_id)
+        .exec(&mut db)
+        .await
+        .map_err(map_db_err)?;
+
+    let reward = rewards
+        .into_iter()
+        .find(|r| r.label.eq_ignore_ascii_case(label))
+        .ok_or_else(|| AppError::not_found("Reward level not found"))?;
+
+    schema::Reward::filter_by_id(reward.id)
+        .delete()
+        .exec(&mut db)
+        .await
+        .map_err(map_db_err)?;
+
+    Ok(())
+}

@@ -20,10 +20,11 @@ pub struct Profile {
     pub avatar_url: Option<String>,
     pub bio: Option<String>,
     pub location: Option<String>,
-    pub skills: Option<Vec<String>>,
+    pub skills: Option<String>,
     pub telegram: Option<String>,
     pub discord: Option<String>,
     pub twitter: Option<String>,
+    pub website: Option<String>,
 
     #[default(Timestamp::now())]
     pub created_at: Timestamp,

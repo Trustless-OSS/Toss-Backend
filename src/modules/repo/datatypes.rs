@@ -43,3 +43,11 @@ pub enum RewardQuery {
     ByRepo(Uuid),
     ById(Uuid),
 }
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DeleteRewardBody {
+    /// Whether to also delete the matching label from the GitHub repo
+    #[serde(default)]
+    pub also_delete_github_label: bool,
+}

@@ -5,7 +5,9 @@ use axum::{
 };
 use uuid::Uuid;
 
-use super::datatypes::{ConnectRepo, InstallationReposQuery, SyncInstallation, UpdateRewards};
+use super::datatypes::{
+    ConnectRepo, DeleteRewardBody, InstallationReposQuery, SyncInstallation, UpdateRewards,
+};
 use crate::{
     error::{AppError, ErrorResponse},
     middleware::auth::AuthedUser,
@@ -302,4 +304,30 @@ mod tests {
         assert_eq!(snake.gh_repo_id, None);
         assert_eq!(snake.gh_repo_ids, None);
     }
+}
+
+pub(crate) async fn list_github_labels(
+    State(state): State<AppState>,
+    user: AuthedUser,
+    Path(repo_id): Path<Uuid>,
+) -> Result<Json<Vec<crate::modules::github::auth::GitHubLabel>>, AppError> {
+    let labels = service::get_github_labels(&state, repo_id, user.github_id).await?;
+    Ok(Json(labels))
+}
+
+pub(crate) async fn delete_reward(
+    State(state): State<AppState>,
+    user: AuthedUser,
+    Path((repo_id, label)): Path<(Uuid, String)>,
+    Json(body): Json<DeleteRewardBody>,
+) -> Result<Json<OkResponse>, AppError> {
+    let response = service::delete_reward(
+        &state,
+        repo_id,
+        user.github_id,
+        label,
+        body.also_delete_github_label,
+    )
+    .await?;
+    Ok(Json(response))
 }

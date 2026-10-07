@@ -98,3 +98,11 @@ pub(crate) struct SyncInstallationResult {
 pub(crate) struct OkResponse {
     pub(crate) ok: bool,
 }
+
+#[derive(Debug)]
+pub(crate) struct DeleteRewardInput {
+    pub(crate) repo_id: Uuid,
+    pub(crate) maintainer_github_id: i64,
+    pub(crate) label: String,
+    pub(crate) also_delete_github_label: bool,
+}

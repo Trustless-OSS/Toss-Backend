@@ -70,14 +70,15 @@ impl FromRequestParts<AppState> for AuthedUser {
         let client = state.http_client.clone();
 
         async move {
-            // if std::env::var("NODE_ENV").unwrap_or_default() == "development"
-            //     && std::env::var("DEV_AUTH_BYPASS").unwrap_or_default() == "true"
-            // {
-            //     return Ok(AuthedUser {
-            //         github_id: 92181599,
-            //         github_username: Some("ryzen-xp".to_string()),
-            //     });
-            // }
+            if std::env::var("NODE_ENV").unwrap_or_default() == "development"
+                && std::env::var("DEV_AUTH_BYPASS").unwrap_or_default() == "true"
+            {
+                return Ok(AuthedUser {
+                    github_id: 92181599,
+                    github_username: Some("ryzen-xp".to_string()),
+                    email: Some("ryzen4540@gmail.com".to_string()),
+                });
+            }
 
             let token = authorization
                 .and_then(|value| value.to_str().ok().map(str::to_owned))

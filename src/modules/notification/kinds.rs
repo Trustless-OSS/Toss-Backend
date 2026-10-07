@@ -47,7 +47,7 @@ impl Kind {
         }
     }
 
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s {
             "bounty_assigned" => Some(Self::BountyAssigned),
             "bounty_unassigned" => Some(Self::BountyUnassigned),

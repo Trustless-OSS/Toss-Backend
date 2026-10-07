@@ -78,10 +78,11 @@ pub struct Profile {
     pub avatar_url: Option<String>,
     pub bio: Option<String>,
     pub location: Option<String>,
-    pub skills: Option<Vec<String>>,
+    pub skills: Option<String>,
     pub telegram: Option<String>,
     pub discord: Option<String>,
     pub twitter: Option<String>,
+    pub website: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -186,6 +187,7 @@ impl From<schema::Profile> for Profile {
             telegram: v.telegram,
             discord: v.discord,
             twitter: v.twitter,
+            website: v.website,
             created_at: ts(v.created_at),
             updated_at: ts(v.updated_at),
         }
