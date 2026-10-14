@@ -206,11 +206,84 @@ impl Service {
         let kind =
             super::kinds::Kind::parse(kind_str).unwrap_or(super::kinds::Kind::BountyAssigned); // Fallback to default
 
+        // Enrich the template data with the recipient's real identity so the
+        // email can address them by name and show their GitHub handle. We only
+        // fill fields that the caller did not already provide, so explicit
+        // per-notification values always win.
+        let mut template_data = notification
+            .data
+            .clone()
+            .unwrap_or_else(|| serde_json::json!({}));
+        // Resolve the repository referenced by the notification so the email can
+        // show the real "owner/repo" name and link straight to the issue on
+        // GitHub. Callers store the repo UUID under "repoId" and the GitHub
+        // issue number under "issueNumber".
+        let repo = match template_data.get("repoId").and_then(|v| v.as_str()) {
+            Some(id_str) => match Uuid::parse_str(id_str) {
+                Ok(repo_id) => crate::modules::repo::repository::get_repo_by_id(state, repo_id)
+                    .await
+                    .ok()
+                    .flatten(),
+                Err(_) => None,
+            },
+            None => None,
+        };
+        let issue_number = template_data
+            .get("issueNumber")
+            .and_then(|v| v.as_i64())
+            .or_else(|| {
+                template_data
+                    .get("issueNumber")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| s.parse::<i64>().ok())
+            });
+
+        if let Some(obj) = template_data.as_object_mut() {
+            // Display name: prefer the profile's full name, fall back to the
+            // GitHub username. Leave untouched if the caller already set it.
+            let display_name = profile
+                .full_name
+                .as_deref()
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or(profile.username.as_str());
+            obj.entry("name")
+                .or_insert_with(|| serde_json::Value::String(display_name.to_string()));
+            // GitHub handle, shown as "@username" in the templates.
+            obj.entry("username")
+                .or_insert_with(|| serde_json::Value::String(profile.username.clone()));
+
+            // Real repository name and GitHub links. Built from the resolved
+            // repo's full name ("owner/repo") so links are never blank. Only
+            // filled when we could resolve the repo, and never overwrite an
+            // explicit value the caller already set.
+            if let Some(repo) = repo.as_ref() {
+                obj.entry("repository")
+                    .or_insert_with(|| serde_json::Value::String(repo.full_name.clone()));
+                obj.entry("repo_url").or_insert_with(|| {
+                    serde_json::Value::String(format!("https://github.com/{}", repo.full_name))
+                });
+                if let Some(number) = issue_number {
+                    obj.entry("issue")
+                        .or_insert_with(|| serde_json::Value::String(number.to_string()));
+                    obj.entry("issue_url").or_insert_with(|| {
+                        serde_json::Value::String(format!(
+                            "https://github.com/{}/issues/{}",
+                            repo.full_name, number
+                        ))
+                    });
+                }
+            } else if let Some(number) = issue_number {
+                // No repo resolved, but we still know the issue number.
+                obj.entry("issue")
+                    .or_insert_with(|| serde_json::Value::String(number.to_string()));
+            }
+        }
+
         let template = crate::modules::notification::email_templates::email_template_for(
             kind,
             &notification.title,
             notification.body.as_deref().unwrap_or(""),
-            &notification.data.clone().unwrap_or(serde_json::json!({})),
+            &template_data,
             &state.config.app_url,
         );
 
