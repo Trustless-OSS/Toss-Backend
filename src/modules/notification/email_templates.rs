@@ -76,12 +76,16 @@ pub fn email_template_for(
         Kind::BountyRejected => (BOUNTYREJECTED, "Your bounty submission needs changes"),
         Kind::AmountUpdated => (AMOUNTUPDATED, "Bounty reward amount updated"),
         Kind::AmountMissing => (AMOUNTMISSING, "Action needed: set the bounty reward"),
-        Kind::WalletRequired => (WALLETREQUIRED, "Action needed: connect your wallet to get paid"),
+        Kind::WalletRequired => (
+            WALLETREQUIRED,
+            "Action needed: connect your wallet to get paid",
+        ),
         Kind::PayoutReleased => (PAYOUTRELEASED, "Your bounty payout has been sent"),
         Kind::PayoutBlocked => (PAYOUTBLOCKED, "Action needed: bounty payout is blocked"),
-        Kind::InsufficientFunds => {
-            (INSUFFICIENTFUNDS, "Action needed: escrow has insufficient funds")
-        }
+        Kind::InsufficientFunds => (
+            INSUFFICIENTFUNDS,
+            "Action needed: escrow has insufficient funds",
+        ),
         Kind::EscrowFunded => (ESCROWFUNDED, "Bounty escrow has been funded"),
         Kind::EscrowRefunded => (ESCROWREFUNDED, "Bounty escrow funds were refunded"),
     };
@@ -157,8 +161,7 @@ const AMOUNTMISSING: &str = include_str!("../../infra/email/templates/amount_mis
 const WALLETREQUIRED: &str = include_str!("../../infra/email/templates/wallet_required.html");
 const PAYOUTRELEASED: &str = include_str!("../../infra/email/templates/payout_released.html");
 const PAYOUTBLOCKED: &str = include_str!("../../infra/email/templates/payout_blocked.html");
-const INSUFFICIENTFUNDS: &str =
-    include_str!("../../infra/email/templates/insufficient_funds.html");
+const INSUFFICIENTFUNDS: &str = include_str!("../../infra/email/templates/insufficient_funds.html");
 const ESCROWFUNDED: &str = include_str!("../../infra/email/templates/escrow_funded.html");
 const ESCROWREFUNDED: &str = include_str!("../../infra/email/templates/escrow_refunded.html");
 
@@ -237,7 +240,9 @@ mod tests {
         assert!(t
             .html
             .contains("href=\"https://github.com/trustless-oss/app/issues/42\""));
-        assert!(t.html.contains("href=\"https://github.com/trustless-oss/app\""));
+        assert!(t
+            .html
+            .contains("href=\"https://github.com/trustless-oss/app\""));
         // No empty hrefs anywhere.
         assert!(!t.html.contains("href=\"\""));
     }
