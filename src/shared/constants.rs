@@ -13,4 +13,4 @@ pub const BULLMQ_STALLED_INTERVAL_MS: u64 = 30_000;
 pub const BULLMQ_MAX_STALLED_COUNT: u32 = 1;
 
 // Email Service Defaults
-pub const DEFAULT_EMAIL_FROM: &str = "TOSS <no-reply@trustless-oss.xyz>";
+pub const DEFAULT_EMAIL_FROM: &str = "Trustless-OSS <info@trustless-oss.xyz>";
