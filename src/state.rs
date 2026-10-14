@@ -1,7 +1,7 @@
 use crate::{
     config::Config,
     error::AppError,
-    infra::{cache::Cache, db, email::resend_provider, queue::QueueInfra, redis},
+    infra::{db, email::resend_provider, queue::QueueInfra, redis},
 };
 use reqwest::Client;
 use resend_rs::Resend;
@@ -13,7 +13,7 @@ pub struct AppState {
     pub db: toasty::Db,
     pub redis: Option<redis::RedisClient>,
     pub http_client: Client,
-    pub cache: Cache,
+    pub cache: redis::Cache,
     pub queue: QueueInfra,
     pub email: Resend,
 }
@@ -22,8 +22,7 @@ impl AppState {
     pub async fn new(config: Config) -> Result<Self, AppError> {
         let db = db::connect(&config.database_url).await?;
         let redis = Some(redis::build_client(&config.redis_url)?);
-        let cache = Cache::new(redis.clone());
-
+        let cache = redis::Cache::new(redis.clone());
         let queue = match QueueInfra::connect(
             &config.redis_url,
             &config.bullmq_prefix,

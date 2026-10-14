@@ -1,5 +1,5 @@
-use tracing::info;
 use crate::error::AppError;
+use tracing::info;
 static EMBEDDED_MIGRATIONS: toasty::migration::MigrationSet = toasty::embed_migrations!("toasty");
 
 pub async fn run_pending(db: &toasty::Db) -> Result<(), AppError> {

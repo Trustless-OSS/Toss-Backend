@@ -1,8 +1,4 @@
-use redis::Client;
-
-use crate::error::AppError;
-
-pub type RedisClient = Client;
+use super::client::RedisClient;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RedisHealthStatus {
@@ -13,10 +9,6 @@ pub enum RedisHealthStatus {
 #[derive(Debug, Clone, Copy)]
 pub struct RedisHealth {
     pub status: RedisHealthStatus,
-}
-
-pub fn build_client(redis_url: &str) -> Result<RedisClient, AppError> {
-    Client::open(redis_url).map_err(|error| AppError::database(error.to_string()))
 }
 
 pub async fn check_health(client: Option<&RedisClient>) -> RedisHealth {

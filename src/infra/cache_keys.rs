@@ -3,7 +3,7 @@ use uuid::Uuid;
 pub const REPO_TTL: u64 = 300;
 pub const GH_TOKEN_TTL: u64 = 3000;
 pub const CONTRIB_TTL: u64 = 300;
-pub const NOTIFIY_TTL: u64 = 300;
+pub const NOTIFICATION_TTL: u64 = 300;
 
 pub fn repo(id: Uuid) -> String {
     format!("repo:{id}")
@@ -23,4 +23,8 @@ pub fn contrib(github_user_id: i64) -> String {
 
 pub fn notify(id: Uuid) -> String {
     format!("notification:{id}")
+}
+
+pub fn notification_unread_count(profile_id: Uuid) -> String {
+    format!("notification:unread-count:{profile_id}")
 }

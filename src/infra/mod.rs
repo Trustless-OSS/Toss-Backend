@@ -1,4 +1,3 @@
-pub mod cache;
 pub mod cache_keys;
 pub mod db;
 pub mod email;

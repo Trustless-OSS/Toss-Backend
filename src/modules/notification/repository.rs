@@ -1,6 +1,9 @@
-use crate::error::{is_unique_violation, map_db_err, require_db, AppError};
 use crate::shared::models::{entities::Notification, schema};
 use crate::state::AppState;
+use crate::{
+    error::{is_unique_violation, map_db_err, require_db, AppError},
+    infra::cache_keys,
+};
 use uuid::Uuid;
 
 use super::kinds::Delivery;
@@ -30,20 +33,41 @@ impl Repository {
         .exec(&mut db)
         .await
         {
-            Ok(row) => Ok(Some(row.into())),
+            Ok(row) => {
+                state
+                    .cache
+                    .invalidate(&cache_keys::notification_unread_count(n.recipient))
+                    .await;
+                Ok(Some(row.into()))
+            }
             Err(e) if is_unique_violation(&e) => Ok(None),
             Err(e) => Err(map_db_err(e)),
         }
     }
 
-    pub async fn get(state: &AppState, id: Uuid) -> Result<Option<schema::Notification>, AppError> {
+    pub async fn get(state: &AppState, id: Uuid) -> Result<Option<Notification>, AppError> {
+        let cache_key = cache_keys::notify(id);
+        if let Some(notification) = state.cache.get(&cache_key).await {
+            return Ok(Some(notification));
+        }
+
         let mut db = require_db(&state.db)?;
 
-        schema::Notification::filter_by_id(id)
+        let notification = schema::Notification::filter_by_id(id)
             .first()
             .exec(&mut db)
             .await
-            .map_err(map_db_err)
+            .map_err(map_db_err)?
+            .map(Notification::from);
+
+        if let Some(ref notification) = notification {
+            state
+                .cache
+                .set(&cache_key, notification, Some(cache_keys::NOTIFICATION_TTL))
+                .await;
+        }
+
+        Ok(notification)
     }
 
     pub async fn set_email_status(
@@ -61,15 +85,18 @@ impl Repository {
             })
             .exec(&mut db)
             .await
-            .map_err(map_db_err)
+            .map_err(map_db_err)?;
         } else {
             toasty::update!(schema::Notification::filter_by_id(id){
                 email_status : status.to_string()
             })
             .exec(&mut db)
             .await
-            .map_err(map_db_err)
+            .map_err(map_db_err)?;
         }
+
+        state.cache.invalidate(&cache_keys::notify(id)).await;
+        Ok(())
     }
 
     pub async fn list(
@@ -103,6 +130,11 @@ impl Repository {
     }
 
     pub async fn unread_count(state: &AppState, profile_id: Uuid) -> Result<i64, AppError> {
+        let cache_key = cache_keys::notification_unread_count(profile_id);
+        if let Some(count) = state.cache.get(&cache_key).await {
+            return Ok(count);
+        }
+
         let mut db = require_db(&state.db)?;
 
         let list = schema::Notification::filter_by_profile_id(profile_id)
@@ -112,7 +144,13 @@ impl Repository {
 
         let count = list.iter().filter(|n| !n.is_read).count();
 
-        Ok(count as i64)
+        let count = count as i64;
+        state
+            .cache
+            .set(&cache_key, &count, Some(cache_keys::NOTIFICATION_TTL))
+            .await;
+
+        Ok(count)
     }
 
     pub async fn mark_read(
@@ -130,6 +168,12 @@ impl Repository {
             .await
             .map_err(map_db_err)?;
 
+            state.cache.invalidate(&cache_keys::notify(id)).await;
+            state
+                .cache
+                .invalidate(&cache_keys::notification_unread_count(profile_id))
+                .await;
+
             Ok(())
         } else {
             toasty::update!(schema::Notification::filter_by_profile_id(profile_id) {
@@ -138,6 +182,11 @@ impl Repository {
             .exec(&mut db)
             .await
             .map_err(map_db_err)?;
+
+            state
+                .cache
+                .invalidate(&cache_keys::notification_unread_count(profile_id))
+                .await;
 
             Ok(())
         }
