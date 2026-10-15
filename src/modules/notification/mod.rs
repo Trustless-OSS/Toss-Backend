@@ -1,4 +1,4 @@
-pub mod email_templates;
+pub mod email_manager;
 pub mod handlers;
 pub mod kinds;
 pub mod repository;

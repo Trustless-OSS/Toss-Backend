@@ -91,16 +91,11 @@ pub fn email_template_for(
     };
     let base = safe_base(app_url);
     let name = value(data, "name", "there");
-    // GitHub handle of the recipient, shown as "@username". Falls back to empty
-    // so templates can hide it gracefully when it is not available.
     let username = value(data, "username", "");
     let repo = value(data, "repository", "See repository in your account");
     let issue = value(data, "issue", "—");
     let amount = value(data, "amount", "Not provided");
     let asset = value(data, "asset", &value(data, "currency", ""));
-    // Links. These are supplied already-sanitized by the sender (built from the
-    // repo's GitHub full name). If absent, fall back to the app's bounties page
-    // so the template never renders an empty href. Only https links are kept.
     let fallback_link = format!("{base}/bounties");
     let repo_url = safe_link(&value(data, "repo_url", ""), &fallback_link);
     let issue_url = safe_link(&value(data, "issue_url", ""), &fallback_link);
@@ -116,7 +111,6 @@ pub fn email_template_for(
         ("TOSS_TITLE_TOKEN", escape_html(title)),
         ("TOSS_BODY_TOKEN", escape_html(body).replace('\n', "<br>")),
     ];
-    // Single-pass substitution: user content is never processed as another token.
     let original = source.replace("https://www.trustless-oss.xyz", &escape_html(&base));
     let mut html = String::with_capacity(original.len());
     let mut rest = original.as_str();

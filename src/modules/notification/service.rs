@@ -1,9 +1,9 @@
+use resend_rs::types::CreateEmailBaseOptions;
 use tracing::warn;
 use uuid::Uuid;
 
-use crate::{error::AppError, infra::queue::NotificationJobData, state::AppState};
-
 use super::kinds::{Delivery, Notify, Role};
+use crate::{error::AppError, infra::queue::NotificationJobData, state::AppState};
 
 pub struct Service;
 
@@ -279,7 +279,7 @@ impl Service {
             }
         }
 
-        let template = crate::modules::notification::email_templates::email_template_for(
+        let template = crate::modules::notification::email_manager::email_template_for(
             kind,
             &notification.title,
             notification.body.as_deref().unwrap_or(""),
@@ -287,8 +287,6 @@ impl Service {
             &state.config.app_url,
         );
 
-        // Send email via Resend
-        use resend_rs::types::CreateEmailBaseOptions;
         let msg =
             CreateEmailBaseOptions::new(&state.config.email_from, [&email], &template.subject)
                 .with_html(&template.html);
