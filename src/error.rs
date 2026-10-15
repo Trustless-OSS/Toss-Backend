@@ -25,6 +25,8 @@ pub enum AppError {
     #[error("{message}")]
     NotFound { message: String },
     #[error("{message}")]
+    TooManyRequests { message: String },
+    #[error("{message}")]
     WebhookError {
         message: String,
         context: Option<Value>,
@@ -72,6 +74,12 @@ impl AppError {
 
     pub fn not_found(message: impl Into<String>) -> Self {
         Self::NotFound {
+            message: message.into(),
+        }
+    }
+
+    pub fn too_many_requests(message: impl Into<String>) -> Self {
+        Self::TooManyRequests {
             message: message.into(),
         }
     }
@@ -124,6 +132,7 @@ impl IntoResponse for AppError {
             Self::Unauthorized { .. } => StatusCode::UNAUTHORIZED,
             Self::Forbidden { .. } => StatusCode::FORBIDDEN,
             Self::NotFound { .. } => StatusCode::NOT_FOUND,
+            Self::TooManyRequests { .. } => StatusCode::TOO_MANY_REQUESTS,
             Self::WebhookError { .. }
             | Self::StellarError { .. }
             | Self::GitHubError { .. }
@@ -164,4 +173,15 @@ pub fn is_unique_violation(error: &impl std::fmt::Display) -> bool {
         || message.contains("unique")
         || message.contains("duplicate key")
         || message.contains("already exists")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rate_limit_error_uses_too_many_requests_status() {
+        let response = AppError::too_many_requests("Rate limit exceeded").into_response();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
 }

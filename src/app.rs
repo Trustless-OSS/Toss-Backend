@@ -7,10 +7,14 @@ use axum::{
     Json, Router,
 };
 use serde::Serialize;
+use tower_governor::GovernorLayer;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use utoipa::ToSchema;
 
-use crate::{config::parse_cors_allowed_origins, routes, state::AppState};
+use crate::{
+    config::parse_cors_allowed_origins, middleware::rate_limit::ip_limiter_config, routes,
+    state::AppState,
+};
 
 #[derive(Serialize, ToSchema)]
 pub(crate) struct RootResponse {
@@ -60,7 +64,8 @@ pub fn build_app(state: AppState) -> Router {
         .route("/", get(root_handler))
         .merge(routes::router())
         .layer(cors)
-        .layer(TraceLayer::new_for_http());
+        .layer(TraceLayer::new_for_http())
+        .layer(GovernorLayer::new(ip_limiter_config(1, 30)));
 
     router.with_state(state)
 }

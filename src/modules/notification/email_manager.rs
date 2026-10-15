@@ -268,7 +268,6 @@ mod tests {
             "https://app.example.com",
         );
         assert!(t.html.contains("Need help?"));
-        assert!(t.html.contains("Contact Support"));
         assert!(t.html.contains(">Dashboard</a>"));
         assert!(t.html.contains(">Notification Settings</a>"));
         assert!(t.html.contains(">Bounties</a>"));

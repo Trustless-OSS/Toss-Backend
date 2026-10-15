@@ -32,9 +32,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = app::build_app(state.clone())
         .merge(SwaggerUi::new("/swagger").url("/api/v1/doc/openapi.json", ApiDoc::openapi()));
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(lifecycle::shutdown_signal())
-        .await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(lifecycle::shutdown_signal())
+    .await?;
 
     workers.shutdown().await;
     state.queue.close().await;

@@ -9,6 +9,7 @@ use crate::{
     error::{AppError, ErrorResponse},
     infra::queue::BountyJobData,
     middleware::auth::AuthedUser,
+    middleware::rate_limit::check_user_limit,
     modules::contributor::{
         model::{ConnectWalletBody, ContributorMeResponse, OkResponse, UpdateProfileBody},
         repository::{
@@ -28,6 +29,7 @@ use crate::{
     responses(
         (status = 200, description = "Payout wallet saved for the authenticated contributor", body = OkResponse),
         (status = 401, description = "Missing or invalid bearer token", body = ErrorResponse),
+        (status = 429, description = "Per-user rate limit exceeded", body = ErrorResponse),
         (status = 500, description = "Failed to save wallet", body = ErrorResponse)
     )
 )]
@@ -36,6 +38,8 @@ pub(crate) async fn connect_wallet(
     user: AuthedUser,
     Json(body): Json<ConnectWalletBody>,
 ) -> Result<Json<OkResponse>, AppError> {
+    check_user_limit(&state, "wallet-connect", user.github_id, 10, 60, true).await?;
+
     let payout_chain = body
         .payout_chain
         .as_deref()

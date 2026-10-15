@@ -111,6 +111,7 @@ fn to_job_error(error: AppError) -> bullmq::Error {
         | AppError::Unauthorized { .. }
         | AppError::Forbidden { .. }
         | AppError::NotFound { .. }
+        | AppError::TooManyRequests { .. }
         | AppError::WebhookError { .. }
         | AppError::EnvVarError { .. } => bullmq::Error::Unrecoverable(error.to_string()),
         AppError::StellarError { .. }

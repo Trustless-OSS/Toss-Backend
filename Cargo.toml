@@ -47,6 +47,8 @@ bullmq-official = "1.2.6"
 resend-rs = "0.32.1"
 html-escape = "0.2"
 maud = "0.26"
+tower_governor = "0.8.0"
+governor = "0.10.4"
 
 [features]
 default = []
