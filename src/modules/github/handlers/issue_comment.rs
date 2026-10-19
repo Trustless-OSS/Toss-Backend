@@ -319,7 +319,7 @@ async fn handle_payout_command(
         )
         .await?;
         update_issue_status(state, issue.id, "cancelled", None).await?;
-        update_assignment_payout_status(state, issue.id, "failed").await?;
+        update_assignment_payout_status(state, issue.id, "failed", None).await?;
         refund_repo_balance(state, &repo, issue.reward_amount).await?;
 
         // Send BountyRejected notification to assignee

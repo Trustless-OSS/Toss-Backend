@@ -46,6 +46,9 @@ pub struct Bounty {
     pub merged_at: Option<Timestamp>,
     pub paid_at: Option<Timestamp>,
 
+    /// Stellar tx hash of the payout release. Set when `status` becomes `paid`.
+    pub payout_tx_hash: Option<String>,
+
     #[default(Timestamp::now())]
     pub created_at: Timestamp,
 }

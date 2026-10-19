@@ -118,6 +118,7 @@ pub struct Bounty {
     pub assigned_at: Option<DateTime<Utc>>,
     pub merged_at: Option<DateTime<Utc>>,
     pub paid_at: Option<DateTime<Utc>>,
+    pub payout_tx_hash: Option<String>,
 
     pub created_at: DateTime<Utc>,
 }
@@ -224,6 +225,7 @@ impl From<schema::Bounty> for Bounty {
             assigned_at: opt_ts(v.assigned_at),
             merged_at: opt_ts(v.merged_at),
             paid_at: opt_ts(v.paid_at),
+            payout_tx_hash: v.payout_tx_hash,
             created_at: ts(v.created_at),
         }
     }

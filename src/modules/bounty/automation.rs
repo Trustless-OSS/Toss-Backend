@@ -431,7 +431,7 @@ async fn release_full(state: &AppState, ctx: &IssueContext) -> Result<(), AppErr
         .release_milestone(&ctx.repo, &ctx.issue)
         .await?;
 
-    update_assignment_payout_status(state, ctx.issue.id, "released").await?;
+    update_assignment_payout_status(state, ctx.issue.id, "released", Some(&tx_hash)).await?;
     update_bounty_status(state, ctx.issue.id, "paid", None).await?;
 
     let username = ctx
@@ -582,7 +582,9 @@ async fn release_split(
 
     resolve_milestone_dispute(state, &ctx.repo, milestone_index, distributions).await?;
 
-    update_assignment_payout_status(state, ctx.issue.id, "released").await?;
+    // shortcut: split release does not surface a single tx hash (resolve_milestone_dispute
+    // returns (); the send happens inside it). Upgrade when that returns the hash.
+    update_assignment_payout_status(state, ctx.issue.id, "released", None).await?;
     update_bounty_status(state, ctx.issue.id, "paid", None).await?;
 
     // Send PayoutReleased notification to assignee
@@ -658,7 +660,7 @@ pub async fn repair_database(
     milestone_index: i32,
 ) -> Result<(), AppError> {
     if ctx.issue.status != "paid" {
-        update_assignment_payout_status(state, ctx.issue.id, "released").await?;
+        update_assignment_payout_status(state, ctx.issue.id, "released", None).await?;
     }
 
     if ctx.issue.status != "paid" {

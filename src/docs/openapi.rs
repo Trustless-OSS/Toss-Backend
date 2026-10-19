@@ -41,7 +41,8 @@ impl Modify for SecurityAddon {
         (name = "Bounty", description = "Milestones and issue bounty retries"),
         (name = "Escrow", description = "Stellar escrow deploy, fund, refund, and close"),
         (name = "Notifications", description = "In-app and email notifications"),
-        (name = "GitHub", description = "GitHub App webhook ingestion")
+        (name = "GitHub", description = "GitHub App webhook ingestion"),
+        (name = "Dashboard", description = "Maintainer dashboard metrics and public leaderboard")
     ),
     paths(
         crate::app::root_handler,
@@ -75,6 +76,11 @@ impl Modify for SecurityAddon {
         crate::modules::notification::handlers::read_all,
         crate::modules::notification::handlers::read_one,
         crate::modules::github::routes::handle_github_webhook,
+        crate::modules::dashboard::handlers::activity,
+        crate::modules::dashboard::handlers::summary,
+        crate::modules::dashboard::handlers::funds_movement,
+        crate::modules::dashboard::handlers::maintainer_leaderboard,
+        crate::modules::dashboard::handlers::public_leaderboard,
     ),
     components(schemas(
         crate::error::ErrorResponse,
@@ -118,6 +124,12 @@ impl Modify for SecurityAddon {
         crate::modules::notification::handlers::NotificationResponse,
         crate::modules::notification::handlers::UnreadCountResponse,
         crate::modules::github::routes::GitHubWebhookPayload,
+        crate::modules::dashboard::model::ActivityRow,
+        crate::modules::dashboard::model::ActivityKind,
+        crate::modules::dashboard::model::FundsMovementPoint,
+        crate::modules::dashboard::model::DashboardSummary,
+        crate::modules::dashboard::model::LeaderboardEntry,
+        crate::modules::dashboard::model::LeaderboardPage,
     ))
 )]
 pub struct ApiDoc;
@@ -158,6 +170,11 @@ mod tests {
         "/api/v1/notifications/read-all",
         "/api/v1/notifications/{id}/read",
         "/api/v1/webhooks/github",
+        "/api/v1/dashboard/activity",
+        "/api/v1/dashboard/summary",
+        "/api/v1/dashboard/funds-movement",
+        "/api/v1/dashboard/leaderboard",
+        "/api/leaderboard",
     ];
 
     const AUTHENTICATED_OPERATIONS: &[(&str, &str)] = &[
@@ -183,6 +200,10 @@ mod tests {
         ("/api/v1/notifications/unread-count", "get"),
         ("/api/v1/notifications/read-all", "post"),
         ("/api/v1/notifications/{id}/read", "post"),
+        ("/api/v1/dashboard/activity", "get"),
+        ("/api/v1/dashboard/summary", "get"),
+        ("/api/v1/dashboard/funds-movement", "get"),
+        ("/api/v1/dashboard/leaderboard", "get"),
     ];
 
     #[test]

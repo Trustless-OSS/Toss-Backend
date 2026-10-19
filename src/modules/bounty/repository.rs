@@ -505,13 +505,17 @@ pub async fn update_assignment_payout_status(
     state: &AppState,
     bounty_id: Uuid,
     payout_status: &str,
+    tx_hash: Option<&str>,
 ) -> Result<(), AppError> {
     let mut db = require_db(&state.db)?;
     match payout_status {
         "released" => {
+            // Store the payout tx hash in the same UPDATE that marks the bounty paid,
+            // so readers (dashboard, API) get it with no extra query.
             toasty::update!(schema::Bounty::filter_by_id(bounty_id) {
                 paid_at: Some(jiff::Timestamp::now()),
                 status: "paid".to_string(),
+                payout_tx_hash: tx_hash.map(str::to_string),
             })
             .exec(&mut db)
             .await
