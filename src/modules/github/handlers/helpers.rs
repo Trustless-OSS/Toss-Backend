@@ -5,9 +5,17 @@ use reqwest::Method;
 use rust_decimal::Decimal;
 use serde_json::{json, Value};
 
+use tracing::info;
+
 use crate::{
-    error::AppError, infra::stellar::signer::sign_and_send_transaction,
-    modules::escrow::trustless_work::api_client::tw_fetch, shared::models::Repo, state::AppState,
+    error::AppError,
+    infra::{queue::BountyJobData, stellar::signer::sign_and_send_transaction},
+    modules::{
+        bounty::repository::upsert_assignment, contributor::repository::ensure_contributor,
+        escrow::trustless_work::api_client::tw_fetch,
+    },
+    shared::models::{Bounty, Repo},
+    state::AppState,
 };
 
 static ISSUE_NUMBER_RE: LazyLock<Regex> = LazyLock::new(|| {
@@ -100,6 +108,55 @@ pub fn is_help_command(body: &str) -> bool {
 
 pub fn is_retry_command(body: &str) -> bool {
     RETRY_CMD_RE.is_match(body)
+}
+
+/// Adopt a GitHub assignee that was set *before* the bounty record existed.
+///
+/// The `issues.assigned` webhook returns early when no bounty row exists yet, so
+/// assigning first and pricing later (via label or `@trustless-oss <amount>`)
+/// would leave the fresh bounty stuck `open` with no assignee and no automation.
+/// This records that pre-existing assignment and resumes the bounty flow, mirroring
+/// `handle_issue_assigned`.
+pub async fn adopt_existing_assignee(
+    state: &AppState,
+    issue: &Value,
+    bounty: &Bounty,
+) -> Result<(), AppError> {
+    // Prefer the full `assignees` list; fall back to the single `assignee`.
+    let assignee = issue
+        .get("assignees")
+        .and_then(Value::as_array)
+        .and_then(|list| list.first())
+        .or_else(|| issue.get("assignee"));
+
+    let Some(assignee) = assignee.filter(|a| !a.is_null()) else {
+        return Ok(());
+    };
+
+    let assignee_github_id = assignee.get("id").and_then(Value::as_i64).unwrap_or(0);
+    let assignee_login = assignee
+        .get("login")
+        .and_then(Value::as_str)
+        .unwrap_or("contributor");
+    if assignee_github_id == 0 {
+        return Ok(());
+    }
+
+    let profile = ensure_contributor(state, assignee_github_id, assignee_login).await?;
+    upsert_assignment(state, bounty.id, profile.id).await?;
+
+    let outcome = state
+        .queue
+        .enqueue_advance_issue(BountyJobData::new(bounty.id, "reward-configured").notifying())
+        .await?;
+
+    info!(
+        issue = bounty.github_issue_number,
+        assignee = assignee_login,
+        outcome = outcome.label(),
+        "adopted pre-existing GitHub assignee after reward was configured"
+    );
+    Ok(())
 }
 
 pub fn labels_from_payload(issue: &Value) -> Vec<Value> {

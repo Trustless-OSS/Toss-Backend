@@ -15,7 +15,10 @@ use crate::{
         github::{
             auth::post_comment,
             comments,
-            handlers::helpers::{extract_manual_amount, labels_from_payload, sync_repo_balance},
+            handlers::helpers::{
+                adopt_existing_assignee, extract_manual_amount, labels_from_payload,
+                sync_repo_balance,
+            },
         },
         notification::{
             kinds::{Kind, Notify},
@@ -334,7 +337,7 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
         return Ok(());
     }
 
-    if create_issue_and_reserve_balance(
+    let Some(created) = create_issue_and_reserve_balance(
         state,
         &repo,
         github_issue_id,
@@ -344,10 +347,9 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
         matched_level,
     )
     .await?
-    .is_none()
-    {
+    else {
         return Ok(());
-    }
+    };
 
     let contract_id = repo.escrow_contract_id.as_deref().unwrap_or("");
     post_comment(
@@ -359,5 +361,7 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
     .await?;
 
     info!(repo = full_name, issue = issue_number, %reward_amount, "bounty issue created");
+
+    adopt_existing_assignee(state, issue, &created).await?;
     Ok(())
 }

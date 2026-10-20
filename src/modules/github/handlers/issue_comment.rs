@@ -18,10 +18,11 @@ use crate::{
             auth::post_comment,
             comments,
             handlers::helpers::{
-                cancel_bounty_with_refund, dispute_milestone, extract_issue_number,
-                extract_manual_amount, is_help_command, is_privileged_association,
-                is_reject_command, is_retry_command, is_wallet_command, resolve_milestone_dispute,
-                split_amounts, sync_repo_balance, work_completion_percentage,
+                adopt_existing_assignee, cancel_bounty_with_refund, dispute_milestone,
+                extract_issue_number, extract_manual_amount, is_help_command,
+                is_privileged_association, is_reject_command, is_retry_command, is_wallet_command,
+                resolve_milestone_dispute, split_amounts, sync_repo_balance,
+                work_completion_percentage,
             },
         },
         notification::{
@@ -118,6 +119,7 @@ pub async fn handle_issue_comment_created(
         state,
         repo_github_id,
         full_name,
+        issue_payload,
         github_issue_id,
         issue_number,
         issue_title,
@@ -386,6 +388,7 @@ async fn create_or_update_manual_bounty(
     state: &AppState,
     repo_github_id: i64,
     full_name: &str,
+    issue_payload: &Value,
     github_issue_id: i64,
     issue_number: i32,
     issue_title: &str,
@@ -497,6 +500,11 @@ async fn create_or_update_manual_bounty(
         &comments::manual_bounty_created(manual_amount, contract_id, commenter_login),
     )
     .await?;
+
+    // Issue may have been assigned on GitHub before it had a reward; adopt that now.
+    if let Some(created) = created_issue {
+        adopt_existing_assignee(state, issue_payload, &created).await?;
+    }
 
     Ok(())
 }
