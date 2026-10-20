@@ -281,13 +281,6 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
             Service::notify_contributor_quiet(state, n).await;
         }
 
-        post_comment(
-            state,
-            full_name,
-            issue_number,
-            &comments::labeled_bounty_updated(reward_amount, matched_level),
-        )
-        .await?;
         if existing.status == "assigned" && existing.milestone_index.is_none() {
             state
                 .queue

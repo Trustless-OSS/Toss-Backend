@@ -75,17 +75,17 @@ pub const UNPRICED_BOUNTY_CREATED: &str = concat!(
 pub fn wallet_update(login: &str, connect_url: &str) -> String {
     format!(
         "### 🔑 Update Your Wallet\n\n\
-         👋 Hey @{login}! You can change your wallet address here:\n\n\
-         [**Update Wallet →**]({connect_url})\n"
+         👋 Hey @{login}! Head to your profile to update your Stellar wallet:\n\n\
+         [**Complete Your Profile →**]({connect_url})\n"
     )
 }
 
 pub fn maintainer_wallet_required(login: &str, app_url: &str) -> String {
     format!(
-        "### 🔑 Wallet Required\n\n\
+        "### 🔑 Finish Setting Up Your Profile\n\n\
          > [!IMPORTANT]\n\
-         > @{login}, connect your Stellar wallet before using this command.\n\n\
-         [**Connect Wallet →**]({app_url}/connect)\n"
+         > @{login}, sign in and connect your Stellar wallet on your profile before using this command.\n\n\
+         [**Complete Your Profile →**]({app_url}/profile)\n"
     )
 }
 
@@ -133,15 +133,6 @@ pub fn manual_bounty_updated(amount: Decimal) -> String {
     format!(
         "###  Bounty Updated\n\n\
          The reward is now **{amount} USDC**.\n"
-    )
-}
-
-pub fn labeled_bounty_updated(amount: Decimal, difficulty: &str) -> String {
-    format!(
-        "###  Bounty Updated\n\n\
-         | Reward | Level |\n\
-         | :--- | :--- |\n\
-         | 💰 **{amount} USDC** | `{difficulty}` |\n"
     )
 }
 

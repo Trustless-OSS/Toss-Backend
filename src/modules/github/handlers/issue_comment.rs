@@ -78,10 +78,7 @@ pub async fn handle_issue_comment_created(
     }
 
     if is_wallet_command(body) {
-        let connect_url = format!(
-            "{}/connect?issue={github_issue_id}&repo={repo_github_id}",
-            state.config.app_url
-        );
+        let connect_url = format!("{}/profile", state.config.app_url);
         post_comment(
             state,
             full_name,

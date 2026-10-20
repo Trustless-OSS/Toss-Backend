@@ -553,7 +553,7 @@ async fn release_split(
             &ctx.repo.full_name,
             ctx.issue.github_issue_number,
             &format!(
-                "⚠️ Partial payment is waiting for the maintainer to connect a Stellar wallet. [Connect here →]({}/connect)",
+                "⚠️ Partial payment is waiting for the maintainer to connect a Stellar wallet. [Complete your profile →]({}/profile)",
                 state.config.app_url
             ),
         )
@@ -680,20 +680,18 @@ pub async fn notify_waiting_for_wallet(
     ctx: &IssueContext,
     github_username: &str,
 ) -> Result<(), AppError> {
-    let connect_url = format!(
-        "{}/connect?issue={}&repo={}",
-        state.config.app_url, ctx.issue.github_issue_id, ctx.repo.github_repo_id
-    );
+    let connect_url = format!("{}/profile", state.config.app_url);
 
     post_comment(
         state,
         &ctx.repo.full_name,
         ctx.issue.github_issue_number,
         &format!(
-            "### 🔑 Wallet Required\n\n\
+            "### 🔑 Complete Your Profile\n\n\
              The **{} USDC** payout for @{github_username} is ready and waiting on a wallet.\n\n\
-             [**Connect Wallet →**]({connect_url})\n\n\
-             The payout releases automatically once the wallet is connected — no further action needed.",
+             Sign in and connect your Stellar wallet on your profile to receive it:\n\n\
+             [**Complete Your Profile →**]({connect_url})\n\n\
+             The payout releases automatically once your wallet is connected — no further action needed.",
             ctx.issue.reward_amount.unwrap_or(Decimal::ZERO)
         ),
     )
