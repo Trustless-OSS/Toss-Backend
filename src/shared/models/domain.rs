@@ -10,14 +10,14 @@ pub struct BountyWithAssignee {
     pub assignee: Option<Profile>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Difficulty {
-    Low,
-    Medium,
-    High,
-    Manual,
-}
+// #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+// #[serde(rename_all = "lowercase")]
+// pub enum Difficulty {
+//     Low,
+//     Medium,
+//     High,
+//     Manual,
+// }
 
 #[derive(Debug, Clone, Default)]
 pub struct ParsedLabels {
