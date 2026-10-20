@@ -5,7 +5,7 @@ use tracing::{info, warn};
 use crate::{
     error::AppError,
     modules::{
-        bounty::labels::{difficulty_label, get_reward_amount, parse_labels},
+        bounty::labels::{get_reward_amount, parse_labels},
         bounty::repository::{
             cancel_issue, create_bounty_and_reserve_balance, create_issue_and_reserve_balance,
             delete_assignments_for_issue, get_issue_by_repo_and_github_id,
@@ -23,7 +23,6 @@ use crate::{
         },
         repo::repository::get_repo_by_github_id,
     },
-    shared::models::Difficulty,
     state::AppState,
 };
 
@@ -52,22 +51,6 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
         .and_then(|name| name.as_str())
         .map(str::to_ascii_lowercase);
 
-    let difficulty_labels = ["low", "medium", "high", "bonus", "manual"];
-
-    let is_opened = payload.get("action").and_then(Value::as_str) == Some("opened");
-    let is_trigger = event_label.as_ref().is_some_and(|label| {
-        label == "rewarded" || difficulty_labels.contains(&label.as_str()) || label == "rejected"
-    }) || is_opened;
-
-    if !is_trigger {
-        info!(
-            action = payload.get("action").and_then(|v| v.as_str()).unwrap_or(""),
-            label = event_label.as_deref().unwrap_or("none"),
-            "issue event does not contain a bounty-triggering label"
-        );
-        return Ok(());
-    }
-
     let Some(mut repo) = get_repo_by_github_id(state, repo_github_id).await? else {
         warn!(
             github_repo_id = repo_github_id,
@@ -81,6 +64,32 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
         warn!(
             repo = full_name,
             "bounty label ignored because repository escrow is not deployed"
+        );
+        return Ok(());
+    }
+
+    // Build list of all valid trigger labels: configured rewards + reserved labels
+    let reward_labels: Vec<String> = repo.rewards.iter().map(|r| r.label.clone()).collect();
+    let mut all_trigger_labels = reward_labels.clone();
+    all_trigger_labels.extend(vec![
+        "rewarded".to_string(),
+        "rejected".to_string(),
+        "manual".to_string(),
+    ]);
+
+    // Check if this event_label is a trigger
+    let is_opened = payload.get("action").and_then(Value::as_str) == Some("opened");
+    let is_trigger = event_label.as_ref().is_some_and(|label| {
+        all_trigger_labels
+            .iter()
+            .any(|trigger| trigger.eq_ignore_ascii_case(label))
+    }) || is_opened;
+
+    if !is_trigger {
+        info!(
+            action = payload.get("action").and_then(|v| v.as_str()).unwrap_or(""),
+            label = event_label.as_deref().unwrap_or("none"),
+            "issue event does not contain a bounty-triggering label"
         );
         return Ok(());
     }
@@ -131,7 +140,7 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
         return Ok(());
     }
 
-    let parsed = parse_labels(&labels_from_payload(issue));
+    let parsed = parse_labels(&labels_from_payload(issue), &reward_labels);
     if !parsed.is_rewarded {
         info!(
             repo = full_name,
@@ -152,7 +161,7 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
         }
     }
 
-    let Some(difficulty) = parsed.difficulty else {
+    let Some(matched_level) = &parsed.matched_level else {
         if existing.is_some() {
             return Ok(());
         }
@@ -182,17 +191,16 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
         return Ok(());
     };
 
-    let manual_amount = if difficulty == Difficulty::Manual {
+    let manual_amount = if parsed.is_manual {
         let body = issue.get("body").and_then(|v| v.as_str());
         extract_manual_amount(body)
     } else {
         None
     };
 
-    let reward_amount = get_reward_amount(Some(difficulty), &repo, manual_amount);
-    let diff_label = difficulty_label(difficulty);
+    let reward_amount = get_reward_amount(Some(matched_level.as_str()), &repo, manual_amount);
 
-    if difficulty == Difficulty::Manual && manual_amount.is_none() {
+    if parsed.is_manual && manual_amount.is_none() {
         if existing.is_none() {
             // Create the bounty in an unpriced state; the amount can be supplied
             // later from an issue comment without requiring a new label event.
@@ -218,7 +226,7 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
     }
 
     if let Some(ref existing) = existing {
-        if !update_pending_issue_reward(state, &repo, existing.id, reward_amount, diff_label)
+        if !update_pending_issue_reward(state, &repo, existing.id, reward_amount, matched_level)
             .await?
         {
             // Send InsufficientFunds notification to maintainers
@@ -277,7 +285,7 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
             state,
             full_name,
             issue_number,
-            &comments::labeled_bounty_updated(reward_amount, diff_label),
+            &comments::labeled_bounty_updated(reward_amount, matched_level),
         )
         .await?;
         if existing.status == "assigned" && existing.milestone_index.is_none() {
@@ -340,7 +348,7 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
         issue_number,
         title,
         reward_amount,
-        diff_label,
+        matched_level,
     )
     .await?
     .is_none()
@@ -353,7 +361,7 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
         state,
         full_name,
         issue_number,
-        &comments::labeled_bounty_created(reward_amount, diff_label, contract_id),
+        &comments::labeled_bounty_created(reward_amount, matched_level, contract_id),
     )
     .await?;
 

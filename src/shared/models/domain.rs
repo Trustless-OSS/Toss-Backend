@@ -22,5 +22,8 @@ pub enum Difficulty {
 #[derive(Debug, Clone, Default)]
 pub struct ParsedLabels {
     pub is_rewarded: bool,
-    pub difficulty: Option<Difficulty>,
+    pub is_rejected: bool,
+    pub is_manual: bool,
+    /// Matched reward label (e.g., "low", "high", "epic", or custom). None if no match found.
+    pub matched_level: Option<String>,
 }
