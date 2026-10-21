@@ -175,20 +175,26 @@ impl From<schema::Repository> for Repo {
 
 impl From<schema::Profile> for Profile {
     fn from(v: schema::Profile) -> Self {
+        Self::from(&v)
+    }
+}
+
+impl From<&schema::Profile> for Profile {
+    fn from(v: &schema::Profile) -> Self {
         Self {
             id: v.id,
             github_id: v.github_id,
-            username: v.username,
-            full_name: v.full_name,
-            email: v.email,
-            avatar_url: v.avatar_url,
-            bio: v.bio,
-            location: v.location,
-            skills: v.skills,
-            telegram: v.telegram,
-            discord: v.discord,
-            twitter: v.twitter,
-            website: v.website,
+            username: v.username.clone(),
+            full_name: v.full_name.clone(),
+            email: v.email.clone(),
+            avatar_url: v.avatar_url.clone(),
+            bio: v.bio.clone(),
+            location: v.location.clone(),
+            skills: v.skills.clone(),
+            telegram: v.telegram.clone(),
+            discord: v.discord.clone(),
+            twitter: v.twitter.clone(),
+            website: v.website.clone(),
             created_at: ts(v.created_at),
             updated_at: ts(v.updated_at),
         }

@@ -56,39 +56,36 @@ pub async fn list_bounties_for_repo(
     let limit = limit.max(0) as usize;
     let offset = offset.max(0) as usize;
 
-    let all = schema::Bounty::filter_by_repo_id(repo_id)
+    let total = schema::Bounty::filter_by_repo_id(repo_id)
+        .count()
         .exec(&mut db)
         .await
-        .map_err(map_db_err)?;
-    let total = all.len() as i64;
+        .map_err(map_db_err)? as i64;
 
     let bounties = schema::Bounty::filter_by_repo_id(repo_id)
         .order_by(schema::Bounty::fields().created_at().desc())
         .limit(limit)
         .offset(offset)
+        .include(schema::Bounty::fields().reward_level())
+        .include(schema::Bounty::fields().assignee())
         .exec(&mut db)
         .await
         .map_err(map_db_err)?;
 
     let mut rows = Vec::with_capacity(bounties.len());
     for bounty in bounties {
+        let reward_level_label = bounty
+            .reward_level
+            .get()
+            .as_ref()
+            .map(|reward_level| reward_level.label.clone());
+        let assignee = bounty.assignee.get().as_ref().map(Profile::from);
         let bounty_dto = Bounty::from(bounty);
-
-        let assignee = if let Some(assignee_id) = bounty_dto.assignee_id {
-            schema::Profile::filter_by_id(assignee_id)
-                .first()
-                .exec(&mut db)
-                .await
-                .map_err(map_db_err)?
-                .map(Profile::from)
-        } else {
-            None
-        };
 
         rows.push(serde_json::json!({
             "id": bounty_dto.id,
             "repo_id": bounty_dto.repo_id,
-            "reward_level_id": bounty_dto.reward_level_id,
+            "reward_level_label": reward_level_label,
             "milestone_index": bounty_dto.milestone_index,
             "github_issue_id": bounty_dto.github_issue_id,
             "github_issue_number": bounty_dto.github_issue_number,
