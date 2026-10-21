@@ -3,8 +3,6 @@ use serde_json::Value;
 
 use crate::shared::models::{ParsedLabels, Repo};
 
-/// Parse labels from GitHub issue, matching against repo's configured reward levels.
-/// Returns matched reward label (or reserved labels like "manual", "rejected", "rewarded").
 pub fn parse_labels(labels: &[Value], reward_labels: &[String]) -> ParsedLabels {
     let names: Vec<String> = labels
         .iter()

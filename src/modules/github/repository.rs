@@ -129,6 +129,34 @@ pub async fn update_repo_installation_id(
     Ok(())
 }
 
+/// Keep the stored `full_name` in sync with GitHub, keyed by the stable numeric
+/// repo id. GitHub mutates `full_name` on org/user rename while the id is stable;
+/// without this, every `full_name`-keyed lookup (comments, REST URLs) misses after
+/// a rename and automation silently stops in renamed orgs.
+pub async fn sync_repo_full_name(
+    state: &AppState,
+    github_repo_id: i64,
+    full_name: &str,
+) -> Result<(), AppError> {
+    let Some(repo) = get_repo_by_github_id(state, github_repo_id).await? else {
+        return Ok(());
+    };
+    if repo.full_name == full_name {
+        return Ok(());
+    }
+
+    let mut db = require_db(&state.db)?;
+    toasty::update!(schema::Repository::filter_by_github_repo_id(github_repo_id) {
+        full_name: full_name.to_string(),
+    })
+    .exec(&mut db)
+    .await
+    .map_err(map_db_err)?;
+
+    invalidate_repo_cache(state, repo.id, Some(github_repo_id)).await;
+    Ok(())
+}
+
 pub async fn get_github_repo_id_by_full_name(
     state: &AppState,
     full_name: &str,

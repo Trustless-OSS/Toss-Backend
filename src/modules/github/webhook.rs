@@ -9,7 +9,8 @@ use crate::{
         handle_issue_deleted, handle_issue_labeled, handle_issue_unassigned, handle_pr_merged,
     },
     modules::github::repository::{
-        delete_repo_by_github_id, delete_repos_by_installation_id, upsert_installation_repo,
+        delete_repo_by_github_id, delete_repos_by_installation_id, sync_repo_full_name,
+        upsert_installation_repo,
     },
     state::AppState,
 };
@@ -48,6 +49,22 @@ pub async fn process_webhook_job(state: &AppState, job: WebhookJobData) -> Resul
         action,
         "processing GitHub webhook"
     );
+
+    // Repo-scoped events carry repository.{id,full_name}; keep the stored name in
+    // sync so renamed orgs don't break full_name-keyed comment/REST lookups.
+    if matches!(
+        job.event.as_str(),
+        "issues" | "issue_comment" | "pull_request"
+    ) {
+        if let Some(repo) = job.payload.get("repository") {
+            if let (Some(id), Some(full_name)) = (
+                repo.get("id").and_then(serde_json::Value::as_i64),
+                repo.get("full_name").and_then(serde_json::Value::as_str),
+            ) {
+                sync_repo_full_name(state, id, full_name).await?;
+            }
+        }
+    }
 
     match job.event.as_str() {
         "issues" => match action {
