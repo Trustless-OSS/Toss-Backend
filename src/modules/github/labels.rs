@@ -2,10 +2,8 @@ use tokio::task::JoinSet;
 use tracing::{debug, info};
 
 use crate::{
-    error::AppError,
-    modules::github::auth::get_installation_token,
-    shared::constants::DEFAULT_GITHUB_REPOSITORY_LABELS,
-    state::AppState,
+    error::AppError, modules::github::auth::get_installation_token,
+    shared::constants::DEFAULT_GITHUB_REPOSITORY_LABELS, state::AppState,
 };
 
 pub use crate::modules::github::auth::{list_github_labels, GitHubLabel};
@@ -13,7 +11,6 @@ pub use crate::modules::github::auth::{list_github_labels, GitHubLabel};
 const GITHUB_ACCEPT: &str = "application/vnd.github+json";
 const GITHUB_API_VERSION: &str = "2022-11-28";
 const GITHUB_USER_AGENT: &str = "Trustless-OSS-Bot";
-
 
 pub async fn ensure_default_repository_labels(
     state: &AppState,

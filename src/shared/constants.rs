@@ -25,7 +25,6 @@ pub struct DefaultGithubLabel {
 }
 
 /// Labels required for bounty discovery and priority classification.
-
 pub const DEFAULT_GITHUB_REPOSITORY_LABELS: [DefaultGithubLabel; 4] = [
     DefaultGithubLabel {
         name: "rewarded",
