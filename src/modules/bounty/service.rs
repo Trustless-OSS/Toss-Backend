@@ -12,10 +12,16 @@ use crate::{
     modules::{
         bounty::{
             automation,
-            model::{Milestone, MilestoneResponse, RetryIssueResponse},
+            model::{Milestone, MilestoneResponse, RejectIssueResponse, RetryIssueResponse},
             repository::{
+                cancel_bounty_with_refund, get_assignment_for_issue,
                 get_bounty_by_repo_and_github_id, get_bounty_with_repo, is_assigned_contributor,
             },
+        },
+        github::handlers::helpers::{hold_milestone_on_chain, reject_milestone_on_chain},
+        notification::{
+            kinds::{Kind, Notify},
+            service::Service,
         },
         repo::repository::{get_repo_by_github_id, is_maintainer},
     },
@@ -141,6 +147,99 @@ impl BountyService {
             message: Some("The bounty state machine will run shortly"),
         }))
     }
+
+    pub async fn reject_issue(
+        State(state): State<AppState>,
+        user: AuthedUser,
+        Path(bounty_id): Path<Uuid>,
+    ) -> Result<Json<RejectIssueResponse>, AppError> {
+        let (bounty, repo) = get_bounty_with_repo(&state, bounty_id)
+            .await?
+            .ok_or_else(|| AppError::not_found("Issue not found"))?;
+
+        if !is_maintainer(&state, user.github_id, repo.id).await? {
+            return Err(AppError::forbidden(
+                "Forbidden: Only the repository owner or maintainer can reject bounties",
+            ));
+        }
+
+        if bounty.status == "paid" || bounty.status == "cancelled" {
+            return Err(AppError::bad_request(
+                "Bounty has already been paid or cancelled",
+            ));
+        }
+
+        let refunded_amount = bounty.reward_amount.unwrap_or_default();
+
+        reject_bounty_with_pool_refund(&state, &bounty, &repo).await?;
+
+        Ok(Json(RejectIssueResponse {
+            ok: true,
+            refunded_amount: refunded_amount.to_string(),
+        }))
+    }
+
+    pub async fn hold_issue(
+        State(state): State<AppState>,
+        user: AuthedUser,
+        Path(bounty_id): Path<Uuid>,
+    ) -> Result<Json<crate::modules::bounty::model::HoldIssueResponse>, AppError> {
+        let (bounty, repo) = get_bounty_with_repo(&state, bounty_id)
+            .await?
+            .ok_or_else(|| AppError::not_found("Issue not found"))?;
+        if !is_maintainer(&state, user.github_id, repo.id).await? {
+            return Err(AppError::forbidden(
+                "Forbidden: Only the repository owner or maintainer can hold bounties",
+            ));
+        }
+        if bounty.status == "paid" || bounty.status == "cancelled" {
+            return Err(AppError::bad_request(
+                "Bounty has already been paid or cancelled",
+            ));
+        }
+        let milestone_index = bounty
+            .milestone_index
+            .ok_or_else(|| AppError::bad_request("Bounty has not been pushed to escrow"))?;
+        hold_milestone_on_chain(&state, &repo, milestone_index).await?;
+        Ok(Json(crate::modules::bounty::model::HoldIssueResponse {
+            ok: true,
+        }))
+    }
+}
+
+pub async fn reject_bounty_with_pool_refund(
+    state: &AppState,
+    bounty: &crate::shared::models::Bounty,
+    repo: &crate::shared::models::Repo,
+) -> Result<(), AppError> {
+    if let Some(milestone_index) = bounty.milestone_index {
+        reject_milestone_on_chain(state, repo, milestone_index).await?;
+    }
+
+    if let Some((_, Some(contributor))) = get_assignment_for_issue(state, bounty.id).await? {
+        Service::notify_contributor_quiet(
+            state,
+            Notify {
+                recipient: contributor.id,
+                kind: Kind::BountyRejected,
+                title: format!("Bounty Rejected: #{}", bounty.github_issue_number),
+                body: format!(
+                    "Your work on issue #{} has been rejected",
+                    bounty.github_issue_number
+                ),
+                ref_id: Some(bounty.id),
+                data: serde_json::json!({
+                    "repoId": repo.id,
+                    "issueNumber": bounty.github_issue_number,
+                }),
+                dedupe_key: format!("rejected:{}", bounty.id),
+                actor: None,
+            },
+        )
+        .await;
+    }
+
+    cancel_bounty_with_refund(state, repo, bounty.id, bounty.reward_amount).await
 }
 
 async fn upsert_profile_wallet(

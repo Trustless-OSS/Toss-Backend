@@ -11,8 +11,12 @@ use crate::{
     error::AppError,
     infra::{queue::BountyJobData, stellar::signer::sign_and_send_transaction},
     modules::{
-        bounty::repository::upsert_assignment, contributor::repository::ensure_contributor,
-        escrow::trustless_work::api_client::tw_fetch,
+        bounty::repository::upsert_assignment,
+        contributor::repository::ensure_contributor,
+        escrow::{
+            milestone::MilestoneStatus,
+            trustless_work::{api_client::tw_fetch, escrow_service::TrustlessWorkAPI},
+        },
     },
     shared::models::{Bounty, Repo},
     state::AppState,
@@ -285,6 +289,9 @@ pub async fn resolve_milestone_dispute(
                 )
                 .await?;
             }
+            TrustlessWorkAPI::new(state.clone())
+                .set_milestone_status(repo, milestone_index, MilestoneStatus::Resolved)
+                .await?;
             Ok(())
         }
         Err(error) => {
@@ -386,6 +393,44 @@ pub async fn zero_milestone_on_chain(
     }
 
     Ok(())
+}
+
+pub async fn reject_milestone_on_chain(
+    state: &AppState,
+    repo: &Repo,
+    milestone_index: i32,
+) -> Result<(), AppError> {
+    set_milestone_status_on_chain(state, repo, milestone_index, MilestoneStatus::Rejected).await
+}
+
+pub async fn hold_milestone_on_chain(
+    state: &AppState,
+    repo: &Repo,
+    milestone_index: i32,
+) -> Result<(), AppError> {
+    let contract_id = repo
+        .escrow_contract_id
+        .as_deref()
+        .ok_or_else(|| AppError::bad_request("No escrow deployed"))?;
+    dispute_milestone(
+        state,
+        contract_id,
+        milestone_index,
+        &state.config.platform_stellar_public_key,
+    )
+    .await?;
+    set_milestone_status_on_chain(state, repo, milestone_index, MilestoneStatus::Disputed).await
+}
+
+pub async fn set_milestone_status_on_chain(
+    state: &AppState,
+    repo: &Repo,
+    milestone_index: i32,
+    status: MilestoneStatus,
+) -> Result<(), AppError> {
+    TrustlessWorkAPI::new(state.clone())
+        .set_milestone_status(repo, milestone_index, status)
+        .await
 }
 
 pub fn split_amounts(reward: Decimal, percentage: i32) -> (Decimal, Decimal) {

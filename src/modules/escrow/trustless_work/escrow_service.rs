@@ -10,6 +10,7 @@ use crate::{
     modules::{
         bounty::repository::update_issue_status,
         escrow::{
+            milestone::MilestoneStatus,
             repository::{
                 clear_repo_escrow, update_repo_escrow_balance, update_repo_escrow_contract,
             },
@@ -98,6 +99,32 @@ impl TrustlessWorkAPI {
         Ok(on_chain_balance)
     }
 
+    pub async fn set_milestone_status(
+        &self,
+        repo: &Repo,
+        milestone_index: i32,
+        status: MilestoneStatus,
+    ) -> Result<(), AppError> {
+        let contract_id = repo
+            .escrow_contract_id
+            .as_deref()
+            .ok_or_else(|| AppError::bad_request("No escrow deployed"))?;
+        let response = tw_fetch(
+            &self.state,
+            "/escrow/multi-release/change-milestone-status",
+            Method::POST,
+            Some(json!({
+                "contractId": contract_id,
+                "milestoneIndex": milestone_index.to_string(),
+                "newStatus": status.as_str(),
+                "newEvidence": "",
+                "serviceProvider": self.state.config.platform_stellar_public_key,
+            })),
+        )
+        .await?;
+        self.sign_platform_transaction_if_present(&response).await
+    }
+
     pub async fn push_milestone(
         &self,
         repo: &Repo,
@@ -129,7 +156,7 @@ impl TrustlessWorkAPI {
         let milestone_data = json!({
             "description": format!("Issue #{}: {}", issue.github_issue_number, title),
             "amount": decimal_json_number(reward, "milestone amount")?,
-            "status": "pending",
+            "status": MilestoneStatus::Pending.as_str(),
             "evidence": "",
             "flags": { "approved": false, "released": false, "disputed": false, "resolved": false },
             "receiver": receiver,
@@ -272,6 +299,8 @@ impl TrustlessWorkAPI {
         }
 
         if state.released {
+            self.set_milestone_status(repo, milestone_index, MilestoneStatus::Paid)
+                .await?;
             if let Err(error) = self.sync_balance(repo).await {
                 tracing::warn!(%error, "failed to sync escrow balance after release");
             }
@@ -295,6 +324,9 @@ impl TrustlessWorkAPI {
                 "Milestone {milestone_index} on {contract_id} was not marked released after release-milestone-funds"
             )));
         }
+
+        self.set_milestone_status(repo, milestone_index, MilestoneStatus::Paid)
+            .await?;
 
         if let Err(error) = self.sync_balance(repo).await {
             tracing::warn!(%error, "failed to sync escrow balance after release");
@@ -338,7 +370,7 @@ impl TrustlessWorkAPI {
             Some(json!({
                 "contractId": contract_id,
                 "milestoneIndex": milestone_index.to_string(),
-                "newStatus": "completed",
+                "newStatus": MilestoneStatus::Completed.as_str(),
                 "newEvidence": evidence,
                 "serviceProvider": platform_key,
             })),
@@ -523,7 +555,7 @@ impl TrustlessWorkAPI {
 
         if is_dual_wallet {
             for (index, milestone) in milestones.iter().enumerate() {
-                if milestone_flag(milestone, "released") || milestone_flag(milestone, "resolved") {
+                if milestone_is_terminal(milestone) {
                     continue;
                 }
 
@@ -582,6 +614,8 @@ impl TrustlessWorkAPI {
                 if let Some(unsigned) = resolve.get("unsignedTransaction").and_then(Value::as_str) {
                     sign_and_send_transaction(&self.state, unsigned, Some(&resolver_secret_key))
                         .await?;
+                    self.set_milestone_status(repo, index as i32, MilestoneStatus::Refunded)
+                        .await?;
                     remaining_balance = (remaining_balance
                         - consumed_balance_amount(
                             distribution_amount,
@@ -595,7 +629,7 @@ impl TrustlessWorkAPI {
             let new_milestones: Vec<Value> = milestones
                 .iter()
                 .map(|milestone| {
-                    if milestone_flag(milestone, "released") || milestone_flag(milestone, "resolved") {
+                    if milestone_is_terminal(milestone) {
                         return milestone.clone();
                     }
 
@@ -606,7 +640,7 @@ impl TrustlessWorkAPI {
                         ),
                         "amount": milestone.get("amount").cloned().unwrap_or(json!(0)),
                         "receiver": maintainer_wallet,
-                        "status": "pending",
+                        "status": MilestoneStatus::Pending.as_str(),
                         "evidence": milestone.get("evidence").cloned().unwrap_or(json!("")),
                         "flags": { "approved": false, "released": false, "disputed": false, "resolved": false },
                     })
@@ -666,6 +700,8 @@ impl TrustlessWorkAPI {
                     self.sign_platform_transaction_if_present(&response).await?;
                 }
                 total_refunded += amount;
+                self.set_milestone_status(repo, index as i32, MilestoneStatus::Refunded)
+                    .await?;
             }
         }
 
@@ -868,6 +904,10 @@ fn milestone_flag(milestone: &Value, name: &str) -> bool {
         .and_then(|flags| flags.get(name))
         .and_then(Value::as_bool)
         .unwrap_or(false)
+}
+
+fn milestone_is_terminal(milestone: &Value) -> bool {
+    milestone_flag(milestone, "released") || milestone_flag(milestone, "resolved")
 }
 
 fn build_receiver(payout_chain: &str, payout_address: &str) -> Result<Value, AppError> {
