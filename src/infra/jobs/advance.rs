@@ -328,13 +328,13 @@ pub(crate) async fn run_release_payout(
     match automation::evaluate(state, &ctx).await? {
         Decision::ReleasePayout {
             milestone_index,
-            split_percentage,
+            escrow_amount,
         } => {
-            automation::release_payout(state, &ctx, milestone_index, split_percentage).await?;
+            automation::release_payout(state, &ctx, milestone_index, escrow_amount).await?;
             Ok(serde_json::json!({
                 "released": true,
                 "milestoneIndex": milestone_index,
-                "splitPercentage": split_percentage,
+                "escrowAmount": escrow_amount.to_string(),
             }))
         }
         Decision::RepairDatabase { milestone_index } => {
@@ -382,7 +382,7 @@ mod tests {
             },
             Decision::ReleasePayout {
                 milestone_index: 0,
-                split_percentage: None,
+                escrow_amount: rust_decimal::Decimal::ONE,
             },
             Decision::RepairDatabase { milestone_index: 0 },
         ] {

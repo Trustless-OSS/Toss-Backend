@@ -461,13 +461,18 @@ pub async fn update_pending_issue_reward(
     update_pending_bounty_reward(state, repo, bounty_id, reward_amount, reward_level_id).await
 }
 
-// update_assignment_completion_percentage — completion_percentage is removed from the
-// new schema. This is a no-op shim so callers continue to compile.
-pub async fn update_assignment_completion_percentage(
-    _state: &AppState,
-    _bounty_id: Uuid,
-    _percentage: Decimal,
+pub async fn set_bounty_reward_amount(
+    state: &AppState,
+    bounty_id: Uuid,
+    reward_amount: Decimal,
 ) -> Result<(), AppError> {
+    let mut db = require_db(&state.db)?;
+    toasty::update!(schema::Bounty::filter_by_id(bounty_id) {
+        reward_amount: Some(reward_amount),
+    })
+    .exec(&mut db)
+    .await
+    .map_err(map_db_err)?;
     Ok(())
 }
 

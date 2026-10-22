@@ -8,9 +8,10 @@ use crate::{
         bounty::repository::list_issues_for_repo,
         github::{
             auth::{
-                delete_github_installation, delete_github_label, install_repo_webhook,
-                list_github_labels, list_installation_repos, remove_repo_from_installation,
+                delete_github_installation, install_repo_webhook, list_installation_repos,
+                remove_repo_from_installation,
             },
+            labels::{delete_github_label, list_github_labels, GitHubLabel},
             repository::upsert_installation_repo,
         },
         repo::{
@@ -270,7 +271,7 @@ pub(crate) async fn get_github_labels(
     state: &AppState,
     repo_id: Uuid,
     github_id: i64,
-) -> Result<Vec<crate::modules::github::auth::GitHubLabel>, AppError> {
+) -> Result<Vec<GitHubLabel>, AppError> {
     let repo = get_repo_by_id(state, repo_id)
         .await?
         .ok_or_else(|| AppError::not_found("Repo not found"))?;

@@ -5,6 +5,7 @@ use tracing::{info, warn};
 use crate::{
     error::AppError,
     modules::{
+        bounty::automation::escrow_reward_amount,
         bounty::labels::{get_reward_amount, parse_labels},
         bounty::repository::{
             cancel_issue, create_bounty_and_reserve_balance, create_issue_and_reserve_balance,
@@ -109,6 +110,8 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
     if event_label.as_deref() == Some("rejected") {
         if let Some(ref existing) = existing {
             if existing.status != "paid" && existing.status != "cancelled" {
+                let reward = escrow_reward_amount(state, &repo, existing).await?;
+
                 // Send BountyRejected notification to assignee
                 if let Some(assignee_id) = existing.assignee_id {
                     let n = Notify {
@@ -129,8 +132,7 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
 
                 cancel_issue(state, existing.id).await?;
                 delete_assignments_for_issue(state, existing.id).await?;
-                refund_repo_balance(state, &repo, existing.reward_amount).await?;
-                let reward = existing.reward_amount.unwrap_or_default();
+                refund_repo_balance(state, &repo, Some(reward)).await?;
                 post_comment(
                     state,
                     full_name,

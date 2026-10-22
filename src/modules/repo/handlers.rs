@@ -310,7 +310,7 @@ pub(crate) async fn list_github_labels(
     State(state): State<AppState>,
     user: AuthedUser,
     Path(repo_id): Path<Uuid>,
-) -> Result<Json<Vec<crate::modules::github::auth::GitHubLabel>>, AppError> {
+) -> Result<Json<Vec<crate::modules::github::labels::GitHubLabel>>, AppError> {
     let labels = service::get_github_labels(&state, repo_id, user.github_id).await?;
     Ok(Json(labels))
 }

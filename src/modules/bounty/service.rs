@@ -169,9 +169,7 @@ impl BountyService {
             ));
         }
 
-        let refunded_amount = bounty.reward_amount.unwrap_or_default();
-
-        reject_bounty_with_pool_refund(&state, &bounty, &repo).await?;
+        let refunded_amount = reject_bounty_with_pool_refund(&state, &bounty, &repo).await?;
 
         Ok(Json(RejectIssueResponse {
             ok: true,
@@ -211,7 +209,9 @@ pub async fn reject_bounty_with_pool_refund(
     state: &AppState,
     bounty: &crate::shared::models::Bounty,
     repo: &crate::shared::models::Repo,
-) -> Result<(), AppError> {
+) -> Result<rust_decimal::Decimal, AppError> {
+    let reward_amount = automation::escrow_reward_amount(state, repo, bounty).await?;
+
     if let Some(milestone_index) = bounty.milestone_index {
         reject_milestone_on_chain(state, repo, milestone_index).await?;
     }
@@ -239,7 +239,8 @@ pub async fn reject_bounty_with_pool_refund(
         .await;
     }
 
-    cancel_bounty_with_refund(state, repo, bounty.id, bounty.reward_amount).await
+    cancel_bounty_with_refund(state, repo, bounty.id, Some(reward_amount)).await?;
+    Ok(reward_amount)
 }
 
 async fn upsert_profile_wallet(
@@ -286,9 +287,9 @@ async fn advance_inline(state: &AppState, bounty_id: Uuid) -> Result<(), AppErro
         }
         Decision::ReleasePayout {
             milestone_index,
-            split_percentage,
+            escrow_amount,
         } => {
-            automation::release_payout(state, &ctx, milestone_index, split_percentage).await?;
+            automation::release_payout(state, &ctx, milestone_index, escrow_amount).await?;
         }
         Decision::RepairDatabase { milestone_index } => {
             automation::repair_database(state, &ctx, milestone_index).await?;

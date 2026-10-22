@@ -4,7 +4,10 @@ use tracing::info;
 use crate::{
     error::AppError,
     modules::{
-        bounty::repository::{cancel_bounty_with_refund, get_issue_by_repo_and_github_id},
+        bounty::{
+            automation::escrow_reward_amount,
+            repository::{cancel_bounty_with_refund, get_issue_by_repo_and_github_id},
+        },
         github::handlers::helpers::zero_milestone_on_chain,
         notification::{
             kinds::{Kind, Notify},
@@ -49,13 +52,13 @@ pub async fn handle_issue_deleted(state: &AppState, payload: &Value) -> Result<(
         return Ok(());
     }
 
+    let reward = escrow_reward_amount(state, &repo, &issue_record).await?;
+
     if issue_record.status == "assigned" {
         if let Some(milestone_index) = issue_record.milestone_index {
             zero_milestone_on_chain(state, &repo, milestone_index).await?;
         }
     }
-
-    let reward = issue_record.reward_amount;
 
     // Send BountyCancelled notification to assignee
     if let Some(assignee_id) = issue_record.assignee_id {
@@ -78,10 +81,10 @@ pub async fn handle_issue_deleted(state: &AppState, payload: &Value) -> Result<(
         Service::notify_contributor_quiet(state, n).await;
     }
 
-    cancel_bounty_with_refund(state, &repo, issue_record.id, reward).await?;
+    cancel_bounty_with_refund(state, &repo, issue_record.id, Some(reward)).await?;
     info!(
         issue = issue_number,
-        reward = %reward.unwrap_or_default(),
+        reward = %reward,
         "deleted issue bounty cancelled and reserved balance restored"
     );
     Ok(())

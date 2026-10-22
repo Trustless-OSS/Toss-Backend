@@ -4,8 +4,10 @@ use tracing::{error, info};
 use crate::{
     error::AppError,
     modules::{
+        bounty::automation::escrow_reward_amount,
         bounty::repository::{
             delete_assignments_for_issue, get_issue_by_repo_and_github_id, reset_issue_to_pending,
+            set_bounty_reward_amount,
         },
         github::{auth::post_comment, comments, handlers::helpers::zero_milestone_on_chain},
         notification::{
@@ -20,17 +22,21 @@ use crate::{
 pub async fn handle_issue_unassigned(state: &AppState, payload: &Value) -> Result<(), AppError> {
     let repository = payload
         .get("repository")
-        .ok_or_else(|| AppError::webhook("issues.unassigned payload missing repository"))?;
+        .ok_or_else(|| AppError::webhook("unassigned payload missing repository"))?;
+
     let issue = payload
         .get("issue")
-        .ok_or_else(|| AppError::webhook("issues.unassigned payload missing issue"))?;
+        .ok_or_else(|| AppError::webhook("unassigned payload missing issue"))?;
 
     let repo_github_id = repository.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+
     let full_name = repository
         .get("full_name")
         .and_then(|v| v.as_str())
         .unwrap_or("");
+
     let github_issue_id = issue.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+
     let issue_number = issue.get("number").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
 
     let Some(repo) = get_repo_by_github_id(state, repo_github_id).await? else {
@@ -49,6 +55,15 @@ pub async fn handle_issue_unassigned(state: &AppState, payload: &Value) -> Resul
 
     // Capture assignee before deletion for notification
     let assignee_id = issue_record.assignee_id;
+
+    let reward = if issue_record.status == "assigned" && issue_record.milestone_index.is_some() {
+        escrow_reward_amount(state, &repo, &issue_record).await?
+    } else {
+        issue_record.reward_amount.unwrap_or_default()
+    };
+    if issue_record.status == "assigned" && issue_record.milestone_index.is_some() {
+        set_bounty_reward_amount(state, issue_record.id, reward).await?;
+    }
 
     delete_assignments_for_issue(state, issue_record.id).await?;
 
@@ -88,7 +103,6 @@ pub async fn handle_issue_unassigned(state: &AppState, payload: &Value) -> Resul
         Service::notify_contributor_quiet(state, n).await;
     }
 
-    let reward = issue_record.reward_amount.unwrap_or_default();
     post_comment(
         state,
         full_name,

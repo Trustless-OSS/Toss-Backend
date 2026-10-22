@@ -16,7 +16,7 @@ use crate::{
             },
             trustless_work::{escrow_service::TrustlessWorkAPI, tx_builder::TxBuilder},
         },
-        github::auth::post_comment,
+        github::{auth::post_comment, labels::ensure_default_repository_labels},
         notification::{
             kinds::{Kind, Notify},
             service::Service,
@@ -96,6 +96,14 @@ pub async fn submit_deploy(
     let contract_id = TrustlessWorkAPI::new(state.clone())
         .deploy(body.repo_id, &body.signed_xdr)
         .await?;
+
+    if let Some(repo) = get_repo_by_id(&state, body.repo_id).await? {
+        if let Err(error) =
+            ensure_default_repository_labels(&state, repo.github_repo_id, &repo.full_name).await
+        {
+            error!(%error, repo = %repo.full_name, "failed to create default labels after escrow deploy");
+        }
+    }
 
     Ok(Json(ContractIdResponse { contract_id }))
 }

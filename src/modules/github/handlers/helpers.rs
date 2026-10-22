@@ -1,3 +1,4 @@
+use std::str::FromStr;
 use std::sync::LazyLock;
 
 use regex::Regex;
@@ -34,7 +35,7 @@ static MANUAL_AMOUNT_RE: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 static WORK_COMPLETION_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)@trustless-oss\s+/?(?:pay|split|work|work-completion|completion)\s+([0-9]+)\b")
+    Regex::new(r"(?i)@trustless-oss\s+/?(?:pay|split|work|work-completion|completion)\s+([0-9]+(?:\.[0-9]+)?)(\s*%)?")
         .expect("valid work completion regex")
 });
 
@@ -91,11 +92,14 @@ pub fn is_privileged_association(association: &str) -> bool {
     )
 }
 
-pub fn work_completion_percentage(body: &str) -> Option<i32> {
-    WORK_COMPLETION_RE
-        .captures(body)
-        .and_then(|caps| caps.get(1))
-        .and_then(|m| m.as_str().parse().ok())
+pub fn payout_request(body: &str) -> Option<crate::modules::bounty::payout::PayoutRequest> {
+    let captures = WORK_COMPLETION_RE.captures(body)?;
+    let amount = Decimal::from_str(captures.get(1)?.as_str()).ok()?;
+    Some(if captures.get(2).is_some() {
+        crate::modules::bounty::payout::PayoutRequest::Percentage(amount)
+    } else {
+        crate::modules::bounty::payout::PayoutRequest::Fixed(amount)
+    })
 }
 
 pub fn is_reject_command(body: &str) -> bool {
@@ -222,9 +226,13 @@ pub async fn dispute_milestone(
 
     match result {
         Ok(response) => {
-            if let Some(unsigned) = response.get("unsignedTransaction").and_then(|v| v.as_str()) {
-                sign_and_send_transaction(state, unsigned, None).await?;
-            }
+            let unsigned = response
+                .get("unsignedTransaction")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    AppError::internal("dispute-milestone response is missing unsignedTransaction")
+                })?;
+            sign_and_send_transaction(state, unsigned, None).await?;
             Ok(())
         }
         Err(error) if error.to_string().contains("already in dispute") => Ok(()),
@@ -236,8 +244,29 @@ pub async fn resolve_milestone_dispute(
     state: &AppState,
     repo: &Repo,
     milestone_index: i32,
-    distributions: Vec<Value>,
+    total_amount: rust_decimal::Decimal,
+    distributions: Vec<crate::modules::bounty::payout::PayoutDistribution>,
 ) -> Result<(), AppError> {
+    crate::modules::bounty::payout::PayoutDistribution::validate_total(
+        total_amount,
+        &distributions,
+    )?;
+
+    // `rust_decimal` is configured with `serde-with-str`, but Trustless Work
+    // validates distribution amounts as JSON numbers.
+    let distributions = distributions
+        .into_iter()
+        .map(|distribution| {
+            Ok(json!({
+                "address": distribution.address,
+                "amount": crate::modules::escrow::trustless_work::api_client::decimal_json_number(
+                    distribution.amount,
+                    "distribution amount",
+                )?,
+            }))
+        })
+        .collect::<Result<Vec<_>, AppError>>()?;
+
     let platform_key = state.config.platform_stellar_public_key.as_str();
     let contract_id = repo
         .escrow_contract_id
@@ -277,18 +306,24 @@ pub async fn resolve_milestone_dispute(
 
     match result {
         Ok(response) => {
-            if let Some(unsigned) = response.get("unsignedTransaction").and_then(|v| v.as_str()) {
-                sign_and_send_transaction(
-                    state,
-                    unsigned,
-                    if is_dual_wallet {
-                        Some(resolver_secret.as_str())
-                    } else {
-                        None
-                    },
-                )
-                .await?;
-            }
+            let unsigned = response
+                .get("unsignedTransaction")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    AppError::internal(
+                        "resolve-milestone-dispute response is missing unsignedTransaction",
+                    )
+                })?;
+            sign_and_send_transaction(
+                state,
+                unsigned,
+                if is_dual_wallet {
+                    Some(resolver_secret.as_str())
+                } else {
+                    None
+                },
+            )
+            .await?;
             TrustlessWorkAPI::new(state.clone())
                 .set_milestone_status(repo, milestone_index, MilestoneStatus::Resolved)
                 .await?;
@@ -480,12 +515,16 @@ mod tests {
     #[test]
     fn recognizes_commands_case_insensitively() {
         assert_eq!(
-            work_completion_percentage("@trustless-oss /WORK-COMPLETION 75"),
-            Some(75)
+            payout_request("@trustless-oss /WORK-COMPLETION 75"),
+            Some(crate::modules::bounty::payout::PayoutRequest::Fixed(
+                "75".parse().unwrap()
+            ))
         );
         assert_eq!(
-            work_completion_percentage("@trustless-oss pay 60"),
-            Some(60)
+            payout_request("@trustless-oss pay 60%"),
+            Some(crate::modules::bounty::payout::PayoutRequest::Percentage(
+                "60".parse().unwrap()
+            ))
         );
         assert!(is_reject_command("@Trustless-OSS /rejected"));
         assert!(is_reject_command("@trustless-oss invalid"));

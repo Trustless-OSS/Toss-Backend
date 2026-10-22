@@ -14,3 +14,37 @@ pub const BULLMQ_MAX_STALLED_COUNT: u32 = 1;
 
 // Email Service Defaults
 pub const DEFAULT_EMAIL_FROM: &str = "Trustless-OSS <info@trustless-oss.xyz>";
+
+/// A GitHub label that TOSS creates for every connected repository.
+#[derive(Debug, Clone, Copy)]
+pub struct DefaultGithubLabel {
+    pub name: &'static str,
+    /// Six-character GitHub hex color without a leading `#`.
+    pub color: &'static str,
+    pub description: &'static str,
+}
+
+/// Labels required for bounty discovery and priority classification.
+
+pub const DEFAULT_GITHUB_REPOSITORY_LABELS: [DefaultGithubLabel; 4] = [
+    DefaultGithubLabel {
+        name: "rewarded",
+        color: "0E8A16",
+        description: "Issue has a bounty",
+    },
+    DefaultGithubLabel {
+        name: "low",
+        color: "2DA44E",
+        description: "Low priority",
+    },
+    DefaultGithubLabel {
+        name: "medium",
+        color: "FBCA04",
+        description: "Medium priority",
+    },
+    DefaultGithubLabel {
+        name: "high",
+        color: "D93F0B",
+        description: "High priority",
+    },
+];

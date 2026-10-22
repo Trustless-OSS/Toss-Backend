@@ -194,21 +194,13 @@ pub fn contributor_unassigned(reward: Decimal) -> String {
 // Payout
 // ─────────────────────────────────────────────────────────────
 
-pub fn payout_intent_saved(
-    percentage: i32,
-    contributor_amount: Decimal,
-    maintainer_amount: Decimal,
-    contributor_username: &str,
-) -> String {
+pub fn payout_intent_saved(contributor_amount: Decimal, contributor_username: &str) -> String {
     format!(
-        "### 📋 Payout Split Saved ({percentage}%)\n\n\
-         When this PR is merged, the bounty will be split:\n\n\
+        "### 📋 Payout Updated ({contributor_amount} USDC)\n\n\
+         When this PR is merged, the contributor will receive:\n\n\
          | Recipient | Amount |\n\
          | :--- | :--- |\n\
-         | 👩‍💻 @{contributor_username} | **{contributor_amount} USDC** |\n\
-         | 🛠️ Maintainer | **{maintainer_amount} USDC** |\n\n\
-         ---\n\
-         _You can change this anytime before merging with `@trustless-oss pay <percentage>`._\n"
+         | 👩‍💻 @{contributor_username} | **{contributor_amount} USDC** |\n",
     )
 }
 
