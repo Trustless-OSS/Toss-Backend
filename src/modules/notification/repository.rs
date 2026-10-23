@@ -38,6 +38,7 @@ impl Repository {
                     .cache
                     .invalidate(&cache_keys::notification_unread_count(n.recipient))
                     .await;
+                invalidate_notification_feed_cache(state, n.recipient).await;
                 Ok(Some(row.into()))
             }
             Err(e) if is_unique_violation(&e) => Ok(None),
@@ -106,6 +107,12 @@ impl Repository {
         limit: i64,
         offset: i64,
     ) -> Result<Vec<Notification>, AppError> {
+        let cache_key =
+            notification_feed_cache_key(state, profile_id, unread_only, limit, offset).await;
+        if let Some(cached) = state.cache.get(&cache_key).await {
+            return Ok(cached);
+        }
+
         let mut db = require_db(&state.db)?;
 
         let mut list = schema::Notification::filter_by_profile_id(profile_id)
@@ -119,12 +126,17 @@ impl Repository {
             list.retain(|n| !n.is_read);
         }
 
-        let list = list
+        let list: Vec<Notification> = list
             .into_iter()
             .skip(offset.max(0) as usize)
             .take(limit.max(1) as usize)
             .map(Notification::from)
             .collect();
+
+        state
+            .cache
+            .set(&cache_key, &list, Some(cache_keys::NOTIFICATION_TTL))
+            .await;
 
         Ok(list)
     }
@@ -173,6 +185,7 @@ impl Repository {
                 .cache
                 .invalidate(&cache_keys::notification_unread_count(profile_id))
                 .await;
+            invalidate_notification_feed_cache(state, profile_id).await;
 
             Ok(())
         } else {
@@ -187,8 +200,37 @@ impl Repository {
                 .cache
                 .invalidate(&cache_keys::notification_unread_count(profile_id))
                 .await;
+            invalidate_notification_feed_cache(state, profile_id).await;
 
             Ok(())
         }
     }
+}
+
+async fn invalidate_notification_feed_cache(state: &AppState, profile_id: Uuid) {
+    let revision = Uuid::new_v4().to_string();
+    state
+        .cache
+        .set(
+            &cache_keys::notification_feed_version(profile_id),
+            &revision,
+            Some(cache_keys::NOTIFICATION_TTL),
+        )
+        .await;
+}
+
+async fn notification_feed_cache_key(
+    state: &AppState,
+    profile_id: Uuid,
+    unread_only: bool,
+    limit: i64,
+    offset: i64,
+) -> String {
+    let version = state
+        .cache
+        .get::<String>(&cache_keys::notification_feed_version(profile_id))
+        .await
+        .unwrap_or_else(|| "initial".to_string());
+
+    cache_keys::notification_feed(profile_id, &version, unread_only, limit, offset)
 }
