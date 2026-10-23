@@ -1,6 +1,15 @@
+use rust_decimal::Decimal;
+
 pub const TESTNET_USDC: &str = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
 pub const TRUSTLESS_WORK_FEE_BPS: i64 = 30;
 pub const BASIS_POINTS: i64 = 10_000;
+
+pub const TOSS_PLATFORM_FEE_BPS: i64 = 100;
+
+pub fn toss_platform_fee_percent() -> Decimal {
+    Decimal::from(TOSS_PLATFORM_FEE_BPS) * Decimal::from(100) / Decimal::from(BASIS_POINTS)
+}
+
 pub const ESCROW_INIT_MILESTONE_USDC: f64 = 0.01;
 
 // BullMQ Worker Configuration Constants
@@ -47,3 +56,13 @@ pub const DEFAULT_GITHUB_REPOSITORY_LABELS: [DefaultGithubLabel; 4] = [
         description: "High priority",
     },
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn platform_fee_is_one_percent() {
+        assert_eq!(toss_platform_fee_percent(), Decimal::ONE);
+    }
+}

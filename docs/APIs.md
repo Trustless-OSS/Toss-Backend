@@ -230,6 +230,8 @@ It returns `{ "repo": { ... } }`. Prefer the installation-sync flow when using t
 
 The escrow API is intentionally a two-step signing protocol. The backend creates an unsigned XDR transaction; the client signs it with the relevant Stellar wallet; the backend submits the signed XDR to Trustless Work. This keeps user wallet signatures on the client side.
 
+New escrows include the Trustless OSS platform fee configured in `TOSS_PLATFORM_FEE_BPS` (`100` basis points = `1%`). Trustless Work collects it on each successful milestone release and sends it to the escrow's `platformAddress`, which this backend sets from `PLATFORM_STELLAR_PUBLIC_KEY`. On mainnet, Trustless Work also applies its separate `0.3%` protocol fee. Existing escrows retain the fee configuration with which they were deployed.
+
 | Method and path | Auth | Purpose | Request body |
 | --- | --- | --- | --- |
 | `POST /api/v1/escrow/create-unsigned` | Bearer, maintainer | Builds unsigned escrow deployment XDR. | `{ "repoId": "uuid", "maintainerWallet": "G..." }` |

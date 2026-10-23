@@ -5,7 +5,10 @@ use serde_json::{json, Value};
 use crate::{
     error::AppError,
     modules::escrow::trustless_work::api_client::{decimal_json_number, tw_fetch},
-    shared::{constants::ESCROW_INIT_MILESTONE_USDC, models::Repo},
+    shared::{
+        constants::{toss_platform_fee_percent, ESCROW_INIT_MILESTONE_USDC},
+        models::Repo,
+    },
     state::AppState,
 };
 
@@ -35,7 +38,7 @@ impl TxBuilder {
                 "releaseSigner": platform,
                 "disputeResolver": dispute_resolver,
             },
-            "platformFee": 0,
+            "platformFee": decimal_json_number(toss_platform_fee_percent(), "platformFee")?,
             "milestones": [{
                 "description": "Escrow Initialized",
                 "amount": ESCROW_INIT_MILESTONE_USDC,
