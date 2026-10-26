@@ -24,6 +24,7 @@ async fn main() -> anyhow::Result<()> {
             toss_backend::shared::models::schema::RepoMaintainer,
             toss_backend::shared::models::schema::Repository,
             toss_backend::shared::models::schema::Reward,
+            toss_backend::shared::models::schema::Ticket,
             toss_backend::shared::models::schema::Wallet,
         ))
         .connect(&database_url)

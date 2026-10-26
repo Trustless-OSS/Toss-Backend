@@ -1,4 +1,4 @@
-use super::{Activity, Bounty, EscrowFunder, Notification, RepoMaintainer, Wallet};
+use super::{Activity, Bounty, EscrowFunder, Notification, RepoMaintainer, Ticket, Wallet};
 use jiff::Timestamp;
 use uuid::Uuid;
 
@@ -49,4 +49,7 @@ pub struct Profile {
 
     #[has_many(pair = actor)]
     pub activity: toasty::Deferred<Vec<Activity>>,
+
+    #[has_many(pair = profile)]
+    pub tickets: toasty::Deferred<Vec<Ticket>>,
 }

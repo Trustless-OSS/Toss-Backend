@@ -36,6 +36,7 @@ pub async fn connect(database_url: &str) -> Result<toasty::Db, AppError> {
             crate::shared::models::schema::Notification,
             crate::shared::models::schema::Activity,
             crate::shared::models::schema::FailedTask,
+            crate::shared::models::schema::Ticket,
         ))
         .connect(&url)
         .await

@@ -10,6 +10,7 @@ pub mod profile;
 pub mod repo_maintainers;
 pub mod repositories;
 pub mod rewards;
+pub mod ticket;
 pub mod wallet;
 
 pub use activity::Activity;
@@ -21,4 +22,5 @@ pub use profile::Profile;
 pub use repo_maintainers::RepoMaintainer;
 pub use repositories::Repository;
 pub use rewards::Reward;
+pub use ticket::Ticket;
 pub use wallet::Wallet;

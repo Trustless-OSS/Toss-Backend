@@ -25,6 +25,7 @@
 11. [contributor_stats (Materialized View)](#11-contributor_stats-materialized-view)
 12. [Relationships Overview](#12-relationships-overview)
 13. [Indexes](#13-indexes)
+14. [tickets](#14-tickets)
 
 ---
 
@@ -436,6 +437,10 @@ CREATE INDEX idx_escrow_profile      ON escrow_funders(profile_id) WHERE profile
 CREATE INDEX idx_notifs_profile      ON notifications(profile_id, created_at DESC);
 CREATE INDEX idx_notifs_unread       ON notifications(profile_id) WHERE is_read = false;
 
+-- tickets
+CREATE INDEX idx_tickets_profile     ON tickets(profile_id);
+CREATE INDEX idx_tickets_status      ON tickets(status);
+
 -- activity
 CREATE INDEX idx_activity_repo       ON activity(repo_id, created_at DESC);
 CREATE INDEX idx_activity_actor      ON activity(actor_id, created_at DESC);
@@ -444,4 +449,42 @@ CREATE INDEX idx_activity_payload    ON activity USING GIN(payload);
 -- failed_tasks
 CREATE INDEX idx_failed_status       ON failed_tasks(status) WHERE status != 'resolved';
 CREATE INDEX idx_failed_type         ON failed_tasks(task_type);
+```
+
+---
+
+## 14. `tickets`
+
+Support tickets submitted by authenticated contributors. A ticket belongs to the profile that created it; reads and updates are limited to that owner. Tickets start as `open` and can be resolved by their owner.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | UUID | PK | |
+| `profile_id` | UUID | NOT NULL, indexed | Owner profile |
+| `org` | TEXT | nullable | Optional repository or organization |
+| `category` | TEXT | NOT NULL | |
+| `subject` | TEXT | NOT NULL | |
+| `message` | TEXT | NOT NULL | |
+| `attachment_key` | TEXT | nullable | Object-storage key; uploads are handled separately |
+| `bounty_id` | UUID | nullable | Optional related bounty |
+| `status` | TEXT | NOT NULL, indexed | Application default `open`; `open` or `resolved` |
+| `created_at` | TIMESTAMPTZ | NOT NULL | Application default `now()` |
+| `updated_at` | TIMESTAMPTZ | NOT NULL | Application default `now()` |
+
+```sql
+CREATE TABLE tickets (
+  id             UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+  profile_id     UUID        NOT NULL,
+  org            TEXT,
+  category       TEXT        NOT NULL,
+  subject        TEXT        NOT NULL,
+  message        TEXT        NOT NULL,
+  attachment_key TEXT,
+  bounty_id      UUID,
+  status         TEXT        NOT NULL,
+  created_at     TIMESTAMPTZ NOT NULL,
+  updated_at     TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX idx_tickets_profile ON tickets(profile_id);
+CREATE INDEX idx_tickets_status ON tickets(status);
 ```

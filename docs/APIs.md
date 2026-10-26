@@ -268,6 +268,17 @@ Most bounty advancement is event-driven; these endpoints are the client-facing l
 
 A notification includes `id`, `kind`, `title`, optional `body`, `isRead`, optional `refId` and `data`, and `createdAt`.
 
+### Tickets
+
+| Method and path | Auth | Purpose | Request body |
+| --- | --- | --- | --- |
+| `POST /api/v1/tickets` | Bearer | Creates a ticket owned by the authenticated contributor. | `{ "org": "owner/repo", "category": "bug", "subject": "Unable to connect wallet", "message": "Details...", "attachmentKey": "uploads/file.png", "bountyId": "uuid" }` |
+| `GET /api/v1/tickets/{ticketId}` | Bearer, owner | Retrieves one of the caller's tickets. | — |
+| `PATCH /api/v1/tickets/{ticketId}` | Bearer, owner | Updates fields on the caller's open ticket. Omitted or `null` fields are left unchanged; provide at least one non-null field. | `{ "subject": "Updated subject" }` |
+| `POST /api/v1/tickets/{ticketId}/resolve` | Bearer, owner | Marks the caller's ticket resolved; repeated requests are safe. | — |
+
+Ticket creation requires a non-empty `category`, `subject`, and `message`. Their maximum lengths are 100, 200, and 10,000 characters. Optional `org` and `attachmentKey` values are limited to 200 and 1,024 characters. Ticket IDs are UUIDs. Other users' tickets are returned as `404`.
+
 ### Dashboard and leaderboard
 
 | Method and path | Auth | Purpose | Query |
