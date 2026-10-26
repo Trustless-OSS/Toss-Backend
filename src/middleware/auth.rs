@@ -75,21 +75,7 @@ impl FromRequestParts<AppState> for AuthedUser {
                 .and_then(|value| bearer_token(&value).map(str::to_owned))
                 .ok_or_else(unauthorized_response)?;
 
-            // TEMPORARY BYPASS FOR TESTING: Check environment variable
-            let auth_bypass_enabled = std::env::var("AUTH_BYPASS")
-                .map(|v| v.to_lowercase() == "true")
-                .unwrap_or(false);
-
-            if auth_bypass_enabled {
-                tracing::warn!("⚠️ AUTH_BYPASS is enabled! This should never be in production!");
-                return Ok(Self {
-                    github_id: 92181599,
-                    github_username: Some("ryzen-xp".to_string()),
-                    email: Some("iron4540@gmail.com".to_string()),
-                });
-            }
-
-            //  Here we send bearer token to supabase auth service to verify the token
+            //  Here we send bearer token to auth service to verify the token
             let user_url = format!("{}/auth/v1/user", config.supabase_url.trim_end_matches('/'));
             let user = client
                 .get(user_url)
@@ -98,20 +84,20 @@ impl FromRequestParts<AppState> for AuthedUser {
                 .send()
                 .await
                 .map_err(|error| {
-                    error!(%error, "failed to verify token with Supabase Auth");
+                    error!(%error, "failed to verify token with Auth");
                     unauthorized_response()
                 })?;
 
             if user.status() != StatusCode::OK {
                 error!(
                     status = %user.status(),
-                    "Supabase Auth rejected bearer token"
+                    "Auth rejected bearer token"
                 );
                 return Err(unauthorized_response());
             }
 
             let user = user.json::<SupabaseUser>().await.map_err(|error| {
-                error!(%error, "failed to parse Supabase Auth user response");
+                error!(%error, "failed to parse Auth user response");
                 unauthorized_response()
             })?;
 

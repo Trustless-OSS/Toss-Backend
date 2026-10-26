@@ -73,7 +73,7 @@ already-paid bounty is always a no-op. [Full job documentation →](docs/jobs.md
 | --- | --- |
 | API | Rust 2021, Axum 0.8, Tokio |
 | Data | PostgreSQL 16, [Toasty](https://github.com/tokio-rs/toasty) 0.10 ORM, Redis 7 |
-| Authentication | Supabase Auth, GitHub identity |
+| Authentication | Auth, GitHub identity |
 | Integrations | GitHub App API, Trustless Work, Stellar |
 | Observability | `tracing`, dependency-aware health checks |
 | Local infrastructure | Docker Compose (PostgreSQL + Redis only) |

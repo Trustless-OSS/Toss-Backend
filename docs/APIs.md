@@ -107,7 +107,7 @@ The required configuration is documented in `.env.example`. In particular, do no
 | GitHub signature | `POST /api/v1/webhooks/github` | GitHub's raw request body plus `X-Hub-Signature-256: sha256=<HMAC-SHA256>` made with `GITHUB_WEBHOOK_SECRET`. |
 | Public | Root, health, queue statistics, issue list, public leaderboard | No bearer token required. Do not treat public operational endpoints as a private admin surface. |
 
-The API verifies bearer tokens through Supabase Auth and derives the caller's GitHub numeric ID. Maintainer-only actions additionally check the repository-maintainer relation stored by the backend.
+The API verifies bearer tokens through Auth and derives the caller's GitHub numeric ID. Maintainer-only actions additionally check the repository-maintainer relation stored by the backend.
 
 ### Common request rules
 
