@@ -4,8 +4,15 @@ use tracing::info;
 use crate::{
     error::AppError,
     modules::{
-        bounty::repository::get_issue_by_repo_and_github_id,
-        github::handlers::helpers::{cancel_bounty_with_refund, zero_milestone_on_chain},
+        bounty::{
+            automation::escrow_reward_amount,
+            repository::{cancel_bounty_with_refund, get_issue_by_repo_and_github_id},
+        },
+        github::handlers::helpers::zero_milestone_on_chain,
+        notification::{
+            kinds::{Kind, Notify},
+            service::Service,
+        },
         repo::repository::get_repo_by_github_id,
     },
     state::AppState,
@@ -40,20 +47,44 @@ pub async fn handle_issue_deleted(state: &AppState, payload: &Value) -> Result<(
         );
         return Ok(());
     };
-    if issue_record.status == "completed" || issue_record.status == "cancelled" {
+
+    if issue_record.status == "paid" || issue_record.status == "cancelled" {
         return Ok(());
     }
 
-    if issue_record.status == "active" {
+    let reward = escrow_reward_amount(state, &repo, &issue_record).await?;
+
+    if issue_record.status == "assigned" {
         if let Some(milestone_index) = issue_record.milestone_index {
             zero_milestone_on_chain(state, &repo, milestone_index).await?;
         }
     }
 
-    cancel_bounty_with_refund(state, &repo, issue_record.id, issue_record.reward_amount).await?;
+    // Send BountyCancelled notification to assignee
+    if let Some(assignee_id) = issue_record.assignee_id {
+        let n = Notify {
+            recipient: assignee_id,
+            kind: Kind::BountyCancelled,
+            title: format!("Bounty Cancelled: #{}", issue_number),
+            body: format!(
+                "The bounty for issue #{} has been cancelled (issue deleted)",
+                issue_number
+            ),
+            ref_id: Some(issue_record.id),
+            data: serde_json::json!({
+                "repoId": repo.id,
+                "issueNumber": issue_number,
+            }),
+            dedupe_key: format!("cancelled:{}:deleted", issue_record.id),
+            actor: None,
+        };
+        Service::notify_contributor_quiet(state, n).await;
+    }
+
+    cancel_bounty_with_refund(state, &repo, issue_record.id, Some(reward)).await?;
     info!(
         issue = issue_number,
-        reward = %issue_record.reward_amount,
+        reward = %reward,
         "deleted issue bounty cancelled and reserved balance restored"
     );
     Ok(())

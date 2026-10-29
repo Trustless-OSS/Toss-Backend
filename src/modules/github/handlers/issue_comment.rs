@@ -1,32 +1,38 @@
 use rust_decimal::Decimal;
-use serde_json::{json, Value};
+use serde_json::Value;
 use tracing::{error, info};
 
 use crate::{
     error::AppError,
     infra::queue::BountyJobData,
     modules::{
-        bounty::repository::{
-            create_issue_and_reserve_balance, get_assignment_for_issue,
-            get_issue_by_repo_and_github_id, get_issue_by_repo_and_number,
-            update_assignment_completion_percentage, update_assignment_payout_status,
-            update_issue_status, update_pending_issue_reward,
+        bounty::{
+            automation::{self, escrow_reward_amount},
+            repository::{
+                create_issue_and_reserve_balance, get_assignment_for_issue,
+                get_issue_by_repo_and_github_id, get_issue_by_repo_and_number,
+                set_bounty_reward_amount, update_assignment_payout_status, update_issue_status,
+                update_pending_issue_reward,
+            },
         },
-        contributor::repository::get_contributor_by_github_id,
+        contributor::repository::{get_profile_by_github_id, get_wallets_for_profile},
         escrow::repository::refund_repo_balance,
         github::{
             auth::post_comment,
+            comments,
             handlers::helpers::{
-                cancel_bounty_with_refund, dispute_milestone, extract_issue_number,
-                extract_manual_amount, is_help_command, is_privileged_association,
-                is_reject_command, is_retry_command, is_wallet_command, maintainer_github_id,
-                refresh_repo, resolve_milestone_dispute, split_amounts, sync_repo_balance,
-                work_completion_percentage,
+                adopt_existing_assignee, cancel_bounty_with_refund, dispute_milestone,
+                extract_issue_number, extract_manual_amount, is_help_command,
+                is_privileged_association, is_reject_command, is_retry_command, is_wallet_command,
+                payout_request, resolve_milestone_dispute, sync_repo_balance,
             },
+        },
+        notification::{
+            kinds::{Kind, Notify},
+            service::Service,
         },
         repo::repository::get_repo_by_github_id,
     },
-    shared::models::Issue,
     state::AppState,
 };
 
@@ -60,7 +66,7 @@ pub async fn handle_issue_comment_created(
         .unwrap_or("");
     let privileged = is_privileged_association(association);
 
-    if privileged && (work_completion_percentage(body).is_some() || is_reject_command(body)) {
+    if privileged && (payout_request(body).is_some() || is_reject_command(body)) {
         handle_payout_command(
             state,
             repo_github_id,
@@ -75,39 +81,19 @@ pub async fn handle_issue_comment_created(
     }
 
     if is_wallet_command(body) {
-        let connect_url = format!(
-            "{}/connect?issue={github_issue_id}&repo={repo_github_id}",
-            state.config.app_url
-        );
+        let connect_url = format!("{}/profile", state.config.app_url);
         post_comment(
             state,
             full_name,
             issue_number,
-            &format!(
-                "👋 Hey @{commenter_login}! You can update your wallet address here: [**Update Wallet →**]({connect_url})"
-            ),
+            &comments::wallet_update(commenter_login, &connect_url),
         )
         .await?;
         return Ok(());
     }
 
     if is_help_command(body) {
-        post_comment(
-            state,
-            full_name,
-            issue_number,
-            "🤖 **Trustless-OSS Bot Commands**\n\n\
-             **For Maintainers:**\n\
-             - `@Trustless-OSS <amount>`: Set a manual bounty\n\
-             - `@Trustless-OSS /pay <percentage>`: Split bounty on merge\n\
-             - `@Trustless-OSS /reject`: Reject work and refund the escrow\n\
-             - `@Trustless-OSS /retry`: Force a re-check (rarely needed — payouts continue automatically)\n\n\
-             **For Contributors:**\n\
-             - `@Trustless-OSS /wallet`: Connect or update your wallet\n\n\
-             **General:**\n\
-             - `@Trustless-OSS /help`: Show this command list",
-        )
-        .await?;
+        post_comment(state, full_name, issue_number, comments::HELP).await?;
         return Ok(());
     }
 
@@ -135,6 +121,7 @@ pub async fn handle_issue_comment_created(
         state,
         repo_github_id,
         full_name,
+        issue_payload,
         github_issue_id,
         issue_number,
         issue_title,
@@ -179,115 +166,146 @@ async fn handle_payout_command(
         return Ok(());
     };
 
-    if issue.status != "active" {
-        if is_reject_command(body) && issue.status != "completed" && issue.status != "cancelled" {
-            cancel_bounty_with_refund(state, &repo, issue.id, issue.reward_amount).await?;
+    let reward = escrow_reward_amount(state, &repo, &issue).await?;
+
+    if issue.status != "assigned" {
+        if is_reject_command(body) && issue.status != "paid" && issue.status != "cancelled" {
+            cancel_bounty_with_refund(state, &repo, issue.id, reward).await?;
             post_comment(
                 state,
                 full_name,
                 target_number,
-                &format!(
-                    "### 🛑 Bounty Cancelled\n\nThis issue was rejected by a maintainer. The **{} USDC** bounty has been returned to the pool.",
-                    issue.reward_amount
-                ),
+                &comments::bounty_cancelled(reward),
             )
             .await?;
         }
         return Ok(());
     }
 
-    let Some((assignment, contributor)) = get_assignment_for_issue(state, issue.id).await? else {
+    let Some((_assignment, contributor)) = get_assignment_for_issue(state, issue.id).await? else {
         return Ok(());
     };
     let Some(contributor) = contributor else {
         return Ok(());
     };
 
-    if pr_author_id.is_some_and(|author_id| author_id != contributor.github_user_id) {
+    if pr_author_id.is_some_and(|author_id| author_id != contributor.github_id) {
         post_comment(
             state,
             full_name,
             comment_issue_number,
-            &format!(
-                "⚠️ The author of this PR does not match the assigned contributor for issue #{target_number}."
-            ),
+            &comments::pr_author_mismatch(target_number),
         )
         .await?;
         return Ok(());
     }
 
     let Some(milestone_index) = issue.milestone_index else {
-        tracing::warn!(issue = target_number, "active issue has no milestone index");
+        if is_reject_command(body) {
+            cancel_bounty_with_refund(state, &repo, issue.id, reward).await?;
+            post_comment(
+                state,
+                full_name,
+                target_number,
+                &comments::bounty_cancelled(reward),
+            )
+            .await?;
+        } else {
+            tracing::warn!(issue = target_number, "active issue has no milestone index");
+        }
         return Ok(());
     };
 
-    let maintainer_id = maintainer_github_id(&repo);
-    let maintainer = get_contributor_by_github_id(state, maintainer_id).await?;
-    let Some(maintainer_wallet) = maintainer.and_then(|value| value.stellar_wallet) else {
-        let login = comment_user
-            .get("login")
-            .and_then(Value::as_str)
-            .unwrap_or("maintainer");
-        post_comment(
-            state,
-            full_name,
-            comment_issue_number,
-            &format!(
-                "### 🔑 Wallet Required\n\n@{login}, connect your Stellar wallet before using this command: [**Connect Wallet →**]({}/connect)",
-                state.config.app_url
-            ),
-        )
-        .await?;
-        return Ok(());
-    };
+    if let Some(request) = payout_request(body) {
+        let split = match request.resolve(reward) {
+            Ok(split) => split,
+            Err(_) => {
+                post_comment(
+                    state,
+                    full_name,
+                    comment_issue_number,
+                    comments::INVALID_SPLIT,
+                )
+                .await?;
+                return Ok(());
+            }
+        };
 
-    if let Some(percentage) = work_completion_percentage(body) {
-        if !(1..=99).contains(&percentage) {
+        let maintainer_wallet =
+            automation::get_maintainer_payout_wallet(state, repo.id, contributor.id).await?;
+        if maintainer_wallet.is_none() {
+            let login = comment_user
+                .get("login")
+                .and_then(Value::as_str)
+                .unwrap_or("repository owner");
             post_comment(
                 state,
                 full_name,
                 comment_issue_number,
-                "⚠️ **Invalid Split:** Percentage must be between 1 and 99.",
-            )
-            .await?;
-            return Ok(());
-        }
-        if contributor.stellar_wallet.is_none() {
-            post_comment(
-                state,
-                full_name,
-                comment_issue_number,
-                &format!(
-                    "### 🔑 Contributor Wallet Missing\n\n@{} must connect a Stellar wallet before a split can be configured.",
-                    contributor.github_username
-                ),
+                &comments::maintainer_wallet_required(login, &state.config.app_url),
             )
             .await?;
             return Ok(());
         }
 
-        update_assignment_completion_percentage(state, assignment.id, Decimal::from(percentage))
+        let contributor_wallets = get_wallets_for_profile(state, contributor.id).await?;
+        let contributor_stellar = contributor_wallets
+            .iter()
+            .find(|w| w.chain == "stellar")
+            .map(|w| w.address.clone());
+
+        if contributor_stellar.is_none() {
+            post_comment(
+                state,
+                full_name,
+                comment_issue_number,
+                &comments::contributor_wallet_missing(&contributor.username),
+            )
             .await?;
-        let (contributor_amount, maintainer_amount) =
-            split_amounts(issue.reward_amount, percentage);
+            return Ok(());
+        }
+
+        set_bounty_reward_amount(state, issue.id, split.contributor_amount).await?;
         post_comment(
             state,
             full_name,
             target_number,
-            &format!(
-                "### 📋 Payout Intent Saved ({percentage}%)\n\n\
-                 When this PR is merged, the bounty will be split:\n\
-                 - **{contributor_amount} USDC** → @{}\n\
-                 - **{maintainer_amount} USDC** → maintainer\n\n\
-                 _Update anytime with `/pay <percentage>` before merging._",
-                contributor.github_username
-            ),
+            &comments::payout_intent_saved(split.contributor_amount, &contributor.username),
         )
         .await?;
         return Ok(());
     }
 
     if is_reject_command(body) {
+        let maintainer_id = comment_user.get("id").and_then(Value::as_i64);
+        let maintainer_wallet = if let Some(maintainer_id) = maintainer_id {
+            if let Some(profile) = get_profile_by_github_id(state, maintainer_id).await? {
+                get_wallets_for_profile(state, profile.id)
+                    .await?
+                    .into_iter()
+                    .find(|wallet| wallet.chain == "stellar")
+                    .map(|wallet| wallet.address)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let Some(maintainer_wallet) = maintainer_wallet else {
+            let login = comment_user
+                .get("login")
+                .and_then(Value::as_str)
+                .unwrap_or("maintainer");
+            post_comment(
+                state,
+                full_name,
+                comment_issue_number,
+                &comments::maintainer_wallet_required(login, &state.config.app_url),
+            )
+            .await?;
+            return Ok(());
+        };
+
         let contract_id = repo
             .escrow_contract_id
             .as_deref()
@@ -303,24 +321,41 @@ async fn handle_payout_command(
             state,
             &repo,
             milestone_index,
-            vec![json!({
-                "address": maintainer_wallet,
-                "amount": issue.reward_amount,
-            })],
+            reward,
+            vec![crate::modules::bounty::payout::PayoutDistribution {
+                address: maintainer_wallet,
+                amount: reward,
+            }],
         )
         .await?;
         update_issue_status(state, issue.id, "cancelled", None).await?;
-        update_assignment_payout_status(state, assignment.id, "failed").await?;
-        refund_repo_balance(state, &repo, issue.reward_amount).await?;
+        update_assignment_payout_status(state, issue.id, "failed", None).await?;
+        refund_repo_balance(state, &repo, Some(reward)).await?;
+
+        // Send BountyRejected notification to assignee
+        let n = Notify {
+            recipient: contributor.id,
+            kind: Kind::BountyRejected,
+            title: format!("Bounty Rejected: #{}", issue.github_issue_number),
+            body: format!(
+                "Your work on issue #{} has been rejected",
+                issue.github_issue_number
+            ),
+            ref_id: Some(issue.id),
+            data: serde_json::json!({
+                "repoId": repo.id,
+                "issueNumber": issue.github_issue_number,
+            }),
+            dedupe_key: format!("rejected:{}", issue.id),
+            actor: None,
+        };
+        Service::notify_contributor_quiet(state, n).await;
 
         post_comment(
             state,
             full_name,
             target_number,
-            &format!(
-                "### 🛑 Bounty Rejected\n\nThe maintainer rejected the work. **{} USDC** has been returned to the maintainer's wallet.\n\n[View Escrow](https://viewer.trustlesswork.com/{contract_id})",
-                issue.reward_amount
-            ),
+            &comments::bounty_rejected(reward, contract_id),
         )
         .await?;
     }
@@ -328,12 +363,6 @@ async fn handle_payout_command(
     Ok(())
 }
 
-/// Emergency `@Trustless-OSS /retry` command.
-///
-/// Automation no longer depends on this: every documented step advances on its
-/// own and transient failures retry with backoff. The command survives as a
-/// maintainer escape hatch, and all it does is ask the state machine to run now
-/// against live rules.
 async fn retry_bounty(
     state: &AppState,
     repo_github_id: i64,
@@ -360,14 +389,7 @@ async fn retry_bounty(
         "manual retry command received"
     );
 
-    post_comment(
-        state,
-        full_name,
-        issue_number,
-        "🔄 Re-checking this bounty now. Note that you should not normally need this — \
-         the payout continues by itself once its conditions are met.",
-    )
-    .await?;
+    post_comment(state, full_name, issue_number, comments::RETRYING_BOUNTY).await?;
 
     Ok(())
 }
@@ -377,6 +399,7 @@ async fn create_or_update_manual_bounty(
     state: &AppState,
     repo_github_id: i64,
     full_name: &str,
+    issue_payload: &Value,
     github_issue_id: i64,
     issue_number: i32,
     issue_title: &str,
@@ -392,7 +415,9 @@ async fn create_or_update_manual_bounty(
 
     let existing = get_issue_by_repo_and_github_id(state, repo.id, github_issue_id).await?;
     if let Some(existing) = existing {
-        if existing.status == "pending" {
+        let can_update = existing.status == "open"
+            || (existing.status == "assigned" && existing.milestone_index.is_none());
+        if can_update {
             if !update_pending_issue_reward(state, &repo, existing.id, manual_amount, "manual")
                 .await?
             {
@@ -400,7 +425,7 @@ async fn create_or_update_manual_bounty(
                     state,
                     full_name,
                     issue_number,
-                    "⚠️ The bounty could not be updated because the available escrow balance is too low.",
+                    comments::BOUNTY_UPDATE_FAILED,
                 )
                 .await?;
                 return Ok(());
@@ -409,9 +434,17 @@ async fn create_or_update_manual_bounty(
                 state,
                 full_name,
                 issue_number,
-                &format!("🔄 Bounty updated to **{manual_amount} USDC**!"),
+                &comments::manual_bounty_updated(manual_amount),
             )
             .await?;
+            if existing.status == "assigned" && existing.milestone_index.is_none() {
+                state
+                    .queue
+                    .enqueue_advance_issue(
+                        BountyJobData::new(existing.id, "reward-configured").notifying(),
+                    )
+                    .await?;
+            }
         }
         return Ok(());
     }
@@ -419,21 +452,19 @@ async fn create_or_update_manual_bounty(
     if let Err(error) = sync_repo_balance(state, &mut repo).await {
         error!(%error, "failed to sync escrow balance before manual bounty creation");
     }
-    if repo.escrow_balance < manual_amount {
+    let balance = repo.escrow_balance.unwrap_or_default();
+    if balance < manual_amount {
         post_comment(
             state,
             full_name,
             issue_number,
-            &format!(
-                "⚠️ Insufficient escrow balance (**{} USDC**). Need **{manual_amount} USDC**.\n\n[Top up your escrow →]({}/dashboard)",
-                repo.escrow_balance, state.config.app_url
-            ),
+            &comments::manual_insufficient_balance(balance, manual_amount, &state.config.app_url),
         )
         .await?;
         return Ok(());
     }
 
-    if create_issue_and_reserve_balance(
+    let created_issue = create_issue_and_reserve_balance(
         state,
         &repo,
         github_issue_id,
@@ -442,35 +473,51 @@ async fn create_or_update_manual_bounty(
         manual_amount,
         "manual",
     )
-    .await?
-    .is_none()
-    {
+    .await?;
+
+    if created_issue.is_none() {
         return Ok(());
     }
+
     let contract_id = repo.escrow_contract_id.as_deref().unwrap_or("");
+
+    // Send AmountUpdated notification to assignee if one exists and insufficient funds if not enough
+    let balance_after = repo.escrow_balance.unwrap_or_default();
+    if balance_after < manual_amount {
+        // Send InsufficientFunds notification to maintainers
+        let n = Notify {
+            recipient: repo.id, // Placeholder; Service::notify_maintainers will set actual recipients
+            kind: Kind::InsufficientFunds,
+            title: "Insufficient Escrow Balance".to_string(),
+            body: format!(
+                "Escrow balance is now insufficient after reserving {} USDC for issue #{}",
+                manual_amount, issue_number
+            ),
+            ref_id: created_issue.as_ref().map(|i| i.id),
+            data: serde_json::json!({
+                "repoId": repo.id,
+                "issueNumber": issue_number,
+            }),
+            dedupe_key: format!("insufficient:{}:{}", github_issue_id, manual_amount),
+            actor: None,
+        };
+        Service::notify_maintainers_quiet(state, repo.id, n).await;
+    }
+
     post_comment(
         state,
         full_name,
         issue_number,
-        &format!(
-            "🎯 Bounty of **{manual_amount} USDC** created by @{commenter_login}!\n\n\
-             | Detail | Value |\n|---|---|\n\
-             | 💰 Reward | **{manual_amount} USDC** |\n\
-             | 📊 Level | `manual` |\n\
-             | 📋 Escrow | [View on-chain →](https://viewer.trustlesswork.com/{contract_id}) |\n\n\
-             Assign a contributor to get started."
-        ),
+        &comments::manual_bounty_created(manual_amount, contract_id, commenter_login),
     )
     .await?;
 
-    Ok(())
-}
+    // Issue may have been assigned on GitHub before it had a reward; adopt that now.
+    if let Some(created) = created_issue {
+        adopt_existing_assignee(state, issue_payload, &created).await?;
+    }
 
-async fn refresh_repo_issue(state: &AppState, issue: &Issue) -> Result<Option<Issue>, AppError> {
-    let Some(repo) = refresh_repo(state, issue.repo_id).await? else {
-        return Ok(None);
-    };
-    get_issue_by_repo_and_github_id(state, repo.id, issue.github_issue_id).await
+    Ok(())
 }
 
 fn required_object<'a>(value: &'a Value, key: &str) -> Result<&'a Value, AppError> {

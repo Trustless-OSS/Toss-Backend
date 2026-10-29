@@ -1,5 +1,4 @@
-use rust_decimal::{prelude::ToPrimitive, Decimal};
-use serde_json::json;
+use rust_decimal::Decimal;
 use tracing::{info, warn};
 use uuid::Uuid;
 
@@ -7,31 +6,31 @@ use crate::{
     error::AppError,
     modules::{
         bounty::repository::{
-            get_assignment_for_issue, get_issue_with_repo, update_assignment_payout_status,
-            update_issue_status,
+            get_assignment_for_issue, get_bounty_with_repo, update_assignment_payout_status,
+            update_bounty_status,
         },
-        contributor::repository::get_contributor_by_github_id,
         escrow::trustless_work::escrow_service::TrustlessWorkAPI,
         github::{
-            auth::{
-                fetch_github_issue, fetch_github_pull_request, post_comment, GitHubPullRequest,
-            },
+            auth::{fetch_github_issue, post_comment, GitHubPullRequest},
             handlers::helpers::{
-                dispute_milestone, explorer_tx_url, extract_issue_number, maintainer_github_id,
-                resolve_milestone_dispute, split_amounts,
+                dispute_milestone, explorer_tx_url, extract_issue_number, resolve_milestone_dispute,
             },
         },
+        notification::{
+            kinds::{Kind, Notify},
+            service::Service,
+        },
     },
-    shared::models::{Assignment, Contributor, Issue, Repo},
+    shared::models::{Bounty, Profile, Repo, Wallet},
     state::AppState,
 };
 
 #[derive(Debug, Clone)]
 pub struct IssueContext {
-    pub issue: Issue,
+    pub issue: Bounty,
     pub repo: Repo,
-    pub assignment: Option<Assignment>,
-    pub contributor: Option<Contributor>,
+    pub assignee: Option<Profile>,
+    pub wallet: Option<Wallet>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,7 +44,7 @@ pub enum Decision {
     },
     ReleasePayout {
         milestone_index: i32,
-        split_percentage: Option<i32>,
+        escrow_amount: Decimal,
     },
     RepairDatabase {
         milestone_index: i32,
@@ -87,48 +86,139 @@ impl Decision {
 
 pub async fn load_context(
     state: &AppState,
-    issue_id: Uuid,
+    bounty_id: Uuid,
 ) -> Result<Option<IssueContext>, AppError> {
-    let Some((issue, repo)) = get_issue_with_repo(state, issue_id).await? else {
+    let Some((bounty, repo)) = get_bounty_with_repo(state, bounty_id).await? else {
         return Ok(None);
     };
 
-    let (assignment, contributor) = match get_assignment_for_issue(state, issue.id).await? {
-        Some((assignment, contributor)) => (Some(assignment), contributor),
+    let (assignee, wallet) = match get_assignment_for_issue(state, bounty.id).await? {
+        Some((b, profile)) => {
+            let wallet = if let Some(ref p) = profile {
+                get_primary_wallet(state, p.id).await?
+            } else {
+                None
+            };
+            let _ = b;
+            (profile, wallet)
+        }
         None => (None, None),
     };
 
     Ok(Some(IssueContext {
-        issue,
+        issue: bounty,
         repo,
-        assignment,
-        contributor,
+        assignee,
+        wallet,
     }))
+}
+
+pub async fn escrow_reward_amount(
+    state: &AppState,
+    repo: &Repo,
+    issue: &Bounty,
+) -> Result<Decimal, AppError> {
+    let Some(milestone_index) = issue.milestone_index else {
+        return issue
+            .reward_amount
+            .ok_or_else(|| AppError::bad_request("Bounty reward amount is unavailable"));
+    };
+    let contract_id = repo
+        .escrow_contract_id
+        .as_deref()
+        .ok_or_else(|| AppError::bad_request("No escrow deployed"))?;
+    TrustlessWorkAPI::new(state.clone())
+        .fetch_milestone_state(contract_id, milestone_index)
+        .await?
+        .and_then(|milestone| milestone.amount)
+        .ok_or_else(|| AppError::bad_request("Escrow milestone amount is unavailable"))
+}
+
+async fn get_primary_wallet(
+    state: &AppState,
+    profile_id: Uuid,
+) -> Result<Option<Wallet>, AppError> {
+    use crate::{
+        error::{map_db_err, require_db},
+        shared::models::schema,
+    };
+
+    let mut db = require_db(&state.db)?;
+    let wallets = schema::Wallet::filter_by_profile_id(profile_id)
+        .exec(&mut db)
+        .await
+        .map_err(map_db_err)?;
+
+    let mut wallets = wallets;
+    wallets.sort_by_key(|wallet| (wallet.chain != "stellar", !wallet.is_primary));
+    Ok(wallets
+        .into_iter()
+        .find(|wallet| wallet.chain == "stellar" || wallet.is_primary)
+        .map(Wallet::from))
+}
+
+pub async fn get_maintainer_payout_wallet(
+    state: &AppState,
+    repo_id: Uuid,
+    exclude_profile_id: Uuid,
+) -> Result<Option<String>, AppError> {
+    use crate::{
+        error::{map_db_err, require_db},
+        shared::models::schema,
+    };
+
+    let mut db = require_db(&state.db)?;
+    let mut maintainers = schema::RepoMaintainer::filter_by_repo_id(repo_id)
+        .exec(&mut db)
+        .await
+        .map_err(map_db_err)?;
+    maintainers.sort_by_key(|maintainer| (maintainer.role != "owner", maintainer.profile_id));
+
+    let mut contributor_wallet = None;
+    for maintainer in maintainers {
+        let wallets = schema::Wallet::filter_by_profile_id(maintainer.profile_id)
+            .exec(&mut db)
+            .await
+            .map_err(map_db_err)?;
+        if let Some(wallet) = wallets
+            .iter()
+            .find(|wallet| wallet.chain == "stellar" && wallet.is_primary)
+            .or_else(|| wallets.iter().find(|wallet| wallet.chain == "stellar"))
+        {
+            if maintainer.profile_id == exclude_profile_id {
+                contributor_wallet.get_or_insert_with(|| wallet.address.clone());
+                continue;
+            }
+            return Ok(Some(wallet.address.clone()));
+        }
+    }
+
+    Ok(contributor_wallet)
 }
 
 pub async fn evaluate(state: &AppState, ctx: &IssueContext) -> Result<Decision, AppError> {
     let IssueContext {
         issue,
         repo,
-        assignment,
-        contributor,
+        assignee,
+        wallet,
     } = ctx;
 
-    if issue.status == "cancelled" {
+    if issue.status == "cancelled" || issue.status == "paid" {
         return Ok(Decision::Settled);
     }
 
-    let Some(assignment) = assignment.as_ref() else {
+    let Some(assignee) = assignee.as_ref() else {
         return Ok(Decision::Waiting {
-            reason: "issue has no assignment yet".to_string(),
+            reason: "bounty has no assignee yet".to_string(),
         });
     };
 
-    let Some(contributor) = contributor.as_ref() else {
+    if issue.reward_amount.unwrap_or(Decimal::ZERO) <= Decimal::ZERO {
         return Ok(Decision::Waiting {
-            reason: "assignment has no contributor record yet".to_string(),
+            reason: "bounty reward amount has not been configured yet".to_string(),
         });
-    };
+    }
 
     let Some(contract_id) = repo.escrow_contract_id.as_deref() else {
         return Ok(Decision::Blocked {
@@ -147,7 +237,7 @@ pub async fn evaluate(state: &AppState, ctx: &IssueContext) -> Result<Decision, 
 
     if let Some(chain) = chain.as_ref() {
         if chain.released {
-            let db_agrees = issue.status == "completed" && assignment.payout_status == "released";
+            let db_agrees = issue.status == "paid";
             return Ok(if db_agrees {
                 Decision::Settled
             } else {
@@ -158,39 +248,48 @@ pub async fn evaluate(state: &AppState, ctx: &IssueContext) -> Result<Decision, 
         }
     }
 
-    if assignment.payout_status == "released" {
+    if issue.status == "paid" {
         return Ok(Decision::Blocked {
-            reason: "database marks the payout as released but the chain does not".to_string(),
+            reason: "database marks the payout as paid but the chain does not".to_string(),
         });
     }
 
-    let payout_address = contributor
-        .payout_address
-        .as_deref()
-        .or(contributor.stellar_wallet.as_deref())
-        .map(str::trim)
-        .filter(|address| !address.is_empty());
+    let payout_address = wallet
+        .as_ref()
+        .map(|w| w.address.trim())
+        .filter(|a| !a.is_empty());
 
     let Some(payout_address) = payout_address else {
         return Ok(Decision::WaitForWallet {
-            github_username: contributor.github_username.clone(),
+            github_username: assignee.username.clone(),
         });
     };
-    let payout_chain = contributor
-        .payout_chain
-        .as_deref()
+
+    let payout_chain = wallet
+        .as_ref()
+        .map(|w| w.chain.as_str())
         .unwrap_or("stellar")
         .to_string();
 
     let Some(chain) = chain else {
+        if issue.milestone_index.is_some() {
+            return Ok(Decision::Blocked {
+                reason: "on-chain milestone is missing; cannot verify the original reward amount"
+                    .to_string(),
+            });
+        }
         return Ok(Decision::PushMilestone {
             payout_address: payout_address.to_string(),
             payout_chain,
         });
     };
 
-    // stale on-chain receiver — re-push before payout
     if chain.receiver.as_deref() != Some(payout_address) {
+        if chain.amount != issue.reward_amount {
+            return Ok(Decision::Blocked {
+                reason: "cannot safely replace the escrow milestone after the reward amount was changed for a split payout".to_string(),
+            });
+        }
         warn!(
             issue = issue.github_issue_number,
             on_chain = chain.receiver.as_deref().unwrap_or("unset"),
@@ -202,24 +301,26 @@ pub async fn evaluate(state: &AppState, ctx: &IssueContext) -> Result<Decision, 
         });
     }
 
-    // amount mismatch is not auto-fixable
-    if let Some(amount) = chain.amount {
-        if amount != issue.reward_amount {
-            return Ok(Decision::Blocked {
-                reason: format!(
-                    "on-chain milestone amount ({amount}) does not match the issue reward ({})",
-                    issue.reward_amount
-                ),
-            });
-        }
+    let Some(escrow_amount) = chain.amount else {
+        return Ok(Decision::Blocked {
+            reason: "on-chain milestone amount is unavailable".to_string(),
+        });
+    };
+    let payout_amount = issue.reward_amount.unwrap_or(Decimal::ZERO);
+    if payout_amount <= Decimal::ZERO || payout_amount > escrow_amount {
+        return Ok(Decision::Blocked {
+            reason: format!(
+                "stored payout amount ({payout_amount}) must be greater than zero and no more than the escrow amount ({escrow_amount})"
+            ),
+        });
     }
 
-    match confirm_live_merge(state, repo, issue, assignment, Some(contributor)).await? {
+    match confirm_live_merge(state, repo, issue, assignee).await? {
         MergeConfirmation::Merged => {
             info!(
                 issue = issue.github_issue_number,
                 milestone = chain.index,
-                "PR merged and issue closed; authorizing complete → approve → release"
+                "PR merged and issue closed; authorizing release"
             );
         }
         MergeConfirmation::NotMerged { reason } => {
@@ -230,14 +331,9 @@ pub async fn evaluate(state: &AppState, ctx: &IssueContext) -> Result<Decision, 
         }
     }
 
-    let split_percentage = assignment
-        .completion_percentage
-        .filter(|value| *value > Decimal::ZERO && *value < Decimal::from(100))
-        .and_then(|value| value.to_i32());
-
     Ok(Decision::ReleasePayout {
         milestone_index: chain.index,
-        split_percentage,
+        escrow_amount,
     })
 }
 
@@ -251,23 +347,13 @@ enum MergeConfirmation {
 async fn confirm_live_merge(
     state: &AppState,
     repo: &Repo,
-    issue: &Issue,
-    assignment: &Assignment,
-    contributor: Option<&Contributor>,
+    issue: &Bounty,
+    _assignee: &Profile,
 ) -> Result<MergeConfirmation, AppError> {
-    let Some(pr_number) = assignment.pr_number else {
+    if issue.merged_at.is_none() {
         return Ok(MergeConfirmation::NotMerged {
             reason: "no merged PR recorded yet".to_string(),
         });
-    };
-
-    let pr =
-        fetch_github_pull_request(state, repo.github_repo_id, &repo.full_name, pr_number).await?;
-    let assigned_github_id = contributor.map(|value| value.github_user_id);
-    let confirmation =
-        confirm_payout_pull_request(&pr, issue.github_issue_number, assigned_github_id);
-    if confirmation != MergeConfirmation::Merged {
-        return Ok(confirmation);
     }
 
     let github_issue = fetch_github_issue(
@@ -277,6 +363,7 @@ async fn confirm_live_merge(
         issue.github_issue_number,
     )
     .await?;
+
     if !issue_is_closed(&github_issue.state) {
         return Ok(MergeConfirmation::NotMerged {
             reason: format!(
@@ -336,10 +423,52 @@ pub async fn push_milestone(
 
     let contract_id = ctx.repo.escrow_contract_id.as_deref().unwrap_or("");
     let username = ctx
-        .contributor
+        .assignee
         .as_ref()
-        .map(|contributor| contributor.github_username.as_str())
+        .map(|p| p.username.as_str())
         .unwrap_or("contributor");
+
+    // Send BountyLocked notification to assignee and maintainers
+    if let Some(assignee) = &ctx.assignee {
+        let n = Notify {
+            recipient: assignee.id,
+            kind: Kind::BountyLocked,
+            title: format!("Bounty Locked: #{}", ctx.issue.github_issue_number),
+            body: format!(
+                "Your bounty of {} USDC is now locked in escrow",
+                ctx.issue.reward_amount.unwrap_or(Decimal::ZERO)
+            ),
+            ref_id: Some(ctx.issue.id),
+            data: serde_json::json!({
+                "repoId": ctx.repo.id,
+                "issueNumber": ctx.issue.github_issue_number,
+                "milestoneIndex": milestone_index,
+            }),
+            dedupe_key: format!("locked:{}:{}", ctx.issue.id, milestone_index),
+            actor: None,
+        };
+        Service::notify_contributor_quiet(state, n).await;
+    }
+
+    let n_maintainers = Notify {
+        recipient: ctx.repo.id, // Placeholder; Service::notify_maintainers will set actual recipients
+        kind: Kind::BountyLocked,
+        title: format!("Bounty Locked: #{}", ctx.issue.github_issue_number),
+        body: format!(
+            "Bounty of {} USDC locked in escrow at milestone {}",
+            ctx.issue.reward_amount.unwrap_or(Decimal::ZERO),
+            milestone_index
+        ),
+        ref_id: Some(ctx.issue.id),
+        data: serde_json::json!({
+            "repoId": ctx.repo.id,
+            "issueNumber": ctx.issue.github_issue_number,
+            "milestoneIndex": milestone_index,
+        }),
+        dedupe_key: format!("locked:{}:{}", ctx.issue.id, milestone_index),
+        actor: None,
+    };
+    Service::notify_maintainers_quiet(state, ctx.repo.id, n_maintainers).await;
 
     if let Err(error) = post_comment(
         state,
@@ -350,12 +479,11 @@ pub async fn push_milestone(
              **{} USDC** is locked in escrow for @{username}.\n\n\
              [View On-Chain →](https://viewer.trustlesswork.com/{contract_id})\n\n\
              Merge the linked PR and the payout releases automatically.",
-            ctx.issue.reward_amount
+            ctx.issue.reward_amount.unwrap_or(Decimal::ZERO)
         ),
     )
     .await
     {
-        // comment failure must not undo on-chain push
         warn!(%error, "failed to comment after pushing the milestone");
     }
 
@@ -366,34 +494,68 @@ pub async fn release_payout(
     state: &AppState,
     ctx: &IssueContext,
     milestone_index: i32,
-    split_percentage: Option<i32>,
+    escrow_amount: Decimal,
 ) -> Result<(), AppError> {
-    match split_percentage {
-        Some(percentage) => release_split(state, ctx, milestone_index, percentage).await,
-        None => release_full(state, ctx).await,
+    let payout_amount = ctx.issue.reward_amount.unwrap_or(Decimal::ZERO);
+    if payout_amount == escrow_amount {
+        release_full(state, ctx).await
+    } else {
+        release_split(state, ctx, milestone_index, escrow_amount, payout_amount).await
     }
 }
 
 async fn release_full(state: &AppState, ctx: &IssueContext) -> Result<(), AppError> {
-    let assignment = ctx
-        .assignment
-        .as_ref()
-        .ok_or_else(|| AppError::internal("release requires an assignment"))?;
-
     let tx_hash = TrustlessWorkAPI::new(state.clone())
         .release_milestone(&ctx.repo, &ctx.issue)
         .await?;
 
-    update_assignment_payout_status(state, assignment.id, "released").await?;
-    update_issue_status(state, ctx.issue.id, "completed", None).await?;
+    update_assignment_payout_status(state, ctx.issue.id, "released", Some(&tx_hash)).await?;
+    update_bounty_status(state, ctx.issue.id, "paid", None).await?;
 
     let username = ctx
-        .contributor
+        .assignee
         .as_ref()
-        .map(|contributor| contributor.github_username.as_str())
+        .map(|p| p.username.as_str())
         .unwrap_or("contributor");
     let contract_id = ctx.repo.escrow_contract_id.as_deref().unwrap_or("");
     let explorer_url = explorer_tx_url(state, &tx_hash, contract_id);
+    let reward = ctx.issue.reward_amount.unwrap_or(Decimal::ZERO);
+
+    // Send PayoutReleased notification to assignee
+    if let Some(assignee) = &ctx.assignee {
+        let n = Notify {
+            recipient: assignee.id,
+            kind: Kind::PayoutReleased,
+            title: format!("Bounty Payout Released: #{}", ctx.issue.github_issue_number),
+            body: format!("Your bounty payout of {} USDC has been released", reward),
+            ref_id: Some(ctx.issue.id),
+            data: serde_json::json!({
+                "repoId": ctx.repo.id,
+                "issueNumber": ctx.issue.github_issue_number,
+                "amount": reward.to_string(),
+            }),
+            dedupe_key: format!("released:{}:{}", ctx.issue.id, reward),
+            actor: None,
+        };
+        Service::notify_contributor_quiet(state, n).await;
+    }
+
+    // Send PayoutReleased notification to maintainers
+    let n_maintainers = Notify {
+        recipient: ctx.repo.id, // Placeholder; Service::notify_maintainers will set actual recipients
+        kind: Kind::PayoutReleased,
+        title: format!("Bounty Payout Released: #{}", ctx.issue.github_issue_number),
+        body: format!("Bounty payout of {} USDC released to @{}", reward, username),
+        ref_id: Some(ctx.issue.id),
+        data: serde_json::json!({
+            "repoId": ctx.repo.id,
+            "issueNumber": ctx.issue.github_issue_number,
+            "amount": reward.to_string(),
+        }),
+        dedupe_key: format!("released:{}:{}", ctx.issue.id, reward),
+        actor: None,
+    };
+    Service::notify_maintainers_quiet(state, ctx.repo.id, n_maintainers).await;
 
     if let Err(error) = post_comment(
         state,
@@ -401,12 +563,11 @@ async fn release_full(state: &AppState, ctx: &IssueContext) -> Result<(), AppErr
         ctx.issue.github_issue_number,
         &format!(
             "### 🎉 Bounty Released!\n\n\
-             **{} USDC** has been sent to @{username}.\n\n\
+             **{reward} USDC** has been sent to @{username}.\n\n\
              | Recipient | Amount | Status |\n\
              | :--- | :--- | :--- |\n\
-             | @{username} | {} USDC | [View Transaction]({explorer_url}) |\n\n\
-             Thanks for your contribution! 🚀",
-            ctx.issue.reward_amount, ctx.issue.reward_amount
+             | @{username} | {reward} USDC | [View Transaction]({explorer_url}) |\n\n\
+             Thanks for your contribution! 🚀"
         ),
     )
     .await
@@ -427,16 +588,18 @@ async fn release_split(
     state: &AppState,
     ctx: &IssueContext,
     milestone_index: i32,
-    percentage: i32,
+    reward: Decimal,
+    contributor_payout_amount: Decimal,
 ) -> Result<(), AppError> {
-    let assignment = ctx
-        .assignment
+    let assignee = ctx
+        .assignee
         .as_ref()
-        .ok_or_else(|| AppError::internal("split release requires an assignment"))?;
-    let contributor = ctx
-        .contributor
+        .ok_or_else(|| AppError::internal("split release requires an assignee"))?;
+
+    let wallet = ctx
+        .wallet
         .as_ref()
-        .ok_or_else(|| AppError::internal("split release requires a contributor"))?;
+        .ok_or_else(|| AppError::internal("split release requires a wallet"))?;
 
     let contract_id = ctx
         .repo
@@ -444,20 +607,16 @@ async fn release_split(
         .as_deref()
         .ok_or_else(|| AppError::bad_request("No escrow deployed"))?;
 
-    let Some(contributor_wallet) = contributor.stellar_wallet.as_deref() else {
-        return Err(AppError::bad_request(
-            "Split payout requires the contributor's Stellar wallet",
-        ));
-    };
+    let contributor_wallet = wallet.address.as_str();
+    let maintainer_wallet = get_maintainer_payout_wallet(state, ctx.repo.id, assignee.id).await?;
 
-    let maintainer = get_contributor_by_github_id(state, maintainer_github_id(&ctx.repo)).await?;
-    let Some(maintainer_wallet) = maintainer.and_then(|value| value.stellar_wallet) else {
+    let Some(maintainer_wallet) = maintainer_wallet else {
         post_comment(
             state,
             &ctx.repo.full_name,
             ctx.issue.github_issue_number,
             &format!(
-                "⚠️ Partial payment is waiting for the maintainer to connect a Stellar wallet. [Connect here →]({}/connect)",
+                "⚠️ Partial payment is waiting for the maintainer to connect a Stellar wallet. [Complete your profile →]({}/profile)",
                 state.config.app_url
             ),
         )
@@ -465,8 +624,12 @@ async fn release_split(
         return Ok(());
     };
 
-    let (contributor_amount, maintainer_amount) =
-        split_amounts(ctx.issue.reward_amount, percentage);
+    let split = crate::modules::bounty::payout::PayoutSplit::from_contributor_amount(
+        reward,
+        contributor_payout_amount,
+    )?;
+    let contributor_amount = split.contributor_amount;
+    let maintainer_amount = split.maintainer_amount;
 
     dispute_milestone(
         state,
@@ -476,32 +639,71 @@ async fn release_split(
     )
     .await?;
 
-    let distributions = if contributor_wallet == maintainer_wallet {
-        vec![json!({ "address": maintainer_wallet, "amount": ctx.issue.reward_amount })]
-    } else {
-        vec![
-            json!({ "address": contributor_wallet, "amount": contributor_amount }),
-            json!({ "address": maintainer_wallet, "amount": maintainer_amount }),
-        ]
+    let distributions = split.distributions(contributor_wallet, &maintainer_wallet)?;
+
+    resolve_milestone_dispute(state, &ctx.repo, milestone_index, reward, distributions).await?;
+
+    // shortcut: split release does not surface a single tx hash (resolve_milestone_dispute
+    // returns (); the send happens inside it). Upgrade when that returns the hash.
+    update_assignment_payout_status(state, ctx.issue.id, "released", None).await?;
+    update_bounty_status(state, ctx.issue.id, "paid", None).await?;
+
+    // Send PayoutReleased notification to assignee
+    let n = Notify {
+        recipient: assignee.id,
+        kind: Kind::PayoutReleased,
+        title: format!("Bounty Payout Released: #{}", ctx.issue.github_issue_number),
+        body: format!(
+            "Your payout of {} USDC has been released",
+            contributor_amount
+        ),
+        ref_id: Some(ctx.issue.id),
+        data: serde_json::json!({
+            "repoId": ctx.repo.id,
+            "issueNumber": ctx.issue.github_issue_number,
+            "amount": contributor_amount.to_string(),
+        }),
+        dedupe_key: format!(
+            "released:{}:{}:{}",
+            ctx.issue.id, reward, contributor_amount
+        ),
+        actor: None,
     };
+    Service::notify_contributor_quiet(state, n).await;
 
-    resolve_milestone_dispute(state, &ctx.repo, milestone_index, distributions).await?;
-
-    update_assignment_payout_status(state, assignment.id, "released").await?;
-    update_issue_status(state, ctx.issue.id, "completed", None).await?;
+    // Send PayoutReleased notification to maintainers
+    let n_maintainers = Notify {
+        recipient: ctx.repo.id, // Placeholder; Service::notify_maintainers will set actual recipients
+        kind: Kind::PayoutReleased,
+        title: format!("Bounty Payout Released: #{}", ctx.issue.github_issue_number),
+        body: format!(
+            "Split bounty payout released: contributor gets {} USDC, maintainer gets {} USDC",
+            contributor_amount, maintainer_amount
+        ),
+        ref_id: Some(ctx.issue.id),
+        data: serde_json::json!({
+            "repoId": ctx.repo.id,
+            "issueNumber": ctx.issue.github_issue_number,
+            "amount": reward.to_string(),
+        }),
+        dedupe_key: format!(
+            "released:{}:{}:{}",
+            ctx.issue.id, reward, contributor_amount
+        ),
+        actor: None,
+    };
+    Service::notify_maintainers_quiet(state, ctx.repo.id, n_maintainers).await;
 
     if let Err(error) = post_comment(
         state,
         &ctx.repo.full_name,
         ctx.issue.github_issue_number,
         &format!(
-            "### ✅ Payout Released ({percentage}%)\n\n\
-             | Recipient | Amount | Role |\n\
-             | :--- | :--- | :--- |\n\
-             | @{} | **{contributor_amount} USDC** | Contributor |\n\
-             | Maintainer | **{maintainer_amount} USDC** | Refund |\n\n\
-             [View Escrow](https://viewer.trustlesswork.com/{contract_id})",
-            contributor.github_username
+            "### 🎉 Bounty Released!\n\n\
+             **{contributor_amount} USDC** has been sent to @{}.\n\n\
+             [View Escrow](https://viewer.trustlesswork.com/{contract_id})\n\n\
+             Thanks for your contribution! 🚀",
+            assignee.username
         ),
     )
     .await
@@ -511,7 +713,8 @@ async fn release_split(
 
     info!(
         issue = ctx.issue.github_issue_number,
-        percentage, "split bounty released automatically"
+        contributor_amount = %contributor_amount,
+        "split bounty released automatically"
     );
 
     Ok(())
@@ -522,14 +725,12 @@ pub async fn repair_database(
     ctx: &IssueContext,
     milestone_index: i32,
 ) -> Result<(), AppError> {
-    if let Some(assignment) = ctx.assignment.as_ref() {
-        if assignment.payout_status != "released" {
-            update_assignment_payout_status(state, assignment.id, "released").await?;
-        }
+    if ctx.issue.status != "paid" {
+        update_assignment_payout_status(state, ctx.issue.id, "released", None).await?;
     }
 
-    if ctx.issue.status != "completed" {
-        update_issue_status(state, ctx.issue.id, "completed", None).await?;
+    if ctx.issue.status != "paid" {
+        update_bounty_status(state, ctx.issue.id, "paid", None).await?;
     }
 
     warn!(
@@ -545,21 +746,19 @@ pub async fn notify_waiting_for_wallet(
     ctx: &IssueContext,
     github_username: &str,
 ) -> Result<(), AppError> {
-    let connect_url = format!(
-        "{}/connect?issue={}&repo={}",
-        state.config.app_url, ctx.issue.github_issue_id, ctx.repo.github_repo_id
-    );
+    let connect_url = format!("{}/profile", state.config.app_url);
 
     post_comment(
         state,
         &ctx.repo.full_name,
         ctx.issue.github_issue_number,
         &format!(
-            "### 🔑 Wallet Required\n\n\
+            "### 🔑 Complete Your Profile\n\n\
              The **{} USDC** payout for @{github_username} is ready and waiting on a wallet.\n\n\
-             [**Connect Wallet →**]({connect_url})\n\n\
-             The payout releases automatically once the wallet is connected — no further action needed.",
-            ctx.issue.reward_amount
+             Sign in and connect your Stellar wallet on your profile to receive it:\n\n\
+             [**Complete Your Profile →**]({connect_url})\n\n\
+             The payout releases automatically once your wallet is connected — no further action needed.",
+            ctx.issue.reward_amount.unwrap_or(Decimal::ZERO)
         ),
     )
     .await
@@ -568,20 +767,6 @@ pub async fn notify_waiting_for_wallet(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn decision_from_percentage(percentage: Option<Decimal>) -> Option<i32> {
-        percentage
-            .filter(|value| *value > Decimal::ZERO && *value < Decimal::from(100))
-            .and_then(|value| value.to_i32())
-    }
-
-    #[test]
-    fn only_partial_completion_selects_a_split_payout() {
-        assert_eq!(decision_from_percentage(None), None);
-        assert_eq!(decision_from_percentage(Some(Decimal::ZERO)), None);
-        assert_eq!(decision_from_percentage(Some(Decimal::from(100))), None);
-        assert_eq!(decision_from_percentage(Some(Decimal::from(75))), Some(75));
-    }
 
     #[test]
     fn only_externally_blocked_states_ask_for_a_recheck() {
@@ -601,7 +786,7 @@ mod tests {
         .wants_recheck());
         assert!(!Decision::ReleasePayout {
             milestone_index: 0,
-            split_percentage: None
+            escrow_amount: Decimal::ONE,
         }
         .wants_recheck());
     }

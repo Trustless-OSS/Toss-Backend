@@ -4,23 +4,43 @@ use uuid::Uuid;
 use crate::{
     error::{map_db_err, require_db, AppError},
     infra::cache_keys,
-    shared::models::{schema, Repo},
+    modules::repo::datatypes::RewardQuery,
+    shared::models::{schema, Repo, Reward},
     state::AppState,
 };
 
+async fn repo_with_rewards(
+    db: &mut toasty::Db,
+    repo: schema::Repository,
+) -> Result<Repo, AppError> {
+    let rewards = schema::Reward::filter_by_repo_id(repo.id)
+        .exec(db)
+        .await
+        .map_err(map_db_err)?;
+    Ok(Repo::from_parts(repo, rewards))
+}
+
 pub async fn get_repo_by_id(state: &AppState, repo_id: Uuid) -> Result<Option<Repo>, AppError> {
     let cache_key = cache_keys::repo(repo_id);
-    if let Some(cached) = state.cache.get::<Repo>(&cache_key).await {
+    if let Some(cached) = state
+        .cache
+        .get::<Repo>(&cache_key)
+        .await
+        .filter(|repo| !repo.rewards.is_empty())
+    {
         return Ok(Some(cached));
     }
 
     let mut db = require_db(&state.db)?;
-    let repo = schema::Repo::filter_by_id(repo_id)
+    let repo = schema::Repository::filter_by_id(repo_id)
         .first()
         .exec(&mut db)
         .await
-        .map_err(map_db_err)?
-        .map(Repo::from);
+        .map_err(map_db_err)?;
+    let repo = match repo {
+        Some(repo) => Some(repo_with_rewards(&mut db, repo).await?),
+        None => None,
+    };
 
     if let Some(ref repo) = repo {
         state
@@ -45,17 +65,25 @@ pub async fn get_repo_by_github_id(
     github_repo_id: i64,
 ) -> Result<Option<Repo>, AppError> {
     let cache_key = cache_keys::repo_by_github_id(github_repo_id);
-    if let Some(cached) = state.cache.get::<Repo>(&cache_key).await {
+    if let Some(cached) = state
+        .cache
+        .get::<Repo>(&cache_key)
+        .await
+        .filter(|repo| !repo.rewards.is_empty())
+    {
         return Ok(Some(cached));
     }
 
     let mut db = require_db(&state.db)?;
-    let repo = schema::Repo::filter_by_github_repo_id(github_repo_id)
+    let repo = schema::Repository::filter_by_github_repo_id(github_repo_id)
         .first()
         .exec(&mut db)
         .await
-        .map_err(map_db_err)?
-        .map(Repo::from);
+        .map_err(map_db_err)?;
+    let repo = match repo {
+        Some(repo) => Some(repo_with_rewards(&mut db, repo).await?),
+        None => None,
+    };
 
     if let Some(ref repo) = repo {
         state
@@ -93,78 +121,62 @@ pub async fn list_repos_for_user(
     offset: i64,
 ) -> Result<(Vec<Repo>, i64), AppError> {
     let mut db = require_db(&state.db)?;
+
     let limit = limit.max(0) as usize;
     let offset = offset.max(0) as usize;
 
-    if github_id == 0 {
-        if let Some(username) = github_username.filter(|value| !value.is_empty()) {
-            let all = schema::Repo::filter_by_owner_username(username)
-                .exec(&mut db)
-                .await
-                .map_err(map_db_err)?;
-            let total = all.len() as i64;
-            let repos = schema::Repo::filter_by_owner_username(username)
-                .order_by(schema::Repo::fields().created_at().desc())
-                .limit(limit)
-                .offset(offset)
+    // Find the profile for this user so we can look up their maintainer repos.
+    let profile = if github_id != 0 {
+        schema::Profile::filter_by_github_id(github_id)
+            .first()
+            .exec(&mut db)
+            .await
+            .map_err(map_db_err)?
+    } else {
+        None
+    };
+
+    let all_repos: Vec<Repo> = if let Some(ref profile) = profile {
+        let maintainer_rows = schema::RepoMaintainer::filter_by_profile_id(profile.id)
+            .exec(&mut db)
+            .await
+            .map_err(map_db_err)?;
+
+        let mut repos = Vec::new();
+        for row in maintainer_rows {
+            if let Some(repo) = schema::Repository::filter_by_id(row.repo_id)
+                .first()
                 .exec(&mut db)
                 .await
                 .map_err(map_db_err)?
-                .into_iter()
-                .map(Repo::from)
-                .collect();
-            return Ok((repos, total));
+            {
+                repos.push(repo_with_rewards(&mut db, repo).await?);
+            }
         }
-
+        repos
+    } else if let Some(username) = github_username.filter(|v| !v.is_empty()) {
+        // Fallback: match by full_name prefix (owner/*)
+        let prefix = format!("{username}/");
+        let rows = schema::Repository::all()
+            .exec(&mut db)
+            .await
+            .map_err(map_db_err)?;
+        let mut repos = Vec::new();
+        for repo in rows
+            .into_iter()
+            .filter(|repo| repo.full_name.starts_with(&prefix))
+        {
+            repos.push(repo_with_rewards(&mut db, repo).await?);
+        }
+        repos
+    } else {
         return Err(AppError::bad_request(
             "Could not determine GitHub identity from session",
         ));
-    }
+    };
 
-    let owned_or_installed =
-        schema::Repo::fields()
-            .owner_github_id()
-            .eq(github_id)
-            .or(schema::Repo::fields()
-                .installer_github_id()
-                .eq(Some(github_id)));
-    let public_not_fork = schema::Repo::fields()
-        .is_fork()
-        .eq(false)
-        .and(schema::Repo::fields().is_private().eq(false));
-    let user_or_installer = schema::Repo::fields()
-        .owner_type()
-        .eq(Some("User".to_string()))
-        .or(schema::Repo::fields()
-            .installer_github_id()
-            .eq(Some(github_id)));
-
-    let all = schema::Repo::filter(
-        owned_or_installed
-            .clone()
-            .and(public_not_fork.clone())
-            .and(user_or_installer.clone()),
-    )
-    .exec(&mut db)
-    .await
-    .map_err(map_db_err)?;
-    let total = all.len() as i64;
-
-    let repos = schema::Repo::filter(
-        owned_or_installed
-            .and(public_not_fork)
-            .and(user_or_installer),
-    )
-    .order_by(schema::Repo::fields().created_at().desc())
-    .limit(limit)
-    .offset(offset)
-    .exec(&mut db)
-    .await
-    .map_err(map_db_err)?
-    .into_iter()
-    .map(Repo::from)
-    .collect();
-
+    let total = all_repos.len() as i64;
+    let repos = all_repos.into_iter().skip(offset).take(limit).collect();
     Ok((repos, total))
 }
 
@@ -172,74 +184,129 @@ pub async fn upsert_repo(
     state: &AppState,
     github_repo_id: i64,
     full_name: &str,
-    owner_github_id: i64,
-    owner_username: &str,
+    github_install_id: Option<i64>,
 ) -> Result<Repo, AppError> {
     let mut db = require_db(&state.db)?;
-    let repo = schema::Repo::upsert_by_github_repo_id(github_repo_id)
-        .full_name(full_name)
-        .owner_github_id(owner_github_id)
-        .owner_username(owner_username)
-        .on_create(|repo| {
-            repo.reward_low(Decimal::from(1))
-                .reward_medium(Decimal::from(2))
-                .reward_high(Decimal::from(3))
-        })
+    let repo = schema::Repository::upsert_by_github_repo_id(github_repo_id)
+        .full_name(full_name.to_string())
+        .github_install_id(github_install_id)
         .exec(&mut db)
         .await
         .map_err(map_db_err)?;
-    Ok(Repo::from(repo))
+
+    for (label, amount) in [
+        ("low", Decimal::from(1)),
+        ("medium", Decimal::from(2)),
+        ("high", Decimal::from(3)),
+    ] {
+        schema::Reward::upsert_by_repo_id_and_label(repo.id, label.to_string())
+            .amount(amount)
+            .exec(&mut db)
+            .await
+            .map_err(map_db_err)?;
+    }
+
+    repo_with_rewards(&mut db, repo).await
 }
 
-pub async fn update_repo_rewards(
+pub async fn upsert_repo_with_maintainer(
     state: &AppState,
-    repo_id: Uuid,
-    reward_low: Decimal,
-    reward_medium: Decimal,
-    reward_high: Decimal,
+    github_repo_id: i64,
+    full_name: &str,
+    github_install_id: Option<i64>,
+    maintainer_github_id: i64,
+    maintainer_username: &str,
 ) -> Result<Repo, AppError> {
+    let repo = upsert_repo(state, github_repo_id, full_name, github_install_id).await?;
+
     let mut db = require_db(&state.db)?;
-    let mut repo = schema::Repo::get_by_id(&mut db, &repo_id)
+    let profile = schema::Profile::upsert_by_github_id(maintainer_github_id)
+        .username(maintainer_username.to_string())
+        .exec(&mut db)
         .await
         .map_err(map_db_err)?;
-    toasty::update!(repo {
-        reward_low,
-        reward_medium,
-        reward_high,
-    })
-    .exec(&mut db)
-    .await
-    .map_err(map_db_err)?;
 
-    let repo = Repo::from(repo);
+    schema::RepoMaintainer::upsert_by_repo_id_and_profile_id(repo.id, profile.id)
+        .role("owner".to_string())
+        .exec(&mut db)
+        .await
+        .map_err(map_db_err)?;
+
     invalidate_repo_cache(state, repo.id, Some(repo.github_repo_id)).await;
     Ok(repo)
+}
+
+pub async fn upsert_repo_rewards(
+    state: &AppState,
+    repo_id: Uuid,
+    label: String,
+    amount: Decimal,
+) -> Result<Repo, AppError> {
+    let mut db = require_db(&state.db)?;
+
+    schema::Reward::upsert_by_repo_id_and_label(repo_id, label)
+        .amount(amount)
+        .exec(&mut db)
+        .await
+        .map_err(map_db_err)?;
+
+    let schema_repo = schema::Repository::get_by_id(&mut db, &repo_id)
+        .await
+        .map_err(map_db_err)?;
+
+    let rewards = schema::Reward::filter_by_repo_id(repo_id)
+        .exec(&mut db)
+        .await
+        .map_err(map_db_err)?
+        .into_iter()
+        .map(Reward::from)
+        .collect::<Vec<_>>();
+
+    let mut repo = Repo::from(schema_repo);
+    repo.rewards = rewards;
+
+    invalidate_repo_cache(state, repo.id, Some(repo.github_repo_id)).await;
+    Ok(repo)
+}
+
+pub async fn get_repo_rewards(
+    state: &AppState,
+    query: RewardQuery,
+) -> Result<Vec<Reward>, AppError> {
+    let mut db = require_db(&state.db)?;
+
+    let rows = match query {
+        RewardQuery::ByRepo(repo_id) => {
+            schema::Reward::filter_by_repo_id(repo_id)
+                .exec(&mut db)
+                .await
+        }
+        RewardQuery::ById(reward_id) => schema::Reward::filter_by_id(reward_id).exec(&mut db).await,
+    }
+    .map_err(map_db_err)?;
+
+    Ok(rows.into_iter().map(Reward::from).collect())
 }
 
 pub async fn delete_repo_cascade(state: &AppState, repo_id: Uuid) -> Result<(), AppError> {
     let mut db = require_db(&state.db)?;
     let mut tx = db.transaction().await.map_err(map_db_err)?;
 
-    let issues = schema::Issue::filter_by_repo_id(repo_id)
-        .exec(&mut tx)
-        .await
-        .map_err(map_db_err)?;
-
-    for issue in issues {
-        schema::Assignment::filter_by_issue_id(issue.id)
-            .delete()
-            .exec(&mut tx)
-            .await
-            .map_err(map_db_err)?;
-    }
-
-    schema::Issue::filter_by_repo_id(repo_id)
+    // Delete all bounties for the repo (cascade handles assignments via FK in old schema,
+    // but now bounties are standalone rows referencing the repo).
+    schema::Bounty::filter_by_repo_id(repo_id)
         .delete()
         .exec(&mut tx)
         .await
         .map_err(map_db_err)?;
 
-    schema::Repo::filter_by_id(repo_id)
+    schema::RepoMaintainer::filter_by_repo_id(repo_id)
+        .delete()
+        .exec(&mut tx)
+        .await
+        .map_err(map_db_err)?;
+
+    schema::Repository::filter_by_id(repo_id)
         .delete()
         .exec(&mut tx)
         .await
@@ -256,10 +323,14 @@ pub async fn count_repos_for_installation(
     exclude_repo_id: Uuid,
 ) -> Result<i64, AppError> {
     let mut db = require_db(&state.db)?;
-    let repos = schema::Repo::filter_by_github_installation_id(Some(installation_id))
-        .exec(&mut db)
-        .await
-        .map_err(map_db_err)?;
+    let repos = schema::Repository::filter(
+        schema::Repository::fields()
+            .github_install_id()
+            .eq(Some(installation_id)),
+    )
+    .exec(&mut db)
+    .await
+    .map_err(map_db_err)?;
     Ok(repos
         .into_iter()
         .filter(|repo| repo.id != exclude_repo_id)
@@ -272,23 +343,58 @@ pub async fn is_maintainer(
     repo_id: Uuid,
 ) -> Result<bool, AppError> {
     let mut db = require_db(&state.db)?;
-    let repo = schema::Repo::filter_by_id(repo_id)
+
+    let profile = schema::Profile::filter_by_github_id(github_user_id)
         .first()
         .exec(&mut db)
         .await
         .map_err(map_db_err)?;
 
-    Ok(repo.is_some_and(|repo| {
-        repo.owner_github_id == github_user_id || repo.installer_github_id == Some(github_user_id)
-    }))
+    let Some(profile) = profile else {
+        return Ok(false);
+    };
+
+    let maintainer = schema::RepoMaintainer::filter_by_repo_id_and_profile_id(repo_id, profile.id)
+        .first()
+        .exec(&mut db)
+        .await
+        .map_err(map_db_err)?;
+
+    Ok(maintainer.is_some())
 }
 
 pub async fn ping_db(state: &AppState) -> Result<(), AppError> {
     let mut db = require_db(&state.db)?;
-    let _ = schema::Repo::all()
+    let _ = schema::Repository::all()
         .limit(1)
         .exec(&mut db)
         .await
         .map_err(map_db_err)?;
+    Ok(())
+}
+
+pub async fn delete_repo_reward(
+    state: &AppState,
+    repo_id: Uuid,
+    label: &str,
+) -> Result<(), AppError> {
+    let mut db = require_db(&state.db)?;
+
+    let rewards = schema::Reward::filter_by_repo_id(repo_id)
+        .exec(&mut db)
+        .await
+        .map_err(map_db_err)?;
+
+    let reward = rewards
+        .into_iter()
+        .find(|r| r.label.eq_ignore_ascii_case(label))
+        .ok_or_else(|| AppError::not_found("Reward level not found"))?;
+
+    schema::Reward::filter_by_id(reward.id)
+        .delete()
+        .exec(&mut db)
+        .await
+        .map_err(map_db_err)?;
+
     Ok(())
 }

@@ -11,23 +11,25 @@ use crate::{
                 delete_github_installation, install_repo_webhook, list_installation_repos,
                 remove_repo_from_installation,
             },
+            labels::{delete_github_label, list_github_labels, GitHubLabel},
             repository::upsert_installation_repo,
         },
         repo::{
+            datatypes::RewardQuery,
             model::{
                 ConnectRepoInput, InstallationRepoSummary, InstallationReposList, OkResponse,
                 RepoAccessInput, RepoDetails, RepoResponse, SyncInstallationInput,
                 SyncInstallationResult, UpdateRewardsInput,
             },
             repository::{
-                count_repos_for_installation, delete_repo_cascade, get_repo_by_id,
-                invalidate_repo_cache, is_maintainer, list_repos_for_user, update_repo_rewards,
-                upsert_repo,
+                count_repos_for_installation, delete_repo_cascade, delete_repo_reward,
+                get_repo_by_id, get_repo_rewards, invalidate_repo_cache, is_maintainer,
+                list_repos_for_user, upsert_repo_rewards, upsert_repo_with_maintainer,
             },
         },
     },
     shared::{
-        models::Repo,
+        models::{Repo, Reward},
         pagination::{PaginatedResponse, PaginationQuery},
     },
     state::AppState,
@@ -61,10 +63,11 @@ pub(crate) async fn connect_repo(
         error!(err = %error, repo = %input.full_name, "exception while installing webhook");
     }
 
-    let repo = upsert_repo(
+    let repo = upsert_repo_with_maintainer(
         state,
         input.github_repo_id,
         &input.full_name,
+        None,
         input.owner_github_id,
         &input.owner_username,
     )
@@ -125,9 +128,6 @@ pub(crate) async fn sync_installation(
             &repo.full_name,
             repo.owner.id,
             &repo.owner.login,
-            &repo.owner.account_type,
-            repo.fork,
-            repo.private,
             input.installer_github_id,
             input.installation_id,
         )
@@ -183,23 +183,24 @@ pub(crate) async fn update_rewards(
         ));
     }
 
-    if input.reward_low < Decimal::ZERO
-        || input.reward_medium < Decimal::ZERO
-        || input.reward_high < Decimal::ZERO
-    {
+    if input.amount == Decimal::ZERO {
         return Err(AppError::bad_request("Reward amounts must be non-negative"));
     }
 
-    let repo = update_repo_rewards(
-        state,
-        input.repo_id,
-        input.reward_low,
-        input.reward_medium,
-        input.reward_high,
-    )
-    .await?;
+    if input.label.is_empty() {
+        return Err(AppError::bad_request("Reward Label must be non-negative"));
+    }
+
+    let repo = upsert_repo_rewards(state, input.repo_id, input.label, input.amount).await?;
 
     Ok(RepoResponse { repo })
+}
+
+pub(crate) async fn get_repo_rewards_by_repo_id(
+    state: &AppState,
+    repo_id: Uuid,
+) -> Result<Vec<Reward>, AppError> {
+    get_repo_rewards(state, RewardQuery::ByRepo(repo_id)).await
 }
 
 pub(crate) async fn delete_repo(
@@ -216,13 +217,14 @@ pub(crate) async fn delete_repo(
         .await?
         .ok_or_else(|| AppError::not_found("Repo not found"))?;
 
-    if repo.escrow_balance > Decimal::ZERO {
+    let balance = repo.escrow_balance.unwrap_or(Decimal::ZERO);
+    if balance > Decimal::ZERO {
         return Err(AppError::bad_request(
             "Repo still has escrow funds. Withdraw all funds before deleting.",
         ));
     }
 
-    if let Some(installation_id) = repo.github_installation_id {
+    if let Some(installation_id) = repo.github_install_id {
         match count_repos_for_installation(state, installation_id, input.repo_id).await {
             Ok(0) => {
                 if let Err(error) = delete_github_installation(state, installation_id).await {
@@ -242,7 +244,7 @@ pub(crate) async fn delete_repo(
                     error!(
                         %error,
                         repo = %repo.full_name,
-                        "could not remove repo from installation (might be 'All repositories' selection)"
+                        "could not remove repo from installation"
                     );
                 } else {
                     info!(
@@ -261,6 +263,55 @@ pub(crate) async fn delete_repo(
     delete_repo_cascade(state, input.repo_id).await?;
     invalidate_repo_cache(state, input.repo_id, Some(repo.github_repo_id)).await;
     info!(repo = %repo.full_name, repo_id = %input.repo_id, "repo deleted");
+
+    Ok(OkResponse { ok: true })
+}
+
+pub(crate) async fn get_github_labels(
+    state: &AppState,
+    repo_id: Uuid,
+    github_id: i64,
+) -> Result<Vec<GitHubLabel>, AppError> {
+    let repo = get_repo_by_id(state, repo_id)
+        .await?
+        .ok_or_else(|| AppError::not_found("Repo not found"))?;
+    if !is_maintainer(state, github_id, repo_id).await? {
+        return Err(AppError::forbidden(
+            "Forbidden: Only maintainers can view GitHub labels",
+        ));
+    }
+    list_github_labels(state, repo.github_repo_id, &repo.full_name).await
+}
+
+pub(crate) async fn delete_reward(
+    state: &AppState,
+    repo_id: Uuid,
+    maintainer_github_id: i64,
+    label: String,
+    also_delete_github_label: bool,
+) -> Result<OkResponse, AppError> {
+    if !is_maintainer(state, maintainer_github_id, repo_id).await? {
+        return Err(AppError::forbidden(
+            "Forbidden: Only maintainers can delete reward levels",
+        ));
+    }
+
+    delete_repo_reward(state, repo_id, &label).await?;
+    invalidate_repo_cache(state, repo_id, None).await;
+
+    if also_delete_github_label {
+        if let Some(repo) = get_repo_by_id(state, repo_id).await? {
+            if let Err(e) =
+                delete_github_label(state, repo.github_repo_id, &repo.full_name, &label).await
+            {
+                tracing::warn!(
+                    err = %e,
+                    label = %label,
+                    "could not delete GitHub label (continuing)"
+                );
+            }
+        }
+    }
 
     Ok(OkResponse { ok: true })
 }

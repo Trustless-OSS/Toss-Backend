@@ -5,19 +5,28 @@ use tracing::{info, warn};
 use crate::{
     error::AppError,
     modules::{
-        bounty::labels::{difficulty_label, get_reward_amount, parse_labels},
+        bounty::automation::escrow_reward_amount,
+        bounty::labels::{get_reward_amount, parse_labels},
         bounty::repository::{
-            cancel_issue, create_issue_and_reserve_balance, delete_assignments_for_issue,
-            get_issue_by_repo_and_github_id, update_pending_issue_reward,
+            cancel_issue, create_bounty_and_reserve_balance, create_issue_and_reserve_balance,
+            delete_assignments_for_issue, get_issue_by_repo_and_github_id,
+            update_pending_issue_reward,
         },
         escrow::repository::refund_repo_balance,
         github::{
             auth::post_comment,
-            handlers::helpers::{extract_manual_amount, labels_from_payload, sync_repo_balance},
+            comments,
+            handlers::helpers::{
+                adopt_existing_assignee, extract_manual_amount, labels_from_payload,
+                sync_repo_balance,
+            },
+        },
+        notification::{
+            kinds::{Kind, Notify},
+            service::Service,
         },
         repo::repository::get_repo_by_github_id,
     },
-    shared::models::Difficulty,
     state::AppState,
 };
 
@@ -25,6 +34,7 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
     let repository = payload
         .get("repository")
         .ok_or_else(|| AppError::webhook("issues.labeled payload missing repository"))?;
+
     let issue = payload
         .get("issue")
         .ok_or_else(|| AppError::webhook("issues.labeled payload missing issue"))?;
@@ -33,6 +43,7 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
         .get("id")
         .and_then(|v| v.as_i64())
         .ok_or_else(|| AppError::webhook("repository.id missing"))?;
+
     let full_name = repository
         .get("full_name")
         .and_then(|v| v.as_str())
@@ -43,24 +54,6 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
         .and_then(|label| label.get("name"))
         .and_then(|name| name.as_str())
         .map(str::to_ascii_lowercase);
-
-    let difficulty_labels = ["low", "medium", "high", "bonus", "manual"];
-    let is_opened = payload.get("action").and_then(Value::as_str) == Some("opened");
-    let is_trigger = event_label.as_ref().is_some_and(|label| {
-        label == "rewarded" || difficulty_labels.contains(&label.as_str()) || label == "rejected"
-    }) || is_opened;
-
-    if !is_trigger {
-        info!(
-            action = payload
-                .get("action")
-                .and_then(|value| value.as_str())
-                .unwrap_or(""),
-            label = event_label.as_deref().unwrap_or("none"),
-            "issue event does not contain a bounty-triggering label"
-        );
-        return Ok(());
-    }
 
     let Some(mut repo) = get_repo_by_github_id(state, repo_github_id).await? else {
         warn!(
@@ -79,6 +72,32 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
         return Ok(());
     }
 
+    // Build list of all valid trigger labels: configured rewards + reserved labels
+    let reward_labels: Vec<String> = repo.rewards.iter().map(|r| r.label.clone()).collect();
+    let mut all_trigger_labels = reward_labels.clone();
+    all_trigger_labels.extend(vec![
+        "rewarded".to_string(),
+        "rejected".to_string(),
+        "manual".to_string(),
+    ]);
+
+    // Check if this event_label is a trigger
+    let is_opened = payload.get("action").and_then(Value::as_str) == Some("opened");
+    let is_trigger = event_label.as_ref().is_some_and(|label| {
+        all_trigger_labels
+            .iter()
+            .any(|trigger| trigger.eq_ignore_ascii_case(label))
+    }) || is_opened;
+
+    if !is_trigger {
+        info!(
+            action = payload.get("action").and_then(|v| v.as_str()).unwrap_or(""),
+            label = event_label.as_deref().unwrap_or("none"),
+            "issue event does not contain a bounty-triggering label"
+        );
+        return Ok(());
+    }
+
     let github_issue_id = issue.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
     let issue_number = issue.get("number").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
     let title = issue
@@ -90,18 +109,35 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
 
     if event_label.as_deref() == Some("rejected") {
         if let Some(ref existing) = existing {
-            if existing.status != "completed" && existing.status != "cancelled" {
+            if existing.status != "paid" && existing.status != "cancelled" {
+                let reward = escrow_reward_amount(state, &repo, existing).await?;
+
+                // Send BountyRejected notification to assignee
+                if let Some(assignee_id) = existing.assignee_id {
+                    let n = Notify {
+                        recipient: assignee_id,
+                        kind: Kind::BountyRejected,
+                        title: format!("Bounty Rejected: #{}", issue_number),
+                        body: format!("Your work on issue #{} has been rejected", issue_number),
+                        ref_id: Some(existing.id),
+                        data: serde_json::json!({
+                            "repoId": repo.id,
+                            "issueNumber": issue_number,
+                        }),
+                        dedupe_key: format!("rejected:{}", existing.id),
+                        actor: None,
+                    };
+                    Service::notify_contributor_quiet(state, n).await;
+                }
+
                 cancel_issue(state, existing.id).await?;
                 delete_assignments_for_issue(state, existing.id).await?;
-                refund_repo_balance(state, &repo, existing.reward_amount).await?;
+                refund_repo_balance(state, &repo, Some(reward)).await?;
                 post_comment(
                     state,
                     full_name,
                     issue_number,
-                    &format!(
-                        "### 🛑 Bounty Cancelled\n\nThis issue was rejected by a maintainer. The **{} USDC** bounty has been returned to the pool.",
-                        existing.reward_amount
-                    ),
+                    &comments::bounty_cancelled(reward),
                 )
                 .await?;
             }
@@ -109,152 +145,225 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
         return Ok(());
     }
 
-    let parsed = parse_labels(&labels_from_payload(issue));
-    if !parsed.is_rewarded || parsed.difficulty.is_none() {
-        let labels = labels_from_payload(issue)
-            .iter()
-            .filter_map(|label| label.get("name").and_then(Value::as_str))
-            .map(str::to_owned)
-            .collect::<Vec<_>>()
-            .join(",");
+    let parsed = parse_labels(&labels_from_payload(issue), &reward_labels);
+    if !parsed.is_rewarded {
         info!(
             repo = full_name,
             issue = issue_number,
-            %labels,
-            rewarded = parsed.is_rewarded,
-            has_difficulty = parsed.difficulty.is_some(),
-            "bounty not created; issue needs `rewarded` and one difficulty label: low, medium, high, or manual"
+            "bounty label ignored; issue is missing `rewarded`"
         );
         return Ok(());
     }
 
-    let difficulty = parsed.difficulty.unwrap();
-
     if let Some(ref existing) = existing {
-        if existing.status != "pending" {
+        // Once a milestone is locked, changing the reward would leave the database
+        // and escrow out of sync. Before that point, a maintainer may still choose
+        // or change the amount, including after assigning a contributor.
+        if existing.status != "open"
+            && !(existing.status == "assigned" && existing.milestone_index.is_none())
+        {
             return Ok(());
         }
     }
 
-    let manual_amount = if difficulty == Difficulty::Manual {
-        let body = issue.get("body").and_then(|v| v.as_str());
-        match extract_manual_amount(body) {
-            Some(amount) => Some(amount),
-            None => {
-                if existing.is_none() {
-                    post_comment(
-                        state,
-                        full_name,
-                        issue_number,
-                        "### ⚠️ Missing Amount\n\n\
-                         Manual bounties require an amount. Please comment with `@Trustless-OSS <amount>` to set it.",
-                    )
-                    .await?;
-                }
-                return Ok(());
-            }
-        }
-    } else {
-        None
-    };
-
-    let reward_amount = get_reward_amount(Some(difficulty), &repo, manual_amount);
-    let diff_label = difficulty_label(difficulty);
-
-    if let Some(ref existing) = existing {
-        if !update_pending_issue_reward(state, &repo, existing.id, reward_amount, diff_label)
-            .await?
-        {
-            post_comment(
-                state,
-                full_name,
-                issue_number,
-                "⚠️ The bounty could not be updated because the available escrow balance is too low.",
-            )
-            .await?;
+    let Some(matched_level) = &parsed.matched_level else {
+        if existing.is_some() {
             return Ok(());
         }
-        info!(
-            repo = full_name,
-            issue = issue_number,
-            %reward_amount,
-            "bounty amount updated"
-        );
+
+        let Some(created) = create_bounty_and_reserve_balance(
+            state,
+            &repo,
+            github_issue_id,
+            issue_number,
+            title,
+            Decimal::ZERO,
+            None,
+        )
+        .await?
+        else {
+            return Ok(());
+        };
+
         post_comment(
             state,
             full_name,
             issue_number,
-            &format!(
-                "🔄 **Bounty Updated:** **{} USDC** (`{}`)",
-                reward_amount, diff_label
-            ),
+            comments::UNPRICED_BOUNTY_CREATED,
         )
         .await?;
+        info!(repo = full_name, issue = issue_number, bounty = %created.id, "unpriced bounty issue created");
+        return Ok(());
+    };
+
+    let manual_amount = if parsed.is_manual {
+        let body = issue.get("body").and_then(|v| v.as_str());
+        extract_manual_amount(body)
+    } else {
+        None
+    };
+
+    let reward_amount = get_reward_amount(Some(matched_level.as_str()), &repo, manual_amount);
+
+    if parsed.is_manual && manual_amount.is_none() {
+        if existing.is_none() {
+            // Create the bounty in an unpriced state; the amount can be supplied
+            // later from an issue comment without requiring a new label event.
+            create_bounty_and_reserve_balance(
+                state,
+                &repo,
+                github_issue_id,
+                issue_number,
+                title,
+                Decimal::ZERO,
+                None,
+            )
+            .await?;
+        }
+        post_comment(
+            state,
+            full_name,
+            issue_number,
+            comments::MANUAL_AMOUNT_NEEDED,
+        )
+        .await?;
+        return Ok(());
+    }
+
+    if let Some(ref existing) = existing {
+        if !update_pending_issue_reward(state, &repo, existing.id, reward_amount, matched_level)
+            .await?
+        {
+            // Send InsufficientFunds notification to maintainers
+            let n = Notify {
+                recipient: repo.id, // Placeholder; Service::notify_maintainers will set actual recipients
+                kind: Kind::InsufficientFunds,
+                title: "Insufficient Escrow Balance".to_string(),
+                body: format!(
+                    "Cannot update bounty for issue #{} due to insufficient escrow balance",
+                    issue_number
+                ),
+                ref_id: Some(existing.id),
+                data: serde_json::json!({
+                    "repoId": repo.id,
+                    "issueNumber": issue_number,
+                }),
+                dedupe_key: format!("insufficient:{}:{}", github_issue_id, reward_amount),
+                actor: None,
+            };
+            Service::notify_maintainers_quiet(state, repo.id, n).await;
+
+            post_comment(
+                state,
+                full_name,
+                issue_number,
+                comments::BOUNTY_UPDATE_FAILED,
+            )
+            .await?;
+            return Ok(());
+        }
+        info!(repo = full_name, issue = issue_number, %reward_amount, "bounty amount updated");
+
+        // Send AmountUpdated notification to assignee
+        if let Some(assignee_id) = existing.assignee_id {
+            let n = Notify {
+                recipient: assignee_id,
+                kind: Kind::AmountUpdated,
+                title: format!("Bounty Amount Updated: #{}", issue_number),
+                body: format!(
+                    "The reward for issue #{} has been updated to {} USDC",
+                    issue_number, reward_amount
+                ),
+                ref_id: Some(existing.id),
+                data: serde_json::json!({
+                    "repoId": repo.id,
+                    "issueNumber": issue_number,
+                    "amount": reward_amount.to_string(),
+                }),
+                dedupe_key: format!("amount:{}:{}", existing.id, reward_amount),
+                actor: None,
+            };
+            Service::notify_contributor_quiet(state, n).await;
+        }
+
+        if existing.status == "assigned" && existing.milestone_index.is_none() {
+            state
+                .queue
+                .enqueue_advance_issue(
+                    crate::infra::queue::BountyJobData::new(existing.id, "reward-configured")
+                        .notifying(),
+                )
+                .await?;
+        }
         return Ok(());
     }
 
     sync_repo_balance(state, &mut repo).await?;
 
-    if reward_amount > Decimal::ZERO && repo.escrow_balance < reward_amount {
+    let balance = repo.escrow_balance.unwrap_or_default();
+    if reward_amount > Decimal::ZERO && balance < reward_amount {
         warn!(
             repo = full_name,
             issue = issue_number,
-            available_balance = %repo.escrow_balance,
+            available_balance = %balance,
             required_reward = %reward_amount,
             "bounty not created because escrow balance is insufficient"
         );
+
+        // Send InsufficientFunds notification to maintainers
+        let n = Notify {
+            recipient: repo.id, // Placeholder; Service::notify_maintainers will set actual recipients
+            kind: Kind::InsufficientFunds,
+            title: "Insufficient Escrow Balance".to_string(),
+            body: format!(
+                "Cannot create bounty for issue #{}: balance {} < required {}",
+                issue_number, balance, reward_amount
+            ),
+            ref_id: None,
+            data: serde_json::json!({
+                "repoId": repo.id,
+                "issueNumber": issue_number,
+            }),
+            dedupe_key: format!("insufficient:{}:{}", github_issue_id, reward_amount),
+            actor: None,
+        };
+        Service::notify_maintainers_quiet(state, repo.id, n).await;
+
         post_comment(
             state,
             full_name,
             issue_number,
-            &format!(
-                "### ⚠️ Insufficient Balance\n\n\
-                 Escrow balance (**{} USDC**) is too low for this **{} USDC** bounty.\n\n\
-                 [**Top Up Escrow →**]({}/dashboard)",
-                repo.escrow_balance, reward_amount, state.config.app_url
-            ),
+            &comments::labeled_insufficient_balance(balance, reward_amount, &state.config.app_url),
         )
         .await?;
         return Ok(());
     }
 
-    if create_issue_and_reserve_balance(
+    let Some(created) = create_issue_and_reserve_balance(
         state,
         &repo,
         github_issue_id,
         issue_number,
         title,
         reward_amount,
-        diff_label,
+        matched_level,
     )
     .await?
-    .is_none()
-    {
+    else {
         return Ok(());
-    }
+    };
 
     let contract_id = repo.escrow_contract_id.as_deref().unwrap_or("");
     post_comment(
         state,
         full_name,
         issue_number,
-        &format!(
-            "### 💰 Bounty Created!\n\n\
-             | Reward | Level | Escrow |\n\
-             | :--- | :--- | :--- |\n\
-             | **{} USDC** | `{}` | [View On-Chain →](https://viewer.trustlesswork.com/{}) |\n\n\
-             Assign a contributor to lock the funds.",
-            reward_amount, diff_label, contract_id
-        ),
+        &comments::labeled_bounty_created(reward_amount, matched_level, contract_id),
     )
     .await?;
 
-    info!(
-        repo = full_name,
-        issue = issue_number,
-        %reward_amount,
-        "bounty issue created"
-    );
+    info!(repo = full_name, issue = issue_number, %reward_amount, "bounty issue created");
 
+    adopt_existing_assignee(state, issue, &created).await?;
     Ok(())
 }

@@ -6,20 +6,26 @@ use tracing::info;
 use uuid::Uuid;
 
 use crate::{
-    error::AppError,
+    error::{map_db_err, require_db, AppError},
     infra::queue::{BountyJobData, EnqueueOutcome},
     middleware::auth::AuthedUser,
     modules::{
         bounty::{
             automation,
-            model::{Milestone, MilestoneResponse, RetryIssueResponse},
+            model::{Milestone, MilestoneResponse, RejectIssueResponse, RetryIssueResponse},
             repository::{
-                get_issue_by_repo_and_github_id, get_issue_with_repo, is_assigned_contributor,
+                cancel_bounty_with_refund, get_assignment_for_issue,
+                get_bounty_by_repo_and_github_id, get_bounty_with_repo, is_assigned_contributor,
             },
         },
-        contributor::repository::upsert_contributor_wallet,
+        github::handlers::helpers::{hold_milestone_on_chain, reject_milestone_on_chain},
+        notification::{
+            kinds::{Kind, Notify},
+            service::Service,
+        },
         repo::repository::{get_repo_by_github_id, is_maintainer},
     },
+    shared::models::schema,
     state::AppState,
 };
 
@@ -53,7 +59,7 @@ impl BountyService {
             .unwrap_or(&body.wallet)
             .to_string();
 
-        upsert_contributor_wallet(
+        upsert_profile_wallet(
             &state,
             user.github_id,
             user.github_username.as_deref().unwrap_or(""),
@@ -62,13 +68,13 @@ impl BountyService {
         )
         .await?;
 
-        let issue = get_issue_by_repo_and_github_id(&state, repo.id, body.github_issue_id)
+        let bounty = get_bounty_by_repo_and_github_id(&state, repo.id, body.github_issue_id)
             .await?
             .ok_or_else(|| {
                 AppError::bad_request("Issue is not in a valid state to connect wallet")
             })?;
 
-        if issue.status != "pending" && issue.status != "active" {
+        if bounty.status != "open" && bounty.status != "assigned" {
             return Err(AppError::bad_request(
                 "Issue is not in a valid state to connect wallet",
             ));
@@ -76,15 +82,15 @@ impl BountyService {
 
         let outcome = state
             .queue
-            .enqueue_advance_issue(BountyJobData::new(issue.id, "milestone-push-requested"))
+            .enqueue_advance_issue(BountyJobData::new(bounty.id, "milestone-push-requested"))
             .await?;
 
         if outcome == EnqueueOutcome::Unavailable {
-            advance_inline(&state, issue.id).await?;
+            advance_inline(&state, bounty.id).await?;
         }
 
         info!(
-            issue = issue.github_issue_number,
+            issue = bounty.github_issue_number,
             outcome = outcome.label(),
             "wallet connected; bounty automation queued"
         );
@@ -92,16 +98,16 @@ impl BountyService {
         Ok(Json(MilestoneResponse {
             ok: true,
             repo_full_name: repo.full_name,
-            issue_number: issue.github_issue_number,
+            issue_number: bounty.github_issue_number,
         }))
     }
 
     pub async fn retry_issue(
         State(state): State<AppState>,
         user: AuthedUser,
-        Path(issue_id): Path<Uuid>,
+        Path(bounty_id): Path<Uuid>,
     ) -> Result<Json<RetryIssueResponse>, AppError> {
-        let (issue, repo) = get_issue_with_repo(&state, issue_id)
+        let (bounty, repo) = get_bounty_with_repo(&state, bounty_id)
             .await?
             .ok_or_else(|| AppError::not_found("Issue not found"))?;
 
@@ -113,11 +119,11 @@ impl BountyService {
 
         let outcome = state
             .queue
-            .enqueue_advance_issue(BountyJobData::new(issue.id, "manual-retry"))
+            .enqueue_advance_issue(BountyJobData::new(bounty.id, "manual-retry"))
             .await?;
 
         if outcome == EnqueueOutcome::Unavailable {
-            advance_inline(&state, issue.id).await?;
+            advance_inline(&state, bounty.id).await?;
             return Ok(Json(RetryIssueResponse {
                 ok: true,
                 step: Some("applied"),
@@ -128,7 +134,7 @@ impl BountyService {
         }
 
         info!(
-            issue = issue.github_issue_number,
+            issue = bounty.github_issue_number,
             outcome = outcome.label(),
             "manual retry requested"
         );
@@ -141,12 +147,134 @@ impl BountyService {
             message: Some("The bounty state machine will run shortly"),
         }))
     }
+
+    pub async fn reject_issue(
+        State(state): State<AppState>,
+        user: AuthedUser,
+        Path(bounty_id): Path<Uuid>,
+    ) -> Result<Json<RejectIssueResponse>, AppError> {
+        let (bounty, repo) = get_bounty_with_repo(&state, bounty_id)
+            .await?
+            .ok_or_else(|| AppError::not_found("Issue not found"))?;
+
+        if !is_maintainer(&state, user.github_id, repo.id).await? {
+            return Err(AppError::forbidden(
+                "Forbidden: Only the repository owner or maintainer can reject bounties",
+            ));
+        }
+
+        if bounty.status == "paid" || bounty.status == "cancelled" {
+            return Err(AppError::bad_request(
+                "Bounty has already been paid or cancelled",
+            ));
+        }
+
+        let refunded_amount = reject_bounty_with_pool_refund(&state, &bounty, &repo).await?;
+
+        Ok(Json(RejectIssueResponse {
+            ok: true,
+            refunded_amount: refunded_amount.to_string(),
+        }))
+    }
+
+    pub async fn hold_issue(
+        State(state): State<AppState>,
+        user: AuthedUser,
+        Path(bounty_id): Path<Uuid>,
+    ) -> Result<Json<crate::modules::bounty::model::HoldIssueResponse>, AppError> {
+        let (bounty, repo) = get_bounty_with_repo(&state, bounty_id)
+            .await?
+            .ok_or_else(|| AppError::not_found("Issue not found"))?;
+        if !is_maintainer(&state, user.github_id, repo.id).await? {
+            return Err(AppError::forbidden(
+                "Forbidden: Only the repository owner or maintainer can hold bounties",
+            ));
+        }
+        if bounty.status == "paid" || bounty.status == "cancelled" {
+            return Err(AppError::bad_request(
+                "Bounty has already been paid or cancelled",
+            ));
+        }
+        let milestone_index = bounty
+            .milestone_index
+            .ok_or_else(|| AppError::bad_request("Bounty has not been pushed to escrow"))?;
+        hold_milestone_on_chain(&state, &repo, milestone_index).await?;
+        Ok(Json(crate::modules::bounty::model::HoldIssueResponse {
+            ok: true,
+        }))
+    }
 }
 
-async fn advance_inline(state: &AppState, issue_id: Uuid) -> Result<(), AppError> {
+pub async fn reject_bounty_with_pool_refund(
+    state: &AppState,
+    bounty: &crate::shared::models::Bounty,
+    repo: &crate::shared::models::Repo,
+) -> Result<rust_decimal::Decimal, AppError> {
+    let reward_amount = automation::escrow_reward_amount(state, repo, bounty).await?;
+
+    if let Some(milestone_index) = bounty.milestone_index {
+        reject_milestone_on_chain(state, repo, milestone_index).await?;
+    }
+
+    if let Some((_, Some(contributor))) = get_assignment_for_issue(state, bounty.id).await? {
+        Service::notify_contributor_quiet(
+            state,
+            Notify {
+                recipient: contributor.id,
+                kind: Kind::BountyRejected,
+                title: format!("Bounty Rejected: #{}", bounty.github_issue_number),
+                body: format!(
+                    "Your work on issue #{} has been rejected",
+                    bounty.github_issue_number
+                ),
+                ref_id: Some(bounty.id),
+                data: serde_json::json!({
+                    "repoId": repo.id,
+                    "issueNumber": bounty.github_issue_number,
+                }),
+                dedupe_key: format!("rejected:{}", bounty.id),
+                actor: None,
+            },
+        )
+        .await;
+    }
+
+    cancel_bounty_with_refund(state, repo, bounty.id, Some(reward_amount)).await?;
+    Ok(reward_amount)
+}
+
+async fn upsert_profile_wallet(
+    state: &AppState,
+    github_id: i64,
+    username: &str,
+    chain: &str,
+    address: &str,
+) -> Result<(), AppError> {
+    let mut db = require_db(&state.db)?;
+
+    let profile = schema::Profile::upsert_by_github_id(github_id)
+        .username(username.to_string())
+        .exec(&mut db)
+        .await
+        .map_err(map_db_err)?;
+
+    schema::Wallet::upsert_by_profile_id_and_chain_and_address(
+        profile.id,
+        chain.to_string(),
+        address.to_string(),
+    )
+    .is_primary(true)
+    .exec(&mut db)
+    .await
+    .map_err(map_db_err)?;
+
+    Ok(())
+}
+
+async fn advance_inline(state: &AppState, bounty_id: Uuid) -> Result<(), AppError> {
     use automation::Decision;
 
-    let Some(ctx) = automation::load_context(state, issue_id).await? else {
+    let Some(ctx) = automation::load_context(state, bounty_id).await? else {
         return Ok(());
     };
 
@@ -159,9 +287,9 @@ async fn advance_inline(state: &AppState, issue_id: Uuid) -> Result<(), AppError
         }
         Decision::ReleasePayout {
             milestone_index,
-            split_percentage,
+            escrow_amount,
         } => {
-            automation::release_payout(state, &ctx, milestone_index, split_percentage).await?;
+            automation::release_payout(state, &ctx, milestone_index, escrow_amount).await?;
         }
         Decision::RepairDatabase { milestone_index } => {
             automation::repair_database(state, &ctx, milestone_index).await?;

@@ -1,0 +1,236 @@
+use crate::shared::models::{entities::Notification, schema};
+use crate::state::AppState;
+use crate::{
+    error::{is_unique_violation, map_db_err, require_db, AppError},
+    infra::cache_keys,
+};
+use uuid::Uuid;
+
+use super::kinds::Delivery;
+
+pub struct Repository;
+
+impl Repository {
+    pub async fn insert(
+        state: &AppState,
+        n: &super::kinds::Notify,
+        delivery: &Delivery,
+    ) -> Result<Option<Notification>, AppError> {
+        let mut db = require_db(&state.db)?;
+        match toasty::create!(schema::Notification {
+            profile_id: n.recipient,
+            kind: n.kind.as_str().to_string(),
+            title: n.title.clone(),
+            body: Some(n.body.clone()),
+            ref_id: n.ref_id,
+            dedupe_key: n.dedupe_key.clone(),
+            data: Some(n.data.clone()),
+            email_status: match delivery {
+                Delivery::BellAndEmail => "pending".to_string(),
+                _ => "not_requested".to_string(),
+            },
+        })
+        .exec(&mut db)
+        .await
+        {
+            Ok(row) => {
+                state
+                    .cache
+                    .invalidate(&cache_keys::notification_unread_count(n.recipient))
+                    .await;
+                invalidate_notification_feed_cache(state, n.recipient).await;
+                Ok(Some(row.into()))
+            }
+            Err(e) if is_unique_violation(&e) => Ok(None),
+            Err(e) => Err(map_db_err(e)),
+        }
+    }
+
+    pub async fn get(state: &AppState, id: Uuid) -> Result<Option<Notification>, AppError> {
+        let cache_key = cache_keys::notify(id);
+        if let Some(notification) = state.cache.get(&cache_key).await {
+            return Ok(Some(notification));
+        }
+
+        let mut db = require_db(&state.db)?;
+
+        let notification = schema::Notification::filter_by_id(id)
+            .first()
+            .exec(&mut db)
+            .await
+            .map_err(map_db_err)?
+            .map(Notification::from);
+
+        if let Some(ref notification) = notification {
+            state
+                .cache
+                .set(&cache_key, notification, Some(cache_keys::NOTIFICATION_TTL))
+                .await;
+        }
+
+        Ok(notification)
+    }
+
+    pub async fn set_email_status(
+        state: &AppState,
+        id: Uuid,
+        status: &str,
+        send: bool,
+    ) -> Result<(), AppError> {
+        let mut db = require_db(&state.db)?;
+
+        if send {
+            toasty::update!(schema::Notification::filter_by_id(id){
+                email_status : status.to_string() ,
+                email_sent_at : Some(jiff::Timestamp::now())
+            })
+            .exec(&mut db)
+            .await
+            .map_err(map_db_err)?;
+        } else {
+            toasty::update!(schema::Notification::filter_by_id(id){
+                email_status : status.to_string()
+            })
+            .exec(&mut db)
+            .await
+            .map_err(map_db_err)?;
+        }
+
+        state.cache.invalidate(&cache_keys::notify(id)).await;
+        Ok(())
+    }
+
+    pub async fn list(
+        state: &AppState,
+        profile_id: Uuid,
+        unread_only: bool,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<Notification>, AppError> {
+        let cache_key =
+            notification_feed_cache_key(state, profile_id, unread_only, limit, offset).await;
+        if let Some(cached) = state.cache.get(&cache_key).await {
+            return Ok(cached);
+        }
+
+        let mut db = require_db(&state.db)?;
+
+        let mut list = schema::Notification::filter_by_profile_id(profile_id)
+            .order_by(schema::Notification::fields().created_at().desc())
+            .exec(&mut db)
+            .await
+            .map_err(map_db_err)?;
+
+        // Filter by is_read if needed
+        if unread_only {
+            list.retain(|n| !n.is_read);
+        }
+
+        let list: Vec<Notification> = list
+            .into_iter()
+            .skip(offset.max(0) as usize)
+            .take(limit.max(1) as usize)
+            .map(Notification::from)
+            .collect();
+
+        state
+            .cache
+            .set(&cache_key, &list, Some(cache_keys::NOTIFICATION_TTL))
+            .await;
+
+        Ok(list)
+    }
+
+    pub async fn unread_count(state: &AppState, profile_id: Uuid) -> Result<i64, AppError> {
+        let cache_key = cache_keys::notification_unread_count(profile_id);
+        if let Some(count) = state.cache.get(&cache_key).await {
+            return Ok(count);
+        }
+
+        let mut db = require_db(&state.db)?;
+
+        let list = schema::Notification::filter_by_profile_id(profile_id)
+            .exec(&mut db)
+            .await
+            .map_err(map_db_err)?;
+
+        let count = list.iter().filter(|n| !n.is_read).count();
+
+        let count = count as i64;
+        state
+            .cache
+            .set(&cache_key, &count, Some(cache_keys::NOTIFICATION_TTL))
+            .await;
+
+        Ok(count)
+    }
+
+    pub async fn mark_read(
+        state: &AppState,
+        profile_id: Uuid,
+        id: Option<Uuid>,
+    ) -> Result<(), AppError> {
+        let mut db = require_db(&state.db)?;
+
+        if let Some(id) = id {
+            toasty::update!(schema::Notification::filter_by_id(id).filter_by_profile_id(profile_id) {
+                is_read: true
+            })
+            .exec(&mut db)
+            .await
+            .map_err(map_db_err)?;
+
+            state.cache.invalidate(&cache_keys::notify(id)).await;
+            state
+                .cache
+                .invalidate(&cache_keys::notification_unread_count(profile_id))
+                .await;
+            invalidate_notification_feed_cache(state, profile_id).await;
+
+            Ok(())
+        } else {
+            toasty::update!(schema::Notification::filter_by_profile_id(profile_id) {
+                is_read: true
+            })
+            .exec(&mut db)
+            .await
+            .map_err(map_db_err)?;
+
+            state
+                .cache
+                .invalidate(&cache_keys::notification_unread_count(profile_id))
+                .await;
+            invalidate_notification_feed_cache(state, profile_id).await;
+
+            Ok(())
+        }
+    }
+}
+
+async fn invalidate_notification_feed_cache(state: &AppState, profile_id: Uuid) {
+    let revision = Uuid::new_v4().to_string();
+    state
+        .cache
+        .set(
+            &cache_keys::notification_feed_version(profile_id),
+            &revision,
+            Some(cache_keys::NOTIFICATION_TTL),
+        )
+        .await;
+}
+
+async fn notification_feed_cache_key(
+    state: &AppState,
+    profile_id: Uuid,
+    unread_only: bool,
+    limit: i64,
+    offset: i64,
+) -> String {
+    let version = state
+        .cache
+        .get::<String>(&cache_keys::notification_feed_version(profile_id))
+        .await
+        .unwrap_or_else(|| "initial".to_string());
+
+    cache_keys::notification_feed(profile_id, &version, unread_only, limit, offset)
+}

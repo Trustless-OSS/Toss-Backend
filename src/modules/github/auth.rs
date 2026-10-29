@@ -155,7 +155,7 @@ pub async fn get_installation_token(
         .await?
         .ok_or_else(|| AppError::github("repository not found for installation token"))?;
 
-    if let Some(installation_id) = repo.github_installation_id {
+    if let Some(installation_id) = repo.github_install_id {
         match exchange_installation_token(state, installation_id).await {
             Ok(token) => {
                 cache_installation_token(state, &cache_key, &token).await;
@@ -173,7 +173,7 @@ pub async fn get_installation_token(
     }
 
     let installation_id = resolve_installation_id(state, &repo.full_name).await?;
-    if repo.github_installation_id != Some(installation_id) {
+    if repo.github_install_id != Some(installation_id) {
         update_repo_installation_id(state, github_repo_id, installation_id).await?;
         invalidate_repo_cache(state, repo.id, Some(github_repo_id)).await;
         info!(
@@ -601,4 +601,67 @@ mod tests {
             "-----BEGIN RSA PRIVATE KEY-----\nABCDEFGHIJKLMNOP\n-----END RSA PRIVATE KEY-----"
         );
     }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct GitHubLabel {
+    pub id: i64,
+    pub name: String,
+    pub color: String,
+    pub description: Option<String>,
+}
+
+pub async fn list_github_labels(
+    state: &AppState,
+    github_repo_id: i64,
+    full_name: &str,
+) -> Result<Vec<GitHubLabel>, AppError> {
+    let url = format!("https://api.github.com/repos/{full_name}/labels?per_page=100");
+    github_get_json(state, github_repo_id, &url, "list github labels").await
+}
+
+pub async fn delete_github_label(
+    state: &AppState,
+    github_repo_id: i64,
+    full_name: &str,
+    label_name: &str,
+) -> Result<(), AppError> {
+    let Some(token) = get_installation_token(state, github_repo_id).await? else {
+        return Err(AppError::github(
+            "failed to get installation token for delete label".to_string(),
+        ));
+    };
+
+    let encoded: String = label_name
+        .chars()
+        .flat_map(|c| {
+            if c.is_alphanumeric() || matches!(c, '-' | '_' | '.') {
+                vec![c]
+            } else {
+                format!("%{:02X}", c as u32).chars().collect()
+            }
+        })
+        .collect();
+    let url = format!("https://api.github.com/repos/{full_name}/labels/{encoded}");
+
+    let response = state
+        .http_client
+        .delete(&url)
+        .header("Authorization", format!("Bearer {token}"))
+        .header("Accept", GITHUB_ACCEPT)
+        .header("X-GitHub-Api-Version", GITHUB_API_VERSION)
+        .header("User-Agent", GITHUB_USER_AGENT)
+        .send()
+        .await
+        .map_err(|error| AppError::github(format!("delete label failed: {error}")))?;
+
+    // 204 No Content = success; 404 = label didn't exist on GitHub, still ok
+    if !response.status().is_success() && response.status().as_u16() != 404 {
+        let text = response.text().await.unwrap_or_default();
+        return Err(AppError::github(format!(
+            "delete github label failed: {text}"
+        )));
+    }
+
+    Ok(())
 }

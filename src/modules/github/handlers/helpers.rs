@@ -1,16 +1,25 @@
+use std::str::FromStr;
 use std::sync::LazyLock;
 
 use regex::Regex;
 use reqwest::Method;
 use rust_decimal::Decimal;
 use serde_json::{json, Value};
-use tracing::warn;
+
+use tracing::info;
 
 use crate::{
     error::AppError,
-    infra::stellar::signer::sign_and_send_transaction,
-    modules::{escrow::trustless_work::api_client::tw_fetch, repo::repository::get_repo_by_id},
-    shared::models::Repo,
+    infra::{queue::BountyJobData, stellar::signer::sign_and_send_transaction},
+    modules::{
+        bounty::repository::upsert_assignment,
+        contributor::repository::ensure_contributor,
+        escrow::{
+            milestone::MilestoneStatus,
+            trustless_work::{api_client::tw_fetch, escrow_service::TrustlessWorkAPI},
+        },
+    },
+    shared::models::{Bounty, Repo},
     state::AppState,
 };
 
@@ -22,25 +31,32 @@ static ISSUE_NUMBER_RE: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 static MANUAL_AMOUNT_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)@(?:toss|trustless-oss)\s+([\d.]+)").expect("valid manual amount regex")
+    Regex::new(r"(?i)@trustless-oss\s+([0-9]+(?:\.[0-9]+)?)\b").expect("valid manual amount regex")
 });
 
 static WORK_COMPLETION_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)@(?:toss|trustless-oss)\s+/(pay|split|work|work-completion)\s+(\d+)")
+    Regex::new(r"(?i)@trustless-oss\s+/?(?:pay|split|work|work-completion|completion)\s+([0-9]+(?:\.[0-9]+)?)(\s*%)?")
         .expect("valid work completion regex")
 });
 
 static REJECTED_CMD_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)@(?:toss|trustless-oss)\s+/(reject|rejected|no)").expect("valid reject regex")
+    Regex::new(r"(?i)@trustless-oss\s+/?(?:reject|rejected|no|invalid)\b")
+        .expect("valid reject regex")
 });
 
 static WALLET_CMD_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)@(?:toss|trustless-oss)\s+/(wallet|address|connect|change-address)")
+    Regex::new(
+        r"(?i)@trustless-oss\s+/?(?:wallet|address|connect|change-address|ch-wallet|ch-address|ch-add)\b",
+    )
         .expect("valid wallet regex")
 });
 
-static HELP_CMD_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)@(?:toss|trustless-oss)\s+/help").expect("valid help regex"));
+static HELP_CMD_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)@trustless-oss\s+/?(?:help|--h|h)\b").expect("valid help regex")
+});
+
+static RETRY_CMD_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)@trustless-oss\s+/?retry\b").expect("valid retry regex"));
 
 pub fn extract_issue_number(body: Option<&str>) -> Option<i32> {
     let body = body?;
@@ -70,14 +86,20 @@ pub fn has_rejected_label(labels: &[Value]) -> bool {
 }
 
 pub fn is_privileged_association(association: &str) -> bool {
-    matches!(association, "OWNER" | "MEMBER" | "COLLABORATOR")
+    matches!(
+        association.trim().to_ascii_uppercase().as_str(),
+        "OWNER" | "MEMBER" | "COLLABORATOR"
+    )
 }
 
-pub fn work_completion_percentage(body: &str) -> Option<i32> {
-    WORK_COMPLETION_RE
-        .captures(body)
-        .and_then(|caps| caps.get(2))
-        .and_then(|m| m.as_str().parse().ok())
+pub fn payout_request(body: &str) -> Option<crate::modules::bounty::payout::PayoutRequest> {
+    let captures = WORK_COMPLETION_RE.captures(body)?;
+    let amount = Decimal::from_str(captures.get(1)?.as_str()).ok()?;
+    Some(if captures.get(2).is_some() {
+        crate::modules::bounty::payout::PayoutRequest::Percentage(amount)
+    } else {
+        crate::modules::bounty::payout::PayoutRequest::Fixed(amount)
+    })
 }
 
 pub fn is_reject_command(body: &str) -> bool {
@@ -93,7 +115,56 @@ pub fn is_help_command(body: &str) -> bool {
 }
 
 pub fn is_retry_command(body: &str) -> bool {
-    body.contains("@Trustless-OSS /retry")
+    RETRY_CMD_RE.is_match(body)
+}
+
+/// Adopt a GitHub assignee that was set *before* the bounty record existed.
+///
+/// The `issues.assigned` webhook returns early when no bounty row exists yet, so
+/// assigning first and pricing later (via label or `@trustless-oss <amount>`)
+/// would leave the fresh bounty stuck `open` with no assignee and no automation.
+/// This records that pre-existing assignment and resumes the bounty flow, mirroring
+/// `handle_issue_assigned`.
+pub async fn adopt_existing_assignee(
+    state: &AppState,
+    issue: &Value,
+    bounty: &Bounty,
+) -> Result<(), AppError> {
+    // Prefer the full `assignees` list; fall back to the single `assignee`.
+    let assignee = issue
+        .get("assignees")
+        .and_then(Value::as_array)
+        .and_then(|list| list.first())
+        .or_else(|| issue.get("assignee"));
+
+    let Some(assignee) = assignee.filter(|a| !a.is_null()) else {
+        return Ok(());
+    };
+
+    let assignee_github_id = assignee.get("id").and_then(Value::as_i64).unwrap_or(0);
+    let assignee_login = assignee
+        .get("login")
+        .and_then(Value::as_str)
+        .unwrap_or("contributor");
+    if assignee_github_id == 0 {
+        return Ok(());
+    }
+
+    let profile = ensure_contributor(state, assignee_github_id, assignee_login).await?;
+    upsert_assignment(state, bounty.id, profile.id).await?;
+
+    let outcome = state
+        .queue
+        .enqueue_advance_issue(BountyJobData::new(bounty.id, "reward-configured").notifying())
+        .await?;
+
+    info!(
+        issue = bounty.github_issue_number,
+        assignee = assignee_login,
+        outcome = outcome.label(),
+        "adopted pre-existing GitHub assignee after reward was configured"
+    );
+    Ok(())
 }
 
 pub fn labels_from_payload(issue: &Value) -> Vec<Value> {
@@ -131,7 +202,7 @@ pub async fn sync_repo_balance(state: &AppState, repo: &mut Repo) -> Result<(), 
     )
     .sync_balance(repo)
     .await?;
-    repo.escrow_balance = balance;
+    repo.escrow_balance = Some(balance);
     Ok(())
 }
 
@@ -155,9 +226,13 @@ pub async fn dispute_milestone(
 
     match result {
         Ok(response) => {
-            if let Some(unsigned) = response.get("unsignedTransaction").and_then(|v| v.as_str()) {
-                sign_and_send_transaction(state, unsigned, None).await?;
-            }
+            let unsigned = response
+                .get("unsignedTransaction")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    AppError::internal("dispute-milestone response is missing unsignedTransaction")
+                })?;
+            sign_and_send_transaction(state, unsigned, None).await?;
             Ok(())
         }
         Err(error) if error.to_string().contains("already in dispute") => Ok(()),
@@ -169,8 +244,29 @@ pub async fn resolve_milestone_dispute(
     state: &AppState,
     repo: &Repo,
     milestone_index: i32,
-    distributions: Vec<Value>,
+    total_amount: rust_decimal::Decimal,
+    distributions: Vec<crate::modules::bounty::payout::PayoutDistribution>,
 ) -> Result<(), AppError> {
+    crate::modules::bounty::payout::PayoutDistribution::validate_total(
+        total_amount,
+        &distributions,
+    )?;
+
+    // `rust_decimal` is configured with `serde-with-str`, but Trustless Work
+    // validates distribution amounts as JSON numbers.
+    let distributions = distributions
+        .into_iter()
+        .map(|distribution| {
+            Ok(json!({
+                "address": distribution.address,
+                "amount": crate::modules::escrow::trustless_work::api_client::decimal_json_number(
+                    distribution.amount,
+                    "distribution amount",
+                )?,
+            }))
+        })
+        .collect::<Result<Vec<_>, AppError>>()?;
+
     let platform_key = state.config.platform_stellar_public_key.as_str();
     let contract_id = repo
         .escrow_contract_id
@@ -210,18 +306,27 @@ pub async fn resolve_milestone_dispute(
 
     match result {
         Ok(response) => {
-            if let Some(unsigned) = response.get("unsignedTransaction").and_then(|v| v.as_str()) {
-                sign_and_send_transaction(
-                    state,
-                    unsigned,
-                    if is_dual_wallet {
-                        Some(resolver_secret.as_str())
-                    } else {
-                        None
-                    },
-                )
+            let unsigned = response
+                .get("unsignedTransaction")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    AppError::internal(
+                        "resolve-milestone-dispute response is missing unsignedTransaction",
+                    )
+                })?;
+            sign_and_send_transaction(
+                state,
+                unsigned,
+                if is_dual_wallet {
+                    Some(resolver_secret.as_str())
+                } else {
+                    None
+                },
+            )
+            .await?;
+            TrustlessWorkAPI::new(state.clone())
+                .set_milestone_status(repo, milestone_index, MilestoneStatus::Resolved)
                 .await?;
-            }
             Ok(())
         }
         Err(error) => {
@@ -325,8 +430,42 @@ pub async fn zero_milestone_on_chain(
     Ok(())
 }
 
-pub async fn refresh_repo(state: &AppState, repo_id: uuid::Uuid) -> Result<Option<Repo>, AppError> {
-    get_repo_by_id(state, repo_id).await
+pub async fn reject_milestone_on_chain(
+    state: &AppState,
+    repo: &Repo,
+    milestone_index: i32,
+) -> Result<(), AppError> {
+    set_milestone_status_on_chain(state, repo, milestone_index, MilestoneStatus::Rejected).await
+}
+
+pub async fn hold_milestone_on_chain(
+    state: &AppState,
+    repo: &Repo,
+    milestone_index: i32,
+) -> Result<(), AppError> {
+    let contract_id = repo
+        .escrow_contract_id
+        .as_deref()
+        .ok_or_else(|| AppError::bad_request("No escrow deployed"))?;
+    dispute_milestone(
+        state,
+        contract_id,
+        milestone_index,
+        &state.config.platform_stellar_public_key,
+    )
+    .await?;
+    set_milestone_status_on_chain(state, repo, milestone_index, MilestoneStatus::Disputed).await
+}
+
+pub async fn set_milestone_status_on_chain(
+    state: &AppState,
+    repo: &Repo,
+    milestone_index: i32,
+    status: MilestoneStatus,
+) -> Result<(), AppError> {
+    TrustlessWorkAPI::new(state.clone())
+        .set_milestone_status(repo, milestone_index, status)
+        .await
 }
 
 pub fn split_amounts(reward: Decimal, percentage: i32) -> (Decimal, Decimal) {
@@ -335,10 +474,6 @@ pub fn split_amounts(reward: Decimal, percentage: i32) -> (Decimal, Decimal) {
     let contributor = (reward * pct / hundred).round_dp(7);
     let maintainer = (reward - contributor).round_dp(7);
     (contributor, maintainer)
-}
-
-pub fn maintainer_github_id(repo: &Repo) -> i64 {
-    repo.installer_github_id.unwrap_or(repo.owner_github_id)
 }
 
 pub async fn cancel_bounty_with_refund(
@@ -351,13 +486,9 @@ pub async fn cancel_bounty_with_refund(
         state,
         repo,
         issue_id,
-        reward_amount,
+        Some(reward_amount),
     )
     .await
-}
-
-pub fn log_warn_missing_milestone() {
-    warn!("missing milestone index for active issue");
 }
 
 #[cfg(test)]
@@ -384,12 +515,24 @@ mod tests {
     #[test]
     fn recognizes_commands_case_insensitively() {
         assert_eq!(
-            work_completion_percentage("@trustless-oss /WORK-COMPLETION 75"),
-            Some(75)
+            payout_request("@trustless-oss /WORK-COMPLETION 75"),
+            Some(crate::modules::bounty::payout::PayoutRequest::Fixed(
+                "75".parse().unwrap()
+            ))
+        );
+        assert_eq!(
+            payout_request("@trustless-oss pay 60%"),
+            Some(crate::modules::bounty::payout::PayoutRequest::Percentage(
+                "60".parse().unwrap()
+            ))
         );
         assert!(is_reject_command("@Trustless-OSS /rejected"));
+        assert!(is_reject_command("@trustless-oss invalid"));
         assert!(is_wallet_command("@Trustless-OSS /change-address"));
+        assert!(is_wallet_command("@trustless-oss wallet"));
         assert!(is_help_command("@trustless-oss /HELP"));
+        assert!(is_help_command("@trustless-oss help"));
+        assert!(is_retry_command("@TRUSTLESS-OSS retry"));
     }
 
     #[test]

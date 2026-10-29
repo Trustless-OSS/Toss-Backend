@@ -3,144 +3,247 @@ use uuid::Uuid;
 use crate::{
     error::{is_unique_violation, map_db_err, require_db, AppError},
     infra::cache_keys,
-    shared::models::{schema, Assignment, Contributor, Issue},
+    shared::models::{schema, Bounty, Profile, Wallet},
     state::AppState,
 };
 
-pub async fn get_contributor_by_github_id(
+pub async fn get_profile_by_github_id(
     state: &AppState,
-    github_user_id: i64,
-) -> Result<Option<Contributor>, AppError> {
-    let cache_key = cache_keys::contrib(github_user_id);
-    if let Some(cached) = state.cache.get::<Contributor>(&cache_key).await {
+    github_id: i64,
+) -> Result<Option<Profile>, AppError> {
+    let cache_key = cache_keys::contrib(github_id);
+    if let Some(cached) = state.cache.get::<Profile>(&cache_key).await {
         return Ok(Some(cached));
     }
 
     let mut db = require_db(&state.db)?;
-    let contributor = schema::Contributor::filter_by_github_user_id(github_user_id)
+    let profile = schema::Profile::filter_by_github_id(github_id)
         .first()
         .exec(&mut db)
         .await
         .map_err(map_db_err)?
-        .map(Contributor::from);
+        .map(Profile::from);
 
-    if let Some(ref contributor) = contributor {
+    if let Some(ref profile) = profile {
         state
             .cache
-            .set(&cache_key, contributor, Some(cache_keys::CONTRIB_TTL))
+            .set(&cache_key, profile, Some(cache_keys::CONTRIB_TTL))
             .await;
     }
 
-    Ok(contributor)
+    Ok(profile)
 }
 
-pub async fn invalidate_contributor_cache(state: &AppState, github_user_id: i64) {
+pub async fn invalidate_contributor_cache(state: &AppState, github_id: i64) {
     state
         .cache
-        .invalidate(&cache_keys::contrib(github_user_id))
+        .invalidate(&cache_keys::contrib(github_id))
         .await;
+}
+
+pub async fn set_profile_email(
+    state: &AppState,
+    github_id: i64,
+    email: &str,
+) -> Result<(), AppError> {
+    let mut db = require_db(&state.db)?;
+
+    toasty::update!(schema::Profile::filter_by_github_id(github_id) {
+        email: Some(email.to_string()),
+    })
+    .exec(&mut db)
+    .await
+    .map_err(map_db_err)?;
+
+    invalidate_contributor_cache(state, github_id).await;
+    Ok(())
 }
 
 pub async fn upsert_contributor_wallet(
     state: &AppState,
-    github_user_id: i64,
-    github_username: &str,
-    payout_chain: &str,
-    payout_address: &str,
+    github_id: i64,
+    username: &str,
+    chain: &str,
+    address: &str,
 ) -> Result<(), AppError> {
     let mut db = require_db(&state.db)?;
-    let stellar_wallet = if payout_chain == "stellar" {
-        Some(payout_address.to_string())
-    } else {
-        None
-    };
 
-    schema::Contributor::upsert_by_github_user_id(github_user_id)
-        .github_username(github_username)
-        .stellar_wallet(stellar_wallet)
-        .payout_chain(payout_chain)
-        .payout_address(Some(payout_address.to_string()))
+    let profile = schema::Profile::upsert_by_github_id(github_id)
+        .username(username.to_string())
         .exec(&mut db)
         .await
         .map_err(map_db_err)?;
 
-    invalidate_contributor_cache(state, github_user_id).await;
-    Ok(())
-}
+    schema::Wallet::upsert_by_profile_id_and_chain_and_address(
+        profile.id,
+        chain.to_string(),
+        address.to_string(),
+    )
+    .is_primary(true)
+    .exec(&mut db)
+    .await
+    .map_err(map_db_err)?;
 
-pub async fn get_contributor_profile(
-    state: &AppState,
-    github_user_id: i64,
-) -> Result<Option<Contributor>, AppError> {
-    get_contributor_by_github_id(state, github_user_id).await
+    invalidate_contributor_cache(state, github_id).await;
+    Ok(())
 }
 
 pub async fn ensure_contributor(
     state: &AppState,
-    github_user_id: i64,
-    github_username: &str,
-) -> Result<Contributor, AppError> {
-    if let Some(contributor) = get_contributor_by_github_id(state, github_user_id).await? {
-        return Ok(contributor);
+    github_id: i64,
+    username: &str,
+) -> Result<Profile, AppError> {
+    ensure_contributor_with_email(state, github_id, username, None).await
+}
+
+pub async fn ensure_contributor_with_email(
+    state: &AppState,
+    github_id: i64,
+    username: &str,
+    email: Option<&str>,
+) -> Result<Profile, AppError> {
+    if let Some(profile) = get_profile_by_github_id(state, github_id).await? {
+        // Update email if provided and not already set
+        if let Some(email) = email {
+            if !email.is_empty() && profile.email.is_none() {
+                let _ = set_profile_email(state, github_id, email).await;
+            }
+        }
+        return Ok(profile);
     }
 
     let mut db = require_db(&state.db)?;
-    let contributor = match toasty::create!(schema::Contributor {
-        github_user_id,
-        github_username: github_username.to_string(),
+    let profile = match toasty::create!(schema::Profile {
+        github_id,
+        username: username.to_string(),
+        email: email.map(|e| e.to_string()),
     })
     .exec(&mut db)
     .await
     {
-        Ok(contributor) => contributor,
+        Ok(profile) => profile,
         Err(error) if is_unique_violation(&error) => {
-            schema::Contributor::filter_by_github_user_id(github_user_id)
+            schema::Profile::filter_by_github_id(github_id)
                 .first()
                 .exec(&mut db)
                 .await
                 .map_err(map_db_err)?
-                .ok_or_else(|| AppError::database("contributor missing after unique conflict"))?
+                .ok_or_else(|| AppError::database("profile missing after unique conflict"))?
         }
         Err(error) => return Err(map_db_err(error)),
     };
 
-    invalidate_contributor_cache(state, github_user_id).await;
-    Ok(Contributor::from(contributor))
+    invalidate_contributor_cache(state, github_id).await;
+    Ok(Profile::from(profile))
 }
 
-pub async fn get_contributor_by_id(
+pub async fn get_profile_by_id(
     state: &AppState,
-    contributor_id: Uuid,
-) -> Result<Option<Contributor>, AppError> {
+    profile_id: Uuid,
+) -> Result<Option<Profile>, AppError> {
     let mut db = require_db(&state.db)?;
-    Ok(schema::Contributor::filter_by_id(contributor_id)
+    Ok(schema::Profile::filter_by_id(profile_id)
         .first()
         .exec(&mut db)
         .await
         .map_err(map_db_err)?
-        .map(Contributor::from))
+        .map(Profile::from))
 }
 
+pub async fn get_wallets_for_profile(
+    state: &AppState,
+    profile_id: Uuid,
+) -> Result<Vec<Wallet>, AppError> {
+    let mut db = require_db(&state.db)?;
+    Ok(schema::Wallet::filter_by_profile_id(profile_id)
+        .exec(&mut db)
+        .await
+        .map_err(map_db_err)?
+        .into_iter()
+        .map(Wallet::from)
+        .collect())
+}
+
+pub async fn list_bounties_for_contributor(
+    state: &AppState,
+    profile_id: Uuid,
+) -> Result<Vec<Bounty>, AppError> {
+    let mut db = require_db(&state.db)?;
+    Ok(schema::Bounty::filter_by_assignee_id(Some(profile_id))
+        .exec(&mut db)
+        .await
+        .map_err(map_db_err)?
+        .into_iter()
+        .map(Bounty::from)
+        .collect())
+}
+
+// Legacy name used by issue_assigned.rs webhook handler
+pub use ensure_contributor as ensure_contributor_by_github_id;
+pub use get_profile_by_github_id as get_contributor_by_github_id;
+pub use get_profile_by_id as get_contributor_by_id;
+
+// list_assignments_for_contributor — old callers expect Vec<(Assignment, Option<Issue>)>.
+// Now returns Vec<(Bounty, Option<Bounty>)> where both items are the same bounty
+// (the second slot previously held the Issue; it's now unified into Bounty itself).
 pub async fn list_assignments_for_contributor(
     state: &AppState,
-    contributor_id: Uuid,
-) -> Result<Vec<(Assignment, Option<Issue>)>, AppError> {
+    profile_id: Uuid,
+) -> Result<Vec<(Bounty, Option<Bounty>)>, AppError> {
+    let bounties = list_bounties_for_contributor(state, profile_id).await?;
+    Ok(bounties.into_iter().map(|b| (b.clone(), Some(b))).collect())
+}
+
+/// Fields a contributor can edit on their own profile. `None` = leave unchanged.
+#[derive(Debug, Default)]
+pub struct ProfileUpdate {
+    pub full_name: Option<String>,
+    pub bio: Option<String>,
+    pub location: Option<String>,
+    pub website: Option<String>,
+    pub skills: Option<String>,
+    pub telegram: Option<String>,
+    pub discord: Option<String>,
+    pub twitter: Option<String>,
+}
+
+pub async fn update_profile(
+    state: &AppState,
+    github_id: i64,
+    username: &str,
+    update: ProfileUpdate,
+) -> Result<Profile, AppError> {
     let mut db = require_db(&state.db)?;
-    let assignments = schema::Assignment::filter_by_contributor_id(Some(contributor_id))
+
+    // Ensure the profile row exists first (contributors may not have one yet).
+    schema::Profile::upsert_by_github_id(github_id)
+        .username(username.to_string())
         .exec(&mut db)
         .await
         .map_err(map_db_err)?;
 
-    let mut rows = Vec::with_capacity(assignments.len());
-    for assignment in assignments {
-        let assignment = Assignment::from(assignment);
-        let issue = schema::Issue::filter_by_id(assignment.issue_id)
-            .first()
-            .exec(&mut db)
-            .await
-            .map_err(map_db_err)?
-            .map(Issue::from);
-        rows.push((assignment, issue));
-    }
-    Ok(rows)
+    toasty::update!(schema::Profile::filter_by_github_id(github_id) {
+        full_name: update.full_name,
+        bio: update.bio,
+        location: update.location,
+        website: update.website,
+        skills: update.skills,
+        telegram: update.telegram,
+        discord: update.discord,
+        twitter: update.twitter,
+        updated_at: jiff::Timestamp::now(),
+    })
+    .exec(&mut db)
+    .await
+    .map_err(map_db_err)?;
+
+    invalidate_contributor_cache(state, github_id).await;
+
+    schema::Profile::filter_by_github_id(github_id)
+        .first()
+        .exec(&mut db)
+        .await
+        .map_err(map_db_err)?
+        .map(Profile::from)
+        .ok_or_else(|| AppError::database("profile missing after update"))
 }

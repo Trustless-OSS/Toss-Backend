@@ -1,14 +1,5 @@
-use tracing::info;
-
 use crate::error::AppError;
 
-/// SQL migrations from `toasty/` (history.toml + migrations/*.sql), baked into the binary.
-static MIGRATIONS: toasty::migration::MigrationSet = toasty::embed_migrations!("toasty");
-
-/// Normalize common Postgres URL schemes to what Toasty accepts.
-///
-/// Accepts `postgresql://`, `postgres://`, and also `postgresql+…` / `postgres+…`
-/// driver-style URLs (e.g. from some ORMs) by rewriting them to `postgresql://`.
 pub fn normalize_database_url(url: &str) -> String {
     let trimmed = url.trim();
     if let Some(rest) = trimmed.strip_prefix("postgres://") {
@@ -33,31 +24,25 @@ pub fn normalize_database_url(url: &str) -> String {
 
 pub async fn connect(database_url: &str) -> Result<toasty::Db, AppError> {
     let url = normalize_database_url(database_url);
-    toasty::Db::builder()
+    let db = toasty::Db::builder()
         .models(toasty::models!(
-            crate::shared::models::schema::Repo,
-            crate::shared::models::schema::Contributor,
-            crate::shared::models::schema::Issue,
-            crate::shared::models::schema::Assignment,
+            crate::shared::models::schema::Repository,
+            crate::shared::models::schema::Profile,
+            crate::shared::models::schema::Wallet,
+            crate::shared::models::schema::RepoMaintainer,
+            crate::shared::models::schema::Reward,
+            crate::shared::models::schema::Bounty,
+            crate::shared::models::schema::EscrowFunder,
+            crate::shared::models::schema::Notification,
+            crate::shared::models::schema::Activity,
+            crate::shared::models::schema::FailedTask,
+            crate::shared::models::schema::Ticket,
         ))
         .connect(&url)
         .await
-        .map_err(|error| AppError::database(error.to_string()))
-}
-
-/// Apply pending migrations from the embedded `toasty/` set.
-///
-/// Safe to call on every deploy/startup: already-applied IDs are skipped.
-pub async fn apply_migrations(db: &toasty::Db) -> Result<(), AppError> {
-    let report = MIGRATIONS
-        .apply(db)
-        .await
         .map_err(|error| AppError::database(error.to_string()))?;
 
-    info!(
-        applied = report.applied(),
-        skipped = report.skipped(),
-        "database migrations ready"
-    );
-    Ok(())
+    crate::infra::migrate::run_pending(&db).await?;
+
+    Ok(db)
 }

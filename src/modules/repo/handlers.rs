@@ -5,7 +5,9 @@ use axum::{
 };
 use uuid::Uuid;
 
-use super::datatypes::{ConnectRepo, InstallationReposQuery, SyncInstallation, UpdateRewards};
+use super::datatypes::{
+    ConnectRepo, DeleteRewardBody, InstallationReposQuery, SyncInstallation, UpdateRewards,
+};
 use crate::{
     error::{AppError, ErrorResponse},
     middleware::auth::AuthedUser,
@@ -17,7 +19,7 @@ use crate::{
         service,
     },
     shared::{
-        models::{domain::IssueWithRelations, Repo},
+        models::{Repo, Reward as RewardEntity},
         pagination::{PaginatedQuery, PaginatedResponse, PaginationQuery},
     },
     state::AppState,
@@ -156,7 +158,7 @@ pub(crate) async fn sync_installation(
         PaginationQuery
     ),
     responses(
-        (status = 200, description = "Paginated issues for the repository", body = PaginatedResponse<IssueWithRelations>),
+        (status = 200, description = "Paginated issues for the repository", body = PaginatedResponse<serde_json::Value>),
         (status = 500, description = "Failed to list issues", body = ErrorResponse)
     )
 )]
@@ -223,12 +225,34 @@ pub(crate) async fn update_rewards(
     let input = UpdateRewardsInput {
         repo_id,
         maintainer_github_id: user.github_id,
-        reward_low: body.reward_low,
-        reward_medium: body.reward_medium,
-        reward_high: body.reward_high,
+        label: body.label,
+        amount: body.amount,
     };
     let response = service::update_rewards(&state, input).await?;
     Ok(Json(response))
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/repos/{repoId}/rewards",
+    tag = "Repos",
+    security(("bearer_auth" = [])),
+    params(("repoId" = Uuid, Path, description = "Repository UUID")),
+    responses(
+        (status = 200, description = "Reward tiers for the repository", body = Vec<RewardEntity>),
+        (status = 401, description = "Missing or invalid bearer token", body = ErrorResponse),
+        (status = 404, description = "Repository not found", body = ErrorResponse),
+        (status = 500, description = "Failed to fetch rewards", body = ErrorResponse)
+    )
+)]
+pub(crate) async fn get_rewards(
+    State(state): State<AppState>,
+    _user: AuthedUser,
+    Path(repo_id): Path<Uuid>,
+) -> Result<Json<Vec<RewardEntity>>, AppError> {
+    let rewards = service::get_repo_rewards_by_repo_id(&state, repo_id).await?;
+
+    Ok(Json(rewards))
 }
 
 #[utoipa::path(
@@ -280,4 +304,30 @@ mod tests {
         assert_eq!(snake.gh_repo_id, None);
         assert_eq!(snake.gh_repo_ids, None);
     }
+}
+
+pub(crate) async fn list_github_labels(
+    State(state): State<AppState>,
+    user: AuthedUser,
+    Path(repo_id): Path<Uuid>,
+) -> Result<Json<Vec<crate::modules::github::labels::GitHubLabel>>, AppError> {
+    let labels = service::get_github_labels(&state, repo_id, user.github_id).await?;
+    Ok(Json(labels))
+}
+
+pub(crate) async fn delete_reward(
+    State(state): State<AppState>,
+    user: AuthedUser,
+    Path((repo_id, label)): Path<(Uuid, String)>,
+    Json(body): Json<DeleteRewardBody>,
+) -> Result<Json<OkResponse>, AppError> {
+    let response = service::delete_reward(
+        &state,
+        repo_id,
+        user.github_id,
+        label,
+        body.also_delete_github_label,
+    )
+    .await?;
+    Ok(Json(response))
 }

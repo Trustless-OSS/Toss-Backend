@@ -12,11 +12,13 @@ use crate::{error::unauthorized_response, state::AppState};
 pub struct AuthedUser {
     pub github_id: i64,
     pub github_username: Option<String>,
+    pub email: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct SupabaseUser {
     id: String,
+    email: Option<String>,
     #[serde(default)]
     user_metadata: UserMetadata,
     #[serde(default)]
@@ -29,6 +31,7 @@ struct UserMetadata {
     user_name: Option<String>,
     preferred_username: Option<String>,
     sub: Option<ProviderId>,
+    email: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -72,6 +75,7 @@ impl FromRequestParts<AppState> for AuthedUser {
                 .and_then(|value| bearer_token(&value).map(str::to_owned))
                 .ok_or_else(unauthorized_response)?;
 
+            //  Here we send bearer token to auth service to verify the token
             let user_url = format!("{}/auth/v1/user", config.supabase_url.trim_end_matches('/'));
             let user = client
                 .get(user_url)
@@ -80,29 +84,31 @@ impl FromRequestParts<AppState> for AuthedUser {
                 .send()
                 .await
                 .map_err(|error| {
-                    error!(%error, "failed to verify token with Supabase Auth");
+                    error!(%error, "failed to verify token with Auth");
                     unauthorized_response()
                 })?;
 
             if user.status() != StatusCode::OK {
                 error!(
                     status = %user.status(),
-                    "Supabase Auth rejected bearer token"
+                    "Auth rejected bearer token"
                 );
                 return Err(unauthorized_response());
             }
 
             let user = user.json::<SupabaseUser>().await.map_err(|error| {
-                error!(%error, "failed to parse Supabase Auth user response");
+                error!(%error, "failed to parse Auth user response");
                 unauthorized_response()
             })?;
 
             let github_id = github_id(&user).ok_or_else(unauthorized_response)?;
             let github_username = github_username(&user);
+            let email = github_email(&user);
 
             Ok(Self {
                 github_id,
                 github_username,
+                email,
             })
         }
     }
@@ -154,4 +160,18 @@ fn github_username(user: &SupabaseUser) -> Option<String> {
                         .or_else(|| identity.identity_data.preferred_username.clone())
                 })
         })
+}
+
+fn github_email(user: &SupabaseUser) -> Option<String> {
+    user.email
+        .clone()
+        .or_else(|| user.user_metadata.email.clone())
+        .or_else(|| {
+            user.identities
+                .iter()
+                .find(|i| i.provider.as_deref() == Some("github"))
+                .and_then(|i| i.identity_data.email.clone())
+        })
+        .map(|e| e.trim().to_string())
+        .filter(|e| !e.is_empty())
 }

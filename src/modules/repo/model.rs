@@ -1,7 +1,3 @@
-//! Repository module API types (requests, responses, and view models).
-//!
-//! Database entities live in [`crate::shared::models::Repo`].
-
 use rust_decimal::Decimal;
 use serde::Serialize;
 use utoipa::ToSchema;
@@ -44,9 +40,8 @@ pub(crate) struct InstallationReposList {
 pub(crate) struct UpdateRewardsInput {
     pub(crate) repo_id: Uuid,
     pub(crate) maintainer_github_id: i64,
-    pub(crate) reward_low: Decimal,
-    pub(crate) reward_medium: Decimal,
-    pub(crate) reward_high: Decimal,
+    pub(crate) label: String,
+    pub(crate) amount: Decimal,
 }
 
 #[derive(Debug)]
@@ -102,4 +97,12 @@ pub(crate) struct SyncInstallationResult {
 #[derive(Debug, Serialize, ToSchema)]
 pub(crate) struct OkResponse {
     pub(crate) ok: bool,
+}
+
+#[derive(Debug)]
+pub(crate) struct DeleteRewardInput {
+    pub(crate) repo_id: Uuid,
+    pub(crate) maintainer_github_id: i64,
+    pub(crate) label: String,
+    pub(crate) also_delete_github_label: bool,
 }

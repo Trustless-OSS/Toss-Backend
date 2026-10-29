@@ -1,6 +1,7 @@
 use rust_decimal::Decimal;
 use serde::Deserialize;
 use utoipa::{IntoParams, ToSchema};
+use uuid::Uuid;
 
 #[derive(Debug, Deserialize, ToSchema)]
 #[schema(as = ConnectRepoBody)]
@@ -15,9 +16,8 @@ pub(crate) struct ConnectRepo {
 
 #[derive(Debug, Deserialize, ToSchema)]
 pub(crate) struct UpdateRewards {
-    pub reward_low: Decimal,
-    pub reward_medium: Decimal,
-    pub reward_high: Decimal,
+    pub label: String,
+    pub amount: Decimal,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -37,4 +37,17 @@ pub(crate) struct SyncInstallation {
 pub(crate) struct InstallationReposQuery {
     #[serde(alias = "installation_id")]
     pub installation_id: i64,
+}
+
+pub enum RewardQuery {
+    ByRepo(Uuid),
+    ById(Uuid),
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DeleteRewardBody {
+    /// Whether to also delete the matching label from the GitHub repo
+    #[serde(default)]
+    pub also_delete_github_label: bool,
 }

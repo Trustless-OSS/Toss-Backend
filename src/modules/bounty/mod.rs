@@ -1,6 +1,8 @@
 pub mod automation;
+pub mod handler;
 pub mod labels;
 pub mod model;
+pub mod payout;
 pub mod repository;
 pub mod routes;
 pub mod service;

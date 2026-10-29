@@ -1,9 +1,9 @@
 use rust_decimal::Decimal;
 use serde_json::Value;
 
-use crate::shared::models::{Difficulty, ParsedLabels, Repo};
+use crate::shared::models::{ParsedLabels, Repo};
 
-pub fn parse_labels(labels: &[Value]) -> ParsedLabels {
+pub fn parse_labels(labels: &[Value], reward_labels: &[String]) -> ParsedLabels {
     let names: Vec<String> = labels
         .iter()
         .filter_map(|label| label.get("name").and_then(|name| name.as_str()))
@@ -11,43 +11,39 @@ pub fn parse_labels(labels: &[Value]) -> ParsedLabels {
         .collect();
 
     let is_rewarded = names.iter().any(|name| name == "rewarded");
-    let difficulty = if names.iter().any(|name| name == "manual") {
-        Some(Difficulty::Manual)
-    } else if names.iter().any(|name| name == "high") {
-        Some(Difficulty::High)
-    } else if names.iter().any(|name| name == "medium") {
-        Some(Difficulty::Medium)
-    } else if names.iter().any(|name| name == "low") {
-        Some(Difficulty::Low)
-    } else {
-        None
-    };
+    let is_rejected = names.iter().any(|name| name == "rejected");
+    let is_manual = names.iter().any(|name| name == "manual");
+
+    // Match against repo's configured reward levels first (case-insensitive)
+    let matched_level = names.iter().find_map(|name| {
+        reward_labels
+            .iter()
+            .find(|label| label.eq_ignore_ascii_case(name))
+            .map(|_| name.clone())
+    });
 
     ParsedLabels {
         is_rewarded,
-        difficulty,
+        is_rejected,
+        is_manual,
+        matched_level,
     }
 }
 
+/// Get reward amount from the matched level label.
 pub fn get_reward_amount(
-    difficulty: Option<Difficulty>,
+    matched_level: Option<&str>,
     repo: &Repo,
     manual_amount: Option<Decimal>,
 ) -> Decimal {
-    match difficulty {
-        Some(Difficulty::Manual) => manual_amount.unwrap_or(Decimal::ZERO),
-        Some(Difficulty::High) => repo.reward_high,
-        Some(Difficulty::Medium) => repo.reward_medium,
-        Some(Difficulty::Low) => repo.reward_low,
+    match matched_level {
+        Some("manual") => manual_amount.unwrap_or(Decimal::ZERO),
+        Some(label) => repo
+            .rewards
+            .iter()
+            .find(|r| r.label.eq_ignore_ascii_case(label))
+            .map(|r| r.amount)
+            .unwrap_or(Decimal::ZERO),
         None => Decimal::ZERO,
-    }
-}
-
-pub fn difficulty_label(difficulty: Difficulty) -> &'static str {
-    match difficulty {
-        Difficulty::Low => "low",
-        Difficulty::Medium => "medium",
-        Difficulty::High => "high",
-        Difficulty::Manual => "manual",
     }
 }

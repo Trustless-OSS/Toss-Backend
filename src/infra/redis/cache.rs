@@ -1,13 +1,14 @@
+use super::{
+    client::RedisClient,
+    health::{check_health, RedisHealthStatus},
+};
+use redis::AsyncCommands;
+use serde::{de::DeserializeOwned, Serialize};
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex},
 };
-
-use redis::AsyncCommands;
-use serde::{de::DeserializeOwned, Serialize};
 use tracing::{debug, error, warn};
-
-use crate::infra::redis::{check_health, RedisClient, RedisHealthStatus};
 
 const DEFAULT_TTL: u64 = 300;
 
@@ -16,6 +17,7 @@ pub enum CacheType {
     GhToken,
     Repo,
     Contrib,
+    Notification,
     Other,
 }
 
@@ -44,6 +46,7 @@ impl Cache {
             (CacheType::GhToken, CacheTypeStats::default()),
             (CacheType::Repo, CacheTypeStats::default()),
             (CacheType::Contrib, CacheTypeStats::default()),
+            (CacheType::Notification, CacheTypeStats::default()),
             (CacheType::Other, CacheTypeStats::default()),
         ]);
 
@@ -210,6 +213,8 @@ fn resolve_cache_type(key: &str) -> CacheType {
         CacheType::Repo
     } else if key.starts_with("contrib:") {
         CacheType::Contrib
+    } else if key.starts_with("notification:") {
+        CacheType::Notification
     } else {
         CacheType::Other
     }

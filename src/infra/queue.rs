@@ -9,26 +9,35 @@ use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{error::AppError, infra::redis::RedisClient, state::AppState};
+use crate::{
+    error::AppError,
+    infra::redis::RedisClient,
+    shared::constants::{
+        BULLMQ_LOCK_DURATION_MS, BULLMQ_MAX_STALLED_COUNT, BULLMQ_STALLED_INTERVAL_MS,
+    },
+    state::AppState,
+};
 
 pub const WEBHOOK_QUEUE: &str = "toss-webhooks";
 pub const BOUNTY_QUEUE: &str = "toss-bounty";
-pub const SYNC_QUEUE: &str = "toss-sync";
+pub const NOTIFY_QUEUE: &str = "toss-notify";
 
 pub const JOB_GITHUB_WEBHOOK: &str = "github-webhook";
 pub const JOB_ADVANCE_ISSUE: &str = "advance-issue";
 pub const JOB_PUSH_MILESTONE: &str = "push-milestone";
 pub const JOB_RELEASE_PAYOUT: &str = "release-payout";
-pub const JOB_ESCROW_BALANCE_SYNC: &str = "escrow-balance-sync";
+pub const JOB_NOTIFY_EMAIL: &str = "send-notification-email";
 
 const WEBHOOK_ATTEMPTS: u32 = 5;
 const BOUNTY_ATTEMPTS: u32 = 5;
 
 const WEBHOOK_BACKOFF_MS: u64 = 2_000;
 const BOUNTY_BACKOFF_MS: u64 = 5_000;
+const NOTIFY_BACKOFF_MS: u64 = 5_000;
 
 const WEBHOOK_KEEP_COMPLETED_MS: u64 = 24 * 60 * 60 * 1_000;
 const KEEP_FAILED_MS: u64 = 7 * 24 * 60 * 60 * 1_000;
+const NOTIFY_ATTEMPTS: u32 = 5;
 
 const DIRTY_FLAG_SUFFIX: &str = "toss:advance:dirty:";
 const DIRTY_FLAG_TTL_SECS: u64 = 3_600;
@@ -57,6 +66,12 @@ pub struct BountyJobData {
     pub notify: bool,
     #[serde(default)]
     pub hops: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NotificationJobData {
+    pub notification_id: Uuid,
 }
 
 pub const MAX_HOPS: u32 = 6;
@@ -128,7 +143,7 @@ impl EnqueueOutcome {
 struct Queues {
     webhooks: Queue,
     bounty: Queue,
-    sync: Queue,
+    notify: Queue,
 }
 
 #[derive(Clone)]
@@ -136,6 +151,42 @@ pub struct QueueInfra {
     queues: Option<Arc<Queues>>,
     redis: Option<RedisClient>,
     prefix: String,
+}
+
+#[derive(Clone)]
+pub struct NotifyQueue {
+    queue: Option<Arc<Queue>>,
+}
+
+impl NotifyQueue {
+    pub async fn add(
+        &self,
+        job_name: &str,
+        data: NotificationJobData,
+        job_id: &str,
+    ) -> Result<(), AppError> {
+        let Some(queue) = self.queue.as_ref() else {
+            return Ok(());
+        };
+
+        let options = JobOptions::new()
+            .attempts(NOTIFY_ATTEMPTS)
+            .backoff(BackoffStrategy::Exponential(NOTIFY_BACKOFF_MS))
+            .remove_on_complete(RemoveOnFinish::Bool(true))
+            .remove_on_fail(RemoveOnFinish::Options(KeepJobs {
+                age: Some(KEEP_FAILED_MS),
+                count: Some(1_000),
+                limit: None,
+            }));
+
+        queue
+            .add(job_name, &data)
+            .options(options)
+            .job_id(job_id)
+            .await
+            .map(|_| ())
+            .map_err(queue_error)
+    }
 }
 
 impl QueueInfra {
@@ -169,7 +220,7 @@ impl QueueInfra {
                 bounty: Queue::with_options(BOUNTY_QUEUE, options())
                     .await
                     .map_err(queue_error)?,
-                sync: Queue::with_options(SYNC_QUEUE, options())
+                notify: Queue::with_options(NOTIFY_QUEUE, options())
                     .await
                     .map_err(queue_error)?,
             })),
@@ -180,6 +231,12 @@ impl QueueInfra {
 
     pub fn is_enabled(&self) -> bool {
         self.queues.is_some()
+    }
+
+    pub fn notify_queue(&self) -> NotifyQueue {
+        NotifyQueue {
+            queue: self.queues.as_ref().map(|q| Arc::new(q.notify.clone())),
+        }
     }
 
     pub async fn enqueue_webhook(
@@ -529,47 +586,15 @@ impl QueueInfra {
             }));
         };
 
-        let (webhooks, bounty, sync) = tokio::join!(
+        let (webhooks, bounty) = tokio::join!(
             queues.webhooks.get_job_counts(),
-            queues.bounty.get_job_counts(),
-            queues.sync.get_job_counts(),
+            queues.bounty.get_job_counts()
         );
 
         Ok(serde_json::json!({
             "webhooks": counts_json(webhooks.map_err(queue_error)?),
             "escrow-operations": counts_json(bounty.map_err(queue_error)?),
-            "sync": counts_json(sync.map_err(queue_error)?),
         }))
-    }
-
-    pub async fn register_schedulers(&self, _interval: Duration) -> Result<(), AppError> {
-        let Some(queues) = self.queues.as_ref() else {
-            return Ok(());
-        };
-
-        match queues
-            .sync
-            .remove_job_scheduler(JOB_ESCROW_BALANCE_SYNC)
-            .await
-        {
-            Ok(removed) => {
-                if removed {
-                    tracing::info!(
-                        job = JOB_ESCROW_BALANCE_SYNC,
-                        "removed repeating escrow-balance-sync scheduler"
-                    );
-                }
-            }
-            Err(error) => {
-                tracing::warn!(
-                    %error,
-                    job = JOB_ESCROW_BALANCE_SYNC,
-                    "could not remove escrow-balance-sync scheduler (may already be gone)"
-                );
-            }
-        }
-
-        Ok(())
     }
 
     pub async fn close(&self) {
@@ -578,7 +603,7 @@ impl QueueInfra {
         };
         queues.webhooks.close().await;
         queues.bounty.close().await;
-        queues.sync.close().await;
+        queues.notify.close().await;
     }
 }
 
@@ -636,9 +661,9 @@ pub async fn start_workers(state: AppState) -> Result<Workers, AppError> {
     let redis_url = state.config.redis_url.clone();
     let prefix = state.config.bullmq_prefix.clone();
     let concurrency = state.config.bullmq_concurrency.max(1);
-    let lock_duration = Duration::from_millis(state.config.bullmq_lock_duration_ms.max(1));
-    let stalled_interval = Duration::from_millis(state.config.bullmq_stalled_interval_ms.max(1));
-    let max_stalled_count = state.config.bullmq_max_stalled_count.max(1);
+    let lock_duration = Duration::from_millis(BULLMQ_LOCK_DURATION_MS);
+    let stalled_interval = Duration::from_millis(BULLMQ_STALLED_INTERVAL_MS);
+    let max_stalled_count = BULLMQ_MAX_STALLED_COUNT;
 
     let worker_options = |name: &str, concurrency: usize| {
         WorkerOptions::new()
@@ -679,14 +704,15 @@ pub async fn start_workers(state: AppState) -> Result<Workers, AppError> {
     .await
     .map_err(queue_error)?;
 
-    let sync_state = state.clone();
-    let sync = Worker::with_options(
-        SYNC_QUEUE,
+    // notification email queue with concurrency 4
+    let notify_state = state.clone();
+    let notify = Worker::with_options(
+        NOTIFY_QUEUE,
         move |job: bullmq::Job, _token| {
-            let state = sync_state.clone();
+            let state = notify_state.clone();
             async move { crate::infra::jobs::process(&state, job).await }
         },
-        worker_options(SYNC_QUEUE, 1),
+        worker_options(NOTIFY_QUEUE, 4),
     )
     .await
     .map_err(queue_error)?;
@@ -694,7 +720,7 @@ pub async fn start_workers(state: AppState) -> Result<Workers, AppError> {
     tracing::info!(
         webhooks = WEBHOOK_QUEUE,
         bounty = BOUNTY_QUEUE,
-        sync = SYNC_QUEUE,
+        notify = NOTIFY_QUEUE,
         concurrency,
         lock_duration_ms = lock_duration.as_millis() as u64,
         stalled_interval_ms = stalled_interval.as_millis() as u64,
@@ -703,19 +729,8 @@ pub async fn start_workers(state: AppState) -> Result<Workers, AppError> {
     );
 
     Ok(Workers {
-        workers: vec![webhooks, bounty, sync],
+        workers: vec![webhooks, bounty, notify],
     })
-}
-
-pub async fn start_scheduler(state: &AppState) -> Result<(), AppError> {
-    // Interval config is ignored: continuous balance polling was removed.
-    let interval = Duration::from_secs(state.config.escrow_sync_interval_secs.max(1));
-    state.queue.register_schedulers(interval).await?;
-    tracing::info!(
-        job = JOB_ESCROW_BALANCE_SYNC,
-        "repeating escrow-balance-sync disabled (sync runs on fund/release only)"
-    );
-    Ok(())
 }
 
 #[cfg(test)]

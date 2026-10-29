@@ -4,10 +4,16 @@ use tracing::{error, info};
 use crate::{
     error::AppError,
     modules::{
+        bounty::automation::escrow_reward_amount,
         bounty::repository::{
             delete_assignments_for_issue, get_issue_by_repo_and_github_id, reset_issue_to_pending,
+            set_bounty_reward_amount,
         },
-        github::{auth::post_comment, handlers::helpers::zero_milestone_on_chain},
+        github::{auth::post_comment, comments, handlers::helpers::zero_milestone_on_chain},
+        notification::{
+            kinds::{Kind, Notify},
+            service::Service,
+        },
         repo::repository::get_repo_by_github_id,
     },
     state::AppState,
@@ -16,17 +22,21 @@ use crate::{
 pub async fn handle_issue_unassigned(state: &AppState, payload: &Value) -> Result<(), AppError> {
     let repository = payload
         .get("repository")
-        .ok_or_else(|| AppError::webhook("issues.unassigned payload missing repository"))?;
+        .ok_or_else(|| AppError::webhook("unassigned payload missing repository"))?;
+
     let issue = payload
         .get("issue")
-        .ok_or_else(|| AppError::webhook("issues.unassigned payload missing issue"))?;
+        .ok_or_else(|| AppError::webhook("unassigned payload missing issue"))?;
 
     let repo_github_id = repository.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+
     let full_name = repository
         .get("full_name")
         .and_then(|v| v.as_str())
         .unwrap_or("");
+
     let github_issue_id = issue.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+
     let issue_number = issue.get("number").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
 
     let Some(repo) = get_repo_by_github_id(state, repo_github_id).await? else {
@@ -39,13 +49,25 @@ pub async fn handle_issue_unassigned(state: &AppState, payload: &Value) -> Resul
         return Ok(());
     };
 
-    if issue_record.status == "completed" || issue_record.status == "cancelled" {
+    if issue_record.status == "paid" || issue_record.status == "cancelled" {
         return Ok(());
+    }
+
+    // Capture assignee before deletion for notification
+    let assignee_id = issue_record.assignee_id;
+
+    let reward = if issue_record.status == "assigned" && issue_record.milestone_index.is_some() {
+        escrow_reward_amount(state, &repo, &issue_record).await?
+    } else {
+        issue_record.reward_amount.unwrap_or_default()
+    };
+    if issue_record.status == "assigned" && issue_record.milestone_index.is_some() {
+        set_bounty_reward_amount(state, issue_record.id, reward).await?;
     }
 
     delete_assignments_for_issue(state, issue_record.id).await?;
 
-    if issue_record.status == "active" {
+    if issue_record.status == "assigned" {
         if let Some(milestone_index) = issue_record.milestone_index {
             if let Err(err) = zero_milestone_on_chain(state, &repo, milestone_index).await {
                 error!(%err, "failed to zero out milestone on unassign");
@@ -55,14 +77,37 @@ pub async fn handle_issue_unassigned(state: &AppState, payload: &Value) -> Resul
 
     reset_issue_to_pending(state, issue_record.id).await?;
 
+    // Send BountyUnassigned notification to the ex-assignee
+    if let Some(assignee_uuid) = assignee_id {
+        let now_unix = jiff::Timestamp::now().as_second();
+        let dedup_suffix = now_unix / 600;
+        let n = Notify {
+            recipient: assignee_uuid,
+            kind: Kind::BountyUnassigned,
+            title: format!("Bounty Unassigned: #{}", issue_number),
+            body: format!(
+                "You have been unassigned from a bounty on {}",
+                repo.full_name
+            ),
+            ref_id: Some(issue_record.id),
+            data: serde_json::json!({
+                "repoId": repo.id,
+                "issueNumber": issue_number,
+            }),
+            dedupe_key: format!(
+                "unassigned:{}:{}:{}",
+                issue_record.id, assignee_uuid, dedup_suffix
+            ),
+            actor: None,
+        };
+        Service::notify_contributor_quiet(state, n).await;
+    }
+
     post_comment(
         state,
         full_name,
         issue_number,
-        &format!(
-            "🔄 Contributor unassigned. The milestone has been closed. The bounty of **{} USDC** remains available for the next assignee.",
-            issue_record.reward_amount
-        ),
+        &comments::contributor_unassigned(reward),
     )
     .await?;
 

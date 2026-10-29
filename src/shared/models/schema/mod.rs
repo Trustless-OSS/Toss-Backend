@@ -1,16 +1,26 @@
-//! Toasty ORM models — source of truth for the application schema.
-//!
-//! These structs drive Toasty query APIs and (via `push_schema`) database schema.
-//! Runtime API/cache DTOs live in [`super::entities`] and are mapped from these models.
-//!
-//! Docs: <https://tokio-rs.github.io/toasty/nightly/guide/>
+//! Toasty ORM schema models — source of truth for the DB schema.
+//! Runtime DTOs live in [`super::entities`].
 
-mod assignment;
-mod contributor;
-mod issue;
-mod repo;
+pub mod activity;
+pub mod bounties;
+pub mod escrow_funder;
+pub mod failed_tasks;
+pub mod notification;
+pub mod profile;
+pub mod repo_maintainers;
+pub mod repositories;
+pub mod rewards;
+pub mod ticket;
+pub mod wallet;
 
-pub use assignment::Assignment;
-pub use contributor::Contributor;
-pub use issue::Issue;
-pub use repo::Repo;
+pub use activity::Activity;
+pub use bounties::Bounty;
+pub use escrow_funder::EscrowFunder;
+pub use failed_tasks::FailedTask;
+pub use notification::Notification;
+pub use profile::Profile;
+pub use repo_maintainers::RepoMaintainer;
+pub use repositories::Repository;
+pub use rewards::Reward;
+pub use ticket::Ticket;
+pub use wallet::Wallet;

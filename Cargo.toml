@@ -11,7 +11,7 @@ path = "src/main.rs"
 
 [[bin]]
 name = "migrate"
-path = "src/bin/migrate.rs"
+path = "src/bin/cli.rs"
 
 [dependencies]
 anyhow = "1"
@@ -45,6 +45,10 @@ utoipa-axum = "0.2.0"
 utoipa-swagger-ui = { version = "9.0.2", features = ["axum"] }
 bullmq-official = "1.2.6"
 resend-rs = "0.32.1"
+html-escape = "0.2"
+maud = "0.26"
+tower_governor = "0.8.0"
+governor = "0.10.4"
 
 [features]
 default = []

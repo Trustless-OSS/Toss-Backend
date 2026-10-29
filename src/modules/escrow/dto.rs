@@ -40,6 +40,7 @@ pub struct SubmitFund {
 #[serde(rename_all = "camelCase")]
 pub struct RefundEscrow {
     pub repo_id: Uuid,
+    pub maintainer_wallet: String,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]

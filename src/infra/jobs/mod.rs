@@ -1,5 +1,4 @@
 pub mod advance;
-pub mod sync;
 pub mod webhook;
 
 use tracing::{error, info, warn};
@@ -7,8 +6,8 @@ use tracing::{error, info, warn};
 use crate::{
     error::AppError,
     infra::queue::{
-        BountyJobData, JOB_ADVANCE_ISSUE, JOB_ESCROW_BALANCE_SYNC, JOB_GITHUB_WEBHOOK,
-        JOB_PUSH_MILESTONE, JOB_RELEASE_PAYOUT,
+        BountyJobData, NotificationJobData, JOB_ADVANCE_ISSUE, JOB_GITHUB_WEBHOOK,
+        JOB_NOTIFY_EMAIL, JOB_PUSH_MILESTONE, JOB_RELEASE_PAYOUT,
     },
     state::AppState,
 };
@@ -48,7 +47,37 @@ pub async fn process(
         JOB_RELEASE_PAYOUT => advance::run_release_payout(state, &job)
             .await
             .map(JobOutcome::Done),
-        JOB_ESCROW_BALANCE_SYNC => sync::run(state).await.map(JobOutcome::Done),
+        JOB_NOTIFY_EMAIL => {
+            if let Ok(data) = payload::<NotificationJobData>(&job) {
+                match crate::modules::notification::service::Service::deliver_email(
+                    state,
+                    data.notification_id,
+                )
+                .await
+                {
+                    Ok(_) => Ok(JobOutcome::Done(serde_json::json!({
+                        "notificationId": data.notification_id,
+                    }))),
+                    Err(e) => {
+                        // On final attempt, mark notification as failed
+                        if job.attempts_made() >= 5 {
+                            let _ = crate::modules::notification::repository::Repository::set_email_status(
+                                state,
+                                data.notification_id,
+                                "failed",
+                                false,
+                            )
+                            .await;
+                        }
+                        Err(e)
+                    }
+                }
+            } else {
+                Err(AppError::webhook(
+                    "invalid notification job payload".to_string(),
+                ))
+            }
+        }
         other => {
             warn!(job = other, job_id = %id, "unknown job name ignored");
             Ok(JobOutcome::Done(serde_json::json!({ "skipped": other })))
@@ -82,6 +111,7 @@ fn to_job_error(error: AppError) -> bullmq::Error {
         | AppError::Unauthorized { .. }
         | AppError::Forbidden { .. }
         | AppError::NotFound { .. }
+        | AppError::TooManyRequests { .. }
         | AppError::WebhookError { .. }
         | AppError::EnvVarError { .. } => bullmq::Error::Unrecoverable(error.to_string()),
         AppError::StellarError { .. }

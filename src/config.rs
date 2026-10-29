@@ -1,4 +1,5 @@
 use crate::error::AppError;
+use crate::shared::constants::DEFAULT_EMAIL_FROM;
 
 const DEFAULT_ALLOWED_ORIGINS: [&str; 1] = ["http://localhost:3000"];
 
@@ -9,18 +10,8 @@ pub struct Config {
     pub node_env: String,
     pub database_url: String,
     pub redis_url: String,
-    /// Redis key prefix for every BullMQ queue (`bull` matches the BullMQ default).
     pub bullmq_prefix: String,
-    /// How many jobs each BullMQ worker processes concurrently.
     pub bullmq_concurrency: usize,
-    /// How long a worker holds a job lock before it can be considered stalled.
-    pub bullmq_lock_duration_ms: u64,
-    /// How often workers scan for stalled `active` jobs.
-    pub bullmq_stalled_interval_ms: u64,
-    /// How many times a stalled job is re-queued before it is failed.
-    pub bullmq_max_stalled_count: u32,
-    /// Unused: repeating `escrow-balance-sync` was removed (sync is on fund/release).
-    pub escrow_sync_interval_secs: u64,
     pub supabase_url: String,
     pub supabase_auth_api_key: String,
     pub github_app_id: String,
@@ -41,6 +32,7 @@ pub struct Config {
     pub smee_source_url: String,
     pub smee_target_url: String,
     pub resend_api_key: String,
+    pub email_from: String,
 }
 
 impl Config {
@@ -65,11 +57,6 @@ impl Config {
             redis_url: required_env("REDIS_URL")?,
             bullmq_prefix: optional_env("BULLMQ_PREFIX").unwrap_or_else(|| "bull".to_string()),
             bullmq_concurrency: optional_parsed("BULLMQ_CONCURRENCY")?.unwrap_or(4),
-            bullmq_lock_duration_ms: optional_parsed("BULLMQ_LOCK_DURATION_MS")?.unwrap_or(30_000),
-            bullmq_stalled_interval_ms: optional_parsed("BULLMQ_STALLED_INTERVAL_MS")?
-                .unwrap_or(30_000),
-            bullmq_max_stalled_count: optional_parsed("BULLMQ_MAX_STALLED_COUNT")?.unwrap_or(1),
-            escrow_sync_interval_secs: optional_parsed("ESCROW_SYNC_INTERVAL_SECS")?.unwrap_or(60),
             supabase_url: required_env("SUPABASE_URL")?,
             supabase_auth_api_key: first_env(&[
                 "SUPABASE_PUBLISHABLE_KEY",
@@ -104,6 +91,8 @@ impl Config {
             smee_source_url: required_env("SMEE_SOURCE_URL")?,
             smee_target_url: required_env("SMEE_TARGET_URL")?,
             resend_api_key: required_env("RESEND_API_KEY")?,
+            email_from: optional_env("EMAIL_FROM")
+                .unwrap_or_else(|| DEFAULT_EMAIL_FROM.to_string()),
         })
     }
 

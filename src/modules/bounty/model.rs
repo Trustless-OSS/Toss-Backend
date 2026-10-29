@@ -31,3 +31,15 @@ pub struct RetryIssueResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<&'static str>,
 }
+
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RejectIssueResponse {
+    pub ok: bool,
+    pub refunded_amount: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct HoldIssueResponse {
+    pub ok: bool,
+}
