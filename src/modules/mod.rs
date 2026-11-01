@@ -6,3 +6,4 @@ pub mod github;
 pub mod notification;
 pub mod repo;
 pub mod ticket;
+pub mod upload;

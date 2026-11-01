@@ -268,6 +268,32 @@ Most bounty advancement is event-driven; these endpoints are the client-facing l
 
 A notification includes `id`, `kind`, `title`, optional `body`, `isRead`, optional `refId` and `data`, and `createdAt`.
 
+### File uploads
+
+Uploads send the file directly from the client to object storage. First, request an authenticated, short-lived presigned URL:
+
+| Method and path | Auth | Purpose | Request body |
+| --- | --- | --- | --- |
+| `POST /api/v1/upload` | Bearer | Creates a five-minute URL for a direct `PUT` upload. | `{ "contentType": "video/mp4", "size": 12345678, "folder": "trustless-oss" }` |
+
+`contentType` and `size` are required; `size` is in bytes and must be between 1 byte and 5 GiB. `folder` is optional (defaults to `uploads`) and may contain only letters, numbers, `_`, and `-`. The returned `key` is scoped to the authenticated GitHub user. The response includes the `upload_url`, required `headers`, `content_type`, and `expires_in`.
+
+```bash
+curl -X POST "$API_URL/api/v1/upload" \
+  -H "$AUTH_HEADER" -H 'Content-Type: application/json' \
+  -d '{"contentType":"video/mp4","size":12345678,"folder":"trustless-oss"}'
+```
+
+Then send the raw file bytes to the returned URL with `PUT`, using the returned headers. Do not send multipart form data or the bearer token to the storage URL. With `curl`, `--upload-file` sets the body length and the `Content-Type` must match the one used to create the URL:
+
+```bash
+curl -X PUT '<upload_url>' \
+  -H 'Content-Type: video/mp4' \
+  --upload-file ./video.mp4
+```
+
+Configure the storage bucket's CORS policy to allow `PUT` from the frontend origin. The `POST` response means the URL was created; the object is uploaded only after the client successfully completes the `PUT`. Save the returned `key` as the attachment reference.
+
 ### Tickets
 
 | Method and path | Auth | Purpose | Request body |
