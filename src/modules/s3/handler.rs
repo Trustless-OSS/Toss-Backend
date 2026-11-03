@@ -5,30 +5,10 @@ use crate::{
 };
 use aws_sdk_s3::presigning::PresigningConfig;
 use axum::{extract::State, Json};
-use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, time::Duration};
-use utoipa::ToSchema;
+use std::time::Duration;
+
+use super::dtype::{UploadRequest, UploadResponse, MAX_UPLOAD_SIZE, URL_TTL_SECS};
 use uuid::Uuid;
-
-const MAX_UPLOAD_SIZE: u64 = 5 * 1024 * 1024 * 1024;
-const URL_TTL_SECS: u64 = 300;
-
-#[derive(Deserialize, ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct UploadRequest {
-    pub content_type: String,
-    pub size: u64,
-    pub folder: Option<String>,
-}
-
-#[derive(Serialize, ToSchema)]
-pub struct UploadResponse {
-    pub key: String,
-    pub upload_url: String,
-    pub content_type: String,
-    pub headers: BTreeMap<String, String>,
-    pub expires_in: u64,
-}
 
 #[utoipa::path(
     post,
@@ -89,10 +69,4 @@ pub async fn upload(
             .collect(),
         expires_in: URL_TTL_SECS,
     }))
-}
-
-pub fn router() -> axum::Router<AppState> {
-    use axum::routing::post;
-
-    axum::Router::new().route("/api/v1/upload", post(upload))
 }

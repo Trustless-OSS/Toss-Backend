@@ -1,7 +1,7 @@
 use axum::Router;
 
 use crate::{
-    modules::{bounty, contributor, dashboard, escrow, github, notification, repo, ticket, upload},
+    modules::{bounty, contributor, dashboard, escrow, github, notification, repo, s3, ticket},
     state::AppState,
 };
 
@@ -20,5 +20,5 @@ pub fn router() -> Router<AppState> {
         .merge(notification::routes::router())
         .merge(dashboard::routes::router())
         .merge(ticket::router::router())
-        .merge(upload::router())
+        .merge(s3::router::router())
 }
