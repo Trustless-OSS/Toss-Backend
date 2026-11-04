@@ -5,4 +5,5 @@ pub mod jobs;
 pub mod migrate;
 pub mod queue;
 pub mod redis;
+pub mod s3_client;
 pub mod stellar;

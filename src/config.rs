@@ -29,10 +29,16 @@ pub struct Config {
     pub app_url: String,
     pub webhook_url: Option<String>,
     pub dev_webhook_proxy_enabled: bool,
+    pub auth_bypass: bool,
     pub smee_source_url: String,
     pub smee_target_url: String,
     pub resend_api_key: String,
     pub email_from: String,
+    pub aws_access_key_id: String,
+    pub aws_secret_access_key: String,
+    pub aws_region: String,
+    pub s3_endpoint_url: Option<String>,
+    pub s3_bucket_name: String,
 }
 
 impl Config {
@@ -48,6 +54,13 @@ impl Config {
 
         let dev_webhook_proxy_enabled = node_env.eq_ignore_ascii_case("development")
             && required_bool("DEV_WEBHOOK_PROXY_ENABLED")?;
+
+        let auth_bypass = optional_bool("AUTH_BYPASS").unwrap_or(false);
+        if auth_bypass && !node_env.eq_ignore_ascii_case("development") {
+            return Err(AppError::env_var_error(
+                "AUTH_BYPASS requires NODE_ENV=development",
+            ));
+        }
 
         Ok(Self {
             port,
@@ -88,11 +101,18 @@ impl Config {
             app_url: required_env("APP_URL")?,
             webhook_url: std::env::var("WEBHOOK_URL").ok(),
             dev_webhook_proxy_enabled,
+            auth_bypass,
             smee_source_url: required_env("SMEE_SOURCE_URL")?,
             smee_target_url: required_env("SMEE_TARGET_URL")?,
             resend_api_key: required_env("RESEND_API_KEY")?,
             email_from: optional_env("EMAIL_FROM")
                 .unwrap_or_else(|| DEFAULT_EMAIL_FROM.to_string()),
+
+            aws_access_key_id: required_env("AWS_ACCESS_KEY_ID")?,
+            aws_secret_access_key: required_env("AWS_SECRET_ACCESS_KEY")?,
+            aws_region: optional_env("AWS_REGION").unwrap_or_else(|| "us-east-1".to_string()),
+            s3_endpoint_url: optional_env("S3_ENDPOINT_URL"),
+            s3_bucket_name: required_env("S3_BUCKET_NAME")?,
         })
     }
 

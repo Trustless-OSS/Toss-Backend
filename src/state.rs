@@ -1,7 +1,7 @@
 use crate::{
     config::Config,
     error::AppError,
-    infra::{db, email::resend_provider, queue::QueueInfra, redis},
+    infra::{db, email::resend_provider, queue::QueueInfra, redis, s3_client},
 };
 use reqwest::Client;
 use resend_rs::Resend;
@@ -16,6 +16,7 @@ pub struct AppState {
     pub cache: redis::Cache,
     pub queue: QueueInfra,
     pub email: Resend,
+    pub s3_client: aws_sdk_s3::Client,
 }
 
 impl AppState {
@@ -38,6 +39,8 @@ impl AppState {
         };
 
         let email = resend_provider::connect(&config.resend_api_key).await?;
+        let s3_client =
+            s3_client::client::client(&config.aws_region, config.s3_endpoint_url.as_deref()).await;
 
         Ok(Self {
             config: Arc::new(config),
@@ -47,6 +50,7 @@ impl AppState {
             cache,
             queue,
             email,
+            s3_client,
         })
     }
 }

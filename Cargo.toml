@@ -15,7 +15,7 @@ path = "src/bin/cli.rs"
 
 [dependencies]
 anyhow = "1"
-axum = { version = "0.8", features = ["json", "macros"] }
+axum = { version = "0.8", features = ["json", "macros", "multipart"] }
 base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
 dotenvy = "0.15"
@@ -49,6 +49,8 @@ html-escape = "0.2"
 maud = "0.26"
 tower_governor = "0.8.0"
 governor = "0.10.4"
+aws-config = "1.13.0"
+aws-sdk-s3 = "1.157.0"
 
 [features]
 default = []

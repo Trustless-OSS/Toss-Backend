@@ -5,4 +5,5 @@ pub mod escrow;
 pub mod github;
 pub mod notification;
 pub mod repo;
+pub mod s3;
 pub mod ticket;

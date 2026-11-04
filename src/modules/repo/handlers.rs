@@ -285,27 +285,6 @@ pub(crate) async fn delete_repo(
     Ok(Json(response))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::SyncInstallation;
-
-    #[test]
-    fn sync_installation_body_accepts_camel_and_snake_case() {
-        let camel: SyncInstallation = serde_json::from_str(
-            r#"{"installationId": 153860735, "githubRepoId": 42, "githubRepoIds": [1, 2]}"#,
-        )
-        .unwrap();
-        let snake: SyncInstallation =
-            serde_json::from_str(r#"{"installation_id": 153860735}"#).unwrap();
-        assert_eq!(camel.installation_id, 153860735);
-        assert_eq!(camel.gh_repo_id, Some(42));
-        assert_eq!(camel.gh_repo_ids, Some(vec![1, 2]));
-        assert_eq!(snake.installation_id, 153860735);
-        assert_eq!(snake.gh_repo_id, None);
-        assert_eq!(snake.gh_repo_ids, None);
-    }
-}
-
 pub(crate) async fn list_github_labels(
     State(state): State<AppState>,
     user: AuthedUser,
@@ -330,4 +309,25 @@ pub(crate) async fn delete_reward(
     )
     .await?;
     Ok(Json(response))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SyncInstallation;
+
+    #[test]
+    fn sync_installation_body_accepts_camel_and_snake_case() {
+        let camel: SyncInstallation = serde_json::from_str(
+            r#"{"installationId": 153860735, "githubRepoId": 42, "githubRepoIds": [1, 2]}"#,
+        )
+        .unwrap();
+        let snake: SyncInstallation =
+            serde_json::from_str(r#"{"installation_id": 153860735}"#).unwrap();
+        assert_eq!(camel.installation_id, 153860735);
+        assert_eq!(camel.gh_repo_id, Some(42));
+        assert_eq!(camel.gh_repo_ids, Some(vec![1, 2]));
+        assert_eq!(snake.installation_id, 153860735);
+        assert_eq!(snake.gh_repo_id, None);
+        assert_eq!(snake.gh_repo_ids, None);
+    }
 }

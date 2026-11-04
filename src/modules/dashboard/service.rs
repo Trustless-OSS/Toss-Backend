@@ -299,7 +299,7 @@ mod tests {
             milestone_index: milestone.then_some(0),
             created_at: now,
             assigned_at: assigned.then(jiff::Timestamp::now),
-            paid_at: paid.then(|| now),
+            paid_at: paid.then_some(now),
             payout_tx_hash: paid.then(|| "abc123".to_string()),
         }
     }

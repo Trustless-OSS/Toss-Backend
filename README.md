@@ -182,6 +182,10 @@ The migrate binary also accepts `TOASTY_CONNECTION_URL` as an override for
 
 Protected application routes use `Authorization: Bearer <supabase-access-token>`.
 GitHub webhooks instead require a valid `X-Hub-Signature-256` signature.
+Uploads use a direct-to-storage flow: `POST /api/v1/upload` with JSON fields
+`contentType`, `size`, and optional `folder` returns a short-lived `upload_url`.
+Then `PUT` the raw file bytes to that URL with the returned `headers`. Configure
+the storage bucket's CORS policy to allow `PUT` from the frontend origin.
 
 | Area | Main endpoints |
 | --- | --- |
