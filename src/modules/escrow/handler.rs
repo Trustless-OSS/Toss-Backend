@@ -16,7 +16,7 @@ use crate::{
             },
             trustless_work::{escrow_service::TrustlessWorkAPI, tx_builder::TxBuilder},
         },
-        github::{auth::post_comment, labels::ensure_default_repository_labels},
+        github::{auth::post_comment, comments, labels::ensure_default_repository_labels},
         notification::{
             kinds::{Kind, Notify},
             service::Service,
@@ -199,6 +199,12 @@ pub async fn submit_fund(
         )
         .await?;
 
+    // Funding succeeded even if Redis is temporarily unavailable. The durable
+    // scanner will retry a failed wake-up without asking the maintainer to fund twice.
+    if let Err(error) = crate::infra::recovery::wake_repo(&state, body.repo_id).await {
+        tracing::warn!(%error, "escrow funded; automatic recovery will retry the wake-up");
+    }
+
     // Send EscrowFunded notification to maintainers
     let n = Notify {
         recipient: body.repo_id, // Placeholder; Service::notify_maintainers will set actual recipients
@@ -284,16 +290,7 @@ pub async fn refund(
     Service::notify_maintainers_quiet(&state, repo.id, n).await;
 
     for issue in &issues_to_cancel {
-        let comment = format!(
-            "## 🚫 Bounty Cancelled\n\n\
-             > **Status:** Cancelled  \n\
-             > **Reason:** A repository maintainer withdrew the escrowed funds.\n\n\
-             ### What this means\n\n\
-             - No further work or pull requests for this issue are eligible for a payout.\n\
-             - The bounty will not be reopened unless the repository maintainer creates a new one.\n\n\
-             ### Escrow\n\n\
-             [View escrow contract →](https://viewer.trustlesswork.com/{contract_id})"
-        );
+        let comment = comments::bounty_cancelled_after_refund(&contract_id);
 
         // Send BountyCancelled notification to assignee
         if let Some(assignee_id) = issue.assignee_id {

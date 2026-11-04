@@ -44,11 +44,13 @@ pub(crate) async fn connect_wallet(
         .payout_chain
         .as_deref()
         .unwrap_or("stellar")
-        .to_string();
+        .trim()
+        .to_ascii_lowercase();
     let payout_address = body
         .payout_address
         .as_deref()
         .unwrap_or(&body.wallet)
+        .trim()
         .to_string();
 
     if payout_chain.eq_ignore_ascii_case("stellar") {
@@ -99,6 +101,25 @@ async fn resume_parked_bounties(state: &AppState, github_id: i64) {
             return;
         }
     };
+
+    // A maintainer wallet can also unblock a contributor's partial payout.
+    if let Ok(mut db) = crate::error::require_db(&state.db) {
+        match crate::shared::models::schema::RepoMaintainer::filter_by_profile_id(profile.id)
+            .exec(&mut db)
+            .await
+        {
+            Ok(maintainerships) => {
+                for maintainer in maintainerships {
+                    if let Err(error) =
+                        crate::infra::recovery::wake_repo(state, maintainer.repo_id).await
+                    {
+                        warn!(%error, "maintainer wallet saved; recovery will retry the wake-up");
+                    }
+                }
+            }
+            Err(error) => warn!(%error, "failed to load repositories for wallet recovery"),
+        }
+    }
 
     for bounty in bounties {
         if bounty.status == "paid" || bounty.status == "cancelled" {

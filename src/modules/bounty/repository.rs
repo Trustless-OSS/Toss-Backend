@@ -229,7 +229,7 @@ pub async fn create_bounty_and_reserve_balance(
 
     let current_balance = schema_repo.escrow_balance.unwrap_or(Decimal::ZERO);
     if current_balance < reward_amount {
-        return Err(AppError::bad_request("Insufficient escrow balance"));
+        return Err(crate::infra::recovery::waiting_for_funds());
     }
 
     let new_balance = round_balance(current_balance - reward_amount);
@@ -286,7 +286,8 @@ pub async fn update_pending_bounty_reward(
     };
 
     let can_change_before_lock = bounty.status == "open"
-        || (bounty.status == "assigned" && bounty.milestone_index.is_none());
+        || (matches!(bounty.status.as_str(), "assigned" | "merged")
+            && bounty.milestone_index.is_none());
     if !can_change_before_lock {
         return Ok(false);
     }

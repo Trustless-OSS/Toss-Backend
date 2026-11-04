@@ -1,72 +1,75 @@
 use rust_decimal::Decimal;
 
+// Use native GitHub Markdown and literal newlines so the source matches the comment layout.
+
 // ─────────────────────────────────────────────────────────────
 // Static messages
 // ─────────────────────────────────────────────────────────────
 
-pub const HELP: &str = concat!(
-    "### 🤖 TOSS Bot\n\n",
-    "Use these commands in issue and PR comments.\n\n",
-    "#### 🛠️ Maintainers\n\n",
-    "| Command | What it does |\n",
-    "| :--- | :--- |\n",
-    "| `@trustless-oss <amount>` | 💰 Set a manual bounty in USDC |\n",
-    "| `@trustless-oss pay <percentage>` | ✂️ Split the bounty when the PR is merged |\n",
-    "| `@trustless-oss reject` | 🛑 Reject the work and refund the escrow |\n",
-    "| `@trustless-oss retry` | 🔄 Force a re-check (rarely needed) |\n\n",
-    "#### 👩‍💻 Contributors\n\n",
-    "| Command | What it does |\n",
-    "| :--- | :--- |\n",
-    "| `@trustless-oss wallet` | 🔑 Connect or update your wallet |\n\n",
-    "#### 💡 General\n\n",
-    "| Command | What it does |\n",
-    "| :--- | :--- |\n",
-    "| `@trustless-oss help` | 📖 Show this command list |\n\n",
-    "---\n",
-    "_Payouts continue automatically once their conditions are met._\n",
-);
+pub const ESCROW_SETUP_REQUIRED: &str = r#"### 🏦 Escrow setup required
 
-pub const BOUNTY_UPDATE_FAILED: &str = concat!(
-    "### ⚠️ Bounty Not Updated\n\n",
-    "> [!WARNING]\n",
-    "> The escrow balance is too low to cover this bounty.\n\n",
-    "_Top up the escrow, then try again._\n",
-);
+Your bounty request is saved.
 
-pub const INVALID_SPLIT: &str = concat!(
-    "### ⚠️ Invalid Split\n\n",
-    "> [!WARNING]\n",
-    "> The percentage must be between **1** and **99**.\n\n",
-    "_Example: `@trustless-oss pay 70`_\n",
-);
+> [!IMPORTANT]
+> Deploy and fund this repository's escrow from the dashboard.
+> Automation will resume once the escrow is ready."#;
 
-pub const MANUAL_AMOUNT_NEEDED: &str = concat!(
-    "### ✍️ Amount Needed\n\n",
-    "> [!NOTE]\n",
-    "> This is a manual bounty, so it needs an amount before funds can be locked.\n\n",
-    "**Set it by commenting:**\n\n",
-    "```\n",
-    "@trustless-oss <amount> USDC\n",
-    "```\n\n",
-    "✅ You can assign a contributor now.\n",
-    "⏳ Escrow locking starts once the amount is set.\n",
-);
+pub const LINKED_ISSUE_REQUIRED: &str = r#"### 🔗 Linked issue required
 
-pub const RETRYING_BOUNTY: &str = concat!(
-    "### 🔄 Re-checking Bounty\n\n",
-    "> [!NOTE]\n",
-    "> Running a fresh check now.\n\n",
-    "_You normally don't need this. Payouts continue on their own once their conditions are met._\n",
-);
+> [!IMPORTANT]
+> Add `Closes #123` to the PR description, then set the reward again.
+> The bounty will be tracked on that issue."#;
 
-pub const UNPRICED_BOUNTY_CREATED: &str = concat!(
-    "### 💰 Bounty Created\n\n",
-    "> [!IMPORTANT]\n",
-    "> No reward is set yet. Add one to activate this bounty.\n\n",
-    "**Set the reward by either:**\n\n",
-    "1. 🏷️ Adding a label: `low`, `medium`, `high`, or another listed level\n",
-    "2. 💬 Commenting: `@trustless-oss <amount> USDC`\n",
-);
+pub const HELP: &str = r#"### 🤖 Commands
+
+Mention `@trustless-oss` in an issue or pull request comment.
+
+| Command | Result |
+| :--- | :--- |
+| `@trustless-oss 100 USDC` | Set a 100 USDC bounty · maintainers |
+| `@trustless-oss pay 70%` | Set the contributor payout to 70% · maintainers |
+| `@trustless-oss pay 70` | Set the contributor payout to 70 USDC · maintainers |
+| `@trustless-oss reject` | Reject work and return the escrowed reward · maintainers |
+| `@trustless-oss retry` | Request a fresh bounty check · maintainers |
+| `@trustless-oss wallet` | Get a link to connect or update your wallet · anyone |
+| `@trustless-oss help` | Show this guide · anyone |
+
+> [!NOTE]
+> A number without `%` is a fixed USDC amount. Payouts run automatically after the linked PR is merged."#;
+
+pub const BOUNTY_UPDATE_FAILED: &str = r#"### ⚠️ Reward unchanged
+
+The escrow balance cannot cover the new reward. The previous bounty amount is still in place.
+
+> [!TIP]
+> Top up the repository escrow. Your requested reward is saved and will be checked automatically."#;
+
+pub const INVALID_SPLIT: &str = r#"### ⚠️ Payout unchanged
+
+The contributor payout must be greater than zero and no more than the bounty reward.
+
+> [!TIP]
+> `@trustless-oss pay 70%` for a percentage, or `@trustless-oss pay 70` for 70 USDC."#;
+
+pub const MANUAL_AMOUNT_NEEDED: &str = r#"### ⏳ Reward needed
+
+This manual bounty has no amount yet. A contributor can be assigned, but funds cannot be locked until a reward is set.
+
+> [!IMPORTANT]
+> Comment `@trustless-oss 100 USDC` with your chosen amount."#;
+
+pub const RETRYING_BOUNTY: &str = r#"### 🔄 Bounty check requested
+
+A fresh check has been queued. If the bounty is ready, automation will continue.
+
+No further action is needed unless the bounty is waiting on an amount, wallet, or merged PR."#;
+
+pub const UNPRICED_BOUNTY_CREATED: &str = r#"### ⏳ Bounty awaiting reward
+
+This issue is marked as a bounty, but it does not have a reward amount yet.
+
+> [!IMPORTANT]
+> Add one of this repository's configured reward labels, or comment `@trustless-oss 100 USDC` with your chosen amount."#;
 
 // ─────────────────────────────────────────────────────────────
 // Wallet
@@ -74,27 +77,36 @@ pub const UNPRICED_BOUNTY_CREATED: &str = concat!(
 
 pub fn wallet_update(login: &str, connect_url: &str) -> String {
     format!(
-        "### 🔑 Update Your Wallet\n\n\
-         👋 Hey @{login}! Head to your profile to update your Stellar wallet:\n\n\
-         [**Complete Your Profile →**]({connect_url})\n"
+        r#"### 🔑 Connect your wallet
+
+@{login}, add or update your Stellar wallet in your profile.
+
+> [!TIP]
+> [Open your profile →]({connect_url})
+
+Your payout can continue automatically once your wallet is connected."#
     )
 }
 
 pub fn maintainer_wallet_required(login: &str, app_url: &str) -> String {
     format!(
-        "### 🔑 Finish Setting Up Your Profile\n\n\
-         > [!IMPORTANT]\n\
-         > @{login}, sign in and connect your Stellar wallet on your profile before using this command.\n\n\
-         [**Complete Your Profile →**]({app_url}/profile)\n"
+        r#"### 🔑 Maintainer wallet needed
+
+@{login}, connect a Stellar wallet before this payout action can continue.
+
+> [!TIP]
+> [Open your profile →]({app_url}/profile)"#
     )
 }
 
 pub fn contributor_wallet_missing(username: &str) -> String {
     format!(
-        "### 🔑 Contributor Wallet Missing\n\n\
-         > [!WARNING]\n\
-         > @{username} must connect a Stellar wallet before a split can be configured.\n\n\
-         _Ask them to comment `@trustless-oss wallet` to get started._\n"
+        r#"### ⏳ Contributor wallet needed
+
+A payout cannot be configured until @{username} connects a Stellar wallet.
+
+> [!TIP]
+> @{username} can comment `@trustless-oss wallet` for a profile link."#
     )
 }
 
@@ -104,35 +116,37 @@ pub fn contributor_wallet_missing(username: &str) -> String {
 
 pub fn manual_bounty_created(reward: Decimal, contract_id: &str, creator: &str) -> String {
     format!(
-        "### 🎯 Bounty Created\n\n\
-         @{creator} created a manual bounty.\n\n\
-         | Detail | Value |\n\
-         | :--- | :--- |\n\
-         | 💰 **Reward** | **{reward} USDC** |\n\
-         | 📊 **Level** | `manual` |\n\
-         | 🔗 **Escrow** | [View on-chain →](https://viewer.trustlesswork.com/{contract_id}) |\n\n\
-         ---\n\
-         _Next step: assign a contributor to lock the funds._\n"
+        r#"### 🎯 Bounty created
+
+@{creator} created this bounty.
+
+- **Reward:** {reward} USDC
+- **Escrow:** [View details](https://viewer.trustlesswork.com/{contract_id})
+
+> [!TIP]
+> Assign a contributor and connect their wallet to lock the reward."#
     )
 }
 
 pub fn labeled_bounty_created(reward: Decimal, difficulty: &str, contract_id: &str) -> String {
     format!(
-        "### 💰 Bounty Created\n\n\
-         | Detail | Value |\n\
-         | :--- | :--- |\n\
-         | 💰 **Reward** | **{reward} USDC** |\n\
-         | 📊 **Level** | `{difficulty}` |\n\
-         | 🔗 **Escrow** | [View on-chain →](https://viewer.trustlesswork.com/{contract_id}) |\n\n\
-         ---\n\
-         _You can change the amount anytime before assignment. Assigning a contributor locks the funds._\n"
+        r#"### 🎯 Bounty created
+
+- **Reward:** {reward} USDC
+- **Label:** `{difficulty}`
+- **Escrow:** [View details](https://viewer.trustlesswork.com/{contract_id})
+
+> [!TIP]
+> Assign a contributor and connect their wallet to lock the reward.
+> You can change the amount before it is locked."#
     )
 }
 
 pub fn manual_bounty_updated(amount: Decimal) -> String {
     format!(
-        "###  Bounty Updated\n\n\
-         The reward is now **{amount} USDC**.\n"
+        r#"### 💰 Reward updated
+
+The bounty reward is now **{amount} USDC**. The reward will be locked in escrow when the assigned contributor is ready."#
     )
 }
 
@@ -141,28 +155,26 @@ pub fn manual_bounty_updated(amount: Decimal) -> String {
 // ─────────────────────────────────────────────────────────────
 
 pub fn manual_insufficient_balance(balance: Decimal, reward: Decimal, app_url: &str) -> String {
-    format!(
-        "### ⚠️ Insufficient Escrow Balance\n\n\
-         > [!WARNING]\n\
-         > The escrow doesn't have enough funds for this bounty.\n\n\
-         | | Amount |\n\
-         | :--- | :--- |\n\
-         | 💼 **Available** | {balance} USDC |\n\
-         | 💰 **Required** | {reward} USDC |\n\n\
-         [**Top Up Escrow →**]({app_url}/dashboard)\n"
-    )
+    insufficient_balance(balance, reward, app_url)
 }
 
 pub fn labeled_insufficient_balance(balance: Decimal, reward: Decimal, app_url: &str) -> String {
+    insufficient_balance(balance, reward, app_url)
+}
+
+fn insufficient_balance(balance: Decimal, reward: Decimal, app_url: &str) -> String {
     format!(
-        "### ⚠️ Insufficient Escrow Balance\n\n\
-         > [!WARNING]\n\
-         > The escrow balance is too low for this bounty.\n\n\
-         | | Amount |\n\
-         | :--- | :--- |\n\
-         | 💼 **Available** | {balance} USDC |\n\
-         | 💰 **Required** | {reward} USDC |\n\n\
-         [**Top Up Escrow →**]({app_url}/dashboard)\n"
+        r#"### ⚠️ Escrow needs funds
+
+This bounty cannot be created at the requested amount yet.
+
+| Available | Required |
+| ---: | ---: |
+| **{balance} USDC** | **{reward} USDC** |
+
+> [!TIP]
+> [Fund the escrow]({app_url}/dashboard) to resume automatically.\
+> Your request is saved; no retry command is needed."#
     )
 }
 
@@ -172,21 +184,23 @@ pub fn labeled_insufficient_balance(balance: Decimal, reward: Decimal, app_url: 
 
 pub fn contributor_assigned_without_amount(login: &str) -> String {
     format!(
-        "### ⏳ Assigned, Waiting for Amount\n\n\
-         > [!NOTE]\n\
-         > @{login} is assigned, but this bounty has no amount yet.\n\n\
-         **Maintainers can set one by either:**\n\n\
-         1. 🏷️ Adding a reward level label\n\
-         2. 💬 Commenting `@trustless-oss <amount> USDC`\n\n\
-         _Escrow locking starts automatically afterward._\n"
+        r#"### ⏳ Assignment waiting on reward
+
+@{login} is assigned, but this bounty has no reward amount yet. No funds have been locked.
+
+> [!IMPORTANT]
+> Add a configured reward label or comment `@trustless-oss 100 USDC` with your chosen amount. Escrow locking will then continue automatically."#
     )
 }
 
 pub fn contributor_unassigned(reward: Decimal) -> String {
     format!(
-        "### Contributor Unassigned\n\n\
-         The milestone has been closed.\n\n\
-         💰 The **{reward} USDC** bounty is still **open** for the next assignee.\n"
+        r#"### ↩️ Bounty open again
+
+The previous assignment's milestone was closed. The **{reward} USDC** bounty remains open.
+
+> [!TIP]
+> Assign another contributor to continue."#
     )
 }
 
@@ -196,27 +210,34 @@ pub fn contributor_unassigned(reward: Decimal) -> String {
 
 pub fn payout_intent_saved(contributor_amount: Decimal, contributor_username: &str) -> String {
     format!(
-        "### 📋 Payout Updated ({contributor_amount} USDC)\n\n\
-         When this PR is merged, the contributor will receive:\n\n\
-         | Recipient | Amount |\n\
-         | :--- | :--- |\n\
-         | 👩‍💻 @{contributor_username} | **{contributor_amount} USDC** |\n",
+        r#"### 📋 Payout updated
+
+@{contributor_username}, your payout is set to **{contributor_amount} USDC**.
+
+> [!TIP]
+> Merge the linked PR when the work is ready. If it is already merged, we will check payout eligibility now."#,
     )
 }
 
 pub fn pr_author_mismatch(issue_number: i32) -> String {
     format!(
-        "### ⚠️ PR Author Mismatch\n\n\
-         > [!WARNING]\n\
-         > The author of this PR is not the contributor assigned to issue #{issue_number}.\n"
+        r#"### ⚠️ Payout unchanged
+
+The author of this PR does not match the contributor assigned to issue #{issue_number}. No payout change was made.
+
+> [!TIP]
+> Check the GitHub assignment and linked issue before trying again."#
     )
 }
 
 pub fn payout_aborted_for_pr_author(issue_number: i32) -> String {
     format!(
-        "### 🚫 Payout Aborted\n\n\
-         > [!CAUTION]\n\
-         > The author of this PR is not the contributor assigned to issue #{issue_number}, so no payout was made.\n"
+        r#"### 🛑 Payout blocked
+
+This merged PR was not authored by the contributor assigned to issue #{issue_number}. No payout was released.
+
+> [!TIP]
+> A maintainer should review the assignment and PR author."#
     )
 }
 
@@ -226,28 +247,115 @@ pub fn payout_aborted_for_pr_author(issue_number: i32) -> String {
 
 pub fn bounty_cancelled(reward: Decimal) -> String {
     format!(
-        "### 🛑 Bounty Cancelled\n\n\
-         > [!CAUTION]\n\
-         > A maintainer closed this issue, so the bounty is no longer active.\n\n\
-         | Detail | Status |\n\
-         | :--- | :--- |\n\
-         | 📌 **Status** | ❌ Cancelled |\n\
-         | 💰 **Reward** | **{reward} USDC** |\n\
-         | ↩️ **Funds** | Returned to the pool |\n\n\
-         > [!TIP]\n\
-         > Don't be discouraged! 🚀 Browse other open bounties and try another one. Every contribution helps the community grow.\n"
+        r#"### 🛑 Bounty cancelled
+
+This bounty is no longer active. The **{reward} USDC** reward was returned to the repository pool.
+
+No payout will be made for this bounty."#
     )
 }
 
 pub fn bounty_rejected(reward: Decimal, contract_id: &str) -> String {
     format!(
-        "### 🛑 Bounty Rejected\n\n\
-         > [!CAUTION]\n\
-         > The maintainer rejected the work.\n\n\
-         | Detail | Status |\n\
-         | :--- | :--- |\n\
-         | 💰 **Reward** | **{reward} USDC** |\n\
-         | ↩️ **Funds** | Returned to the maintainer's wallet |\n\
-         | 🔗 **Escrow** | [View on-chain →](https://viewer.trustlesswork.com/{contract_id}) |\n"
+        r#"### 🛑 Work rejected
+
+A maintainer rejected the work. The **{reward} USDC** escrowed reward was returned to the maintainer's wallet.
+
+[View escrow →](https://viewer.trustlesswork.com/{contract_id})"#
     )
+}
+
+pub fn bounty_locked(reward: Decimal, username: &str, contract_id: &str) -> String {
+    format!(
+        r#"### 🔒 Reward locked
+
+**{reward} USDC** is locked in escrow for @{username}.
+
+[View escrow →](https://viewer.trustlesswork.com/{contract_id})
+
+> [!TIP]
+> Merge a linked PR by the assigned contributor when the work is complete. The payout will continue automatically."#
+    )
+}
+
+pub fn payout_released(reward: Decimal, username: &str, explorer_url: &str) -> String {
+    format!(
+        r#"### ✅ Payout released
+
+**{reward} USDC** has been released to @{username}.
+
+[View transaction →]({explorer_url})
+
+Thanks for contributing!"#
+    )
+}
+
+pub fn split_payout_released(
+    contributor_amount: Decimal,
+    maintainer_amount: Decimal,
+    username: &str,
+    contract_id: &str,
+) -> String {
+    format!(
+        r#"### ✅ Split payout released
+
+The bounty payout has been distributed.
+
+| Recipient | Amount |
+| :--- | ---: |
+| @{username} | **{contributor_amount} USDC** |
+| Repository maintainer | **{maintainer_amount} USDC** |
+
+[View escrow →](https://viewer.trustlesswork.com/{contract_id})
+
+Thanks for contributing!"#
+    )
+}
+
+pub fn split_payout_waiting_for_wallet(app_url: &str) -> String {
+    format!(
+        r#"### ⏳ Split payout waiting
+
+The partial payout is ready, but a repository maintainer must connect a Stellar wallet first.
+
+> [!IMPORTANT]
+> [Open your profile →]({app_url}/profile)"#
+    )
+}
+
+pub fn payout_waiting_for_wallet(reward: Decimal, username: &str, connect_url: &str) -> String {
+    format!(
+        r#"### ⏳ Wallet required
+
+@{username}, connect your Stellar wallet to continue with this **{reward} USDC** bounty.
+
+> [!IMPORTANT]
+> [Connect your wallet]({connect_url}) to resume automatically.\
+> Payment follows once an eligible linked PR is merged."#
+    )
+}
+
+pub fn bounty_cancelled_after_refund(contract_id: &str) -> String {
+    format!(
+        r#"### 🛑 Bounty cancelled
+
+A repository maintainer withdrew the escrowed funds. This bounty is closed and further work on this issue is not eligible for a payout.
+
+[View escrow →](https://viewer.trustlesswork.com/{contract_id})"#
+    )
+}
+
+/// Address the person responsible for an action without accepting arbitrary mentions.
+pub fn addressed_to(login: Option<&str>, body: &str) -> String {
+    match login.filter(|login| {
+        !login.is_empty() && login.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+    }) {
+        Some(login) => match body.split_once("\n\n") {
+            Some((heading, content)) if heading.starts_with('#') => {
+                format!("{heading}\n\n@{login}\n\n{content}")
+            }
+            _ => format!("@{login}\n\n{body}"),
+        },
+        None => body.to_string(),
+    }
 }

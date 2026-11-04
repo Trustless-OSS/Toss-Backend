@@ -1,5 +1,5 @@
 use serde_json::Value;
-use tracing::{error, info};
+use tracing::info;
 
 use crate::{
     error::AppError,
@@ -53,6 +53,18 @@ pub async fn handle_issue_unassigned(state: &AppState, payload: &Value) -> Resul
         return Ok(());
     }
 
+    if let Some(removed_id) = payload["assignee"]["id"].as_i64() {
+        let assignment =
+            crate::modules::bounty::repository::get_assignment_for_issue(state, issue_record.id)
+                .await?;
+        if assignment
+            .and_then(|(_, profile)| profile)
+            .is_some_and(|profile| profile.github_id != removed_id)
+        {
+            return Ok(());
+        }
+    }
+
     // Capture assignee before deletion for notification
     let assignee_id = issue_record.assignee_id;
 
@@ -65,15 +77,11 @@ pub async fn handle_issue_unassigned(state: &AppState, payload: &Value) -> Resul
         set_bounty_reward_amount(state, issue_record.id, reward).await?;
     }
 
-    delete_assignments_for_issue(state, issue_record.id).await?;
-
-    if issue_record.status == "assigned" {
-        if let Some(milestone_index) = issue_record.milestone_index {
-            if let Err(err) = zero_milestone_on_chain(state, &repo, milestone_index).await {
-                error!(%err, "failed to zero out milestone on unassign");
-            }
-        }
+    // Keep the assignment retryable if the chain refuses to close the milestone.
+    if let Some(milestone_index) = issue_record.milestone_index {
+        zero_milestone_on_chain(state, &repo, milestone_index).await?;
     }
+    delete_assignments_for_issue(state, issue_record.id).await?;
 
     reset_issue_to_pending(state, issue_record.id).await?;
 

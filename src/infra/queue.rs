@@ -389,8 +389,14 @@ impl QueueInfra {
                 return Ok(EnqueueOutcome::Promoted);
             }
             bullmq::JobState::Active => {
-                // in-flight job will re-evaluate
-                self.mark_dirty(issue_id).await?;
+                // Only a new advance request represents an event that the
+                // in-flight evaluation needs to revisit. An advance worker's
+                // duplicate push/release handoff is already being processed;
+                // marking it dirty would make that worker reschedule itself
+                // indefinitely while the financial job remains active.
+                if job_name == JOB_ADVANCE_ISSUE {
+                    self.mark_dirty(issue_id).await?;
+                }
                 return Ok(EnqueueOutcome::Coalesced);
             }
             _ => return Ok(EnqueueOutcome::AlreadyPending),

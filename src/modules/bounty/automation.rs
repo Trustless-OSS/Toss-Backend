@@ -11,7 +11,8 @@ use crate::{
         },
         escrow::trustless_work::escrow_service::TrustlessWorkAPI,
         github::{
-            auth::{fetch_github_issue, post_comment, GitHubPullRequest},
+            auth::{fetch_github_pull_request, post_comment, GitHubPullRequest},
+            comments,
             handlers::helpers::{
                 dispute_milestone, explorer_tx_url, extract_issue_number, resolve_milestone_dispute,
             },
@@ -221,7 +222,7 @@ pub async fn evaluate(state: &AppState, ctx: &IssueContext) -> Result<Decision, 
     }
 
     let Some(contract_id) = repo.escrow_contract_id.as_deref() else {
-        return Ok(Decision::Blocked {
+        return Ok(Decision::Waiting {
             reason: "repository has no escrow deployed".to_string(),
         });
     };
@@ -320,7 +321,7 @@ pub async fn evaluate(state: &AppState, ctx: &IssueContext) -> Result<Decision, 
             info!(
                 issue = issue.github_issue_number,
                 milestone = chain.index,
-                "PR merged and issue closed; authorizing release"
+                "linked PR merge and author verified; authorizing release"
             );
         }
         MergeConfirmation::NotMerged { reason } => {
@@ -329,6 +330,16 @@ pub async fn evaluate(state: &AppState, ctx: &IssueContext) -> Result<Decision, 
         MergeConfirmation::Blocked { reason } => {
             return Ok(Decision::Blocked { reason });
         }
+    }
+
+    if payout_amount < escrow_amount
+        && get_maintainer_payout_wallet(state, repo.id, assignee.id)
+            .await?
+            .is_none()
+    {
+        return Ok(Decision::Waiting {
+            reason: "a maintainer must connect a Stellar wallet for the split payout".to_string(),
+        });
     }
 
     Ok(Decision::ReleasePayout {
@@ -348,36 +359,29 @@ async fn confirm_live_merge(
     state: &AppState,
     repo: &Repo,
     issue: &Bounty,
-    _assignee: &Profile,
+    assignee: &Profile,
 ) -> Result<MergeConfirmation, AppError> {
-    if issue.merged_at.is_none() {
-        return Ok(MergeConfirmation::NotMerged {
-            reason: "no merged PR recorded yet".to_string(),
-        });
-    }
-
-    let github_issue = fetch_github_issue(
+    // Discover linked PRs live as well: a bounty can be added after the merge,
+    // or the original merge webhook may have arrived before the assignment.
+    let prs = crate::modules::github::auth::linked_pull_requests(
         state,
         repo.github_repo_id,
         &repo.full_name,
         issue.github_issue_number,
     )
     .await?;
-
-    if !issue_is_closed(&github_issue.state) {
-        return Ok(MergeConfirmation::NotMerged {
-            reason: format!(
-                "issue #{} is not closed on GitHub",
-                issue.github_issue_number
-            ),
-        });
+    for number in prs {
+        let pr =
+            fetch_github_pull_request(state, repo.github_repo_id, &repo.full_name, number).await?;
+        if confirm_payout_pull_request(&pr, issue.github_issue_number, Some(assignee.github_id))
+            == MergeConfirmation::Merged
+        {
+            return Ok(MergeConfirmation::Merged);
+        }
     }
-
-    Ok(MergeConfirmation::Merged)
-}
-
-fn issue_is_closed(state: &str) -> bool {
-    state.eq_ignore_ascii_case("closed")
+    Ok(MergeConfirmation::NotMerged {
+        reason: "no merged PR by the assigned contributor links to this issue".to_string(),
+    })
 }
 
 fn confirm_payout_pull_request(
@@ -385,6 +389,11 @@ fn confirm_payout_pull_request(
     issue_number: i32,
     assigned_github_id: Option<i64>,
 ) -> MergeConfirmation {
+    if crate::modules::github::handlers::helpers::has_rejected_label(&pr.labels) {
+        return MergeConfirmation::Blocked {
+            reason: "the linked PR has been rejected".to_string(),
+        };
+    }
     if !pr.merged {
         return MergeConfirmation::NotMerged {
             reason: format!("PR #{} is not merged on GitHub", pr.number),
@@ -474,12 +483,10 @@ pub async fn push_milestone(
         state,
         &ctx.repo.full_name,
         ctx.issue.github_issue_number,
-        &format!(
-            "### 🔒 Bounty Locked\n\n\
-             **{} USDC** is locked in escrow for @{username}.\n\n\
-             [View On-Chain →](https://viewer.trustlesswork.com/{contract_id})\n\n\
-             Merge the linked PR and the payout releases automatically.",
-            ctx.issue.reward_amount.unwrap_or(Decimal::ZERO)
+        &comments::bounty_locked(
+            ctx.issue.reward_amount.unwrap_or(Decimal::ZERO),
+            username,
+            contract_id,
         ),
     )
     .await
@@ -561,14 +568,7 @@ async fn release_full(state: &AppState, ctx: &IssueContext) -> Result<(), AppErr
         state,
         &ctx.repo.full_name,
         ctx.issue.github_issue_number,
-        &format!(
-            "### 🎉 Bounty Released!\n\n\
-             **{reward} USDC** has been sent to @{username}.\n\n\
-             | Recipient | Amount | Status |\n\
-             | :--- | :--- | :--- |\n\
-             | @{username} | {reward} USDC | [View Transaction]({explorer_url}) |\n\n\
-             Thanks for your contribution! 🚀"
-        ),
+        &comments::payout_released(reward, username, &explorer_url),
     )
     .await
     {
@@ -615,13 +615,12 @@ async fn release_split(
             state,
             &ctx.repo.full_name,
             ctx.issue.github_issue_number,
-            &format!(
-                "⚠️ Partial payment is waiting for the maintainer to connect a Stellar wallet. [Complete your profile →]({}/profile)",
-                state.config.app_url
-            ),
+            &comments::split_payout_waiting_for_wallet(&state.config.app_url),
         )
         .await?;
-        return Ok(());
+        return Err(AppError::internal(
+            "split payout is waiting for a maintainer wallet",
+        ));
     };
 
     let split = crate::modules::bounty::payout::PayoutSplit::from_contributor_amount(
@@ -698,12 +697,11 @@ async fn release_split(
         state,
         &ctx.repo.full_name,
         ctx.issue.github_issue_number,
-        &format!(
-            "### 🎉 Bounty Released!\n\n\
-             **{contributor_amount} USDC** has been sent to @{}.\n\n\
-             [View Escrow](https://viewer.trustlesswork.com/{contract_id})\n\n\
-             Thanks for your contribution! 🚀",
-            assignee.username
+        &comments::split_payout_released(
+            contributor_amount,
+            maintainer_amount,
+            &assignee.username,
+            contract_id,
         ),
     )
     .await
@@ -752,13 +750,10 @@ pub async fn notify_waiting_for_wallet(
         state,
         &ctx.repo.full_name,
         ctx.issue.github_issue_number,
-        &format!(
-            "### 🔑 Complete Your Profile\n\n\
-             The **{} USDC** payout for @{github_username} is ready and waiting on a wallet.\n\n\
-             Sign in and connect your Stellar wallet on your profile to receive it:\n\n\
-             [**Complete Your Profile →**]({connect_url})\n\n\
-             The payout releases automatically once your wallet is connected — no further action needed.",
-            ctx.issue.reward_amount.unwrap_or(Decimal::ZERO)
+        &comments::payout_waiting_for_wallet(
+            ctx.issue.reward_amount.unwrap_or(Decimal::ZERO),
+            github_username,
+            &connect_url,
         ),
     )
     .await
@@ -798,6 +793,7 @@ mod tests {
             merged,
             body: Some(body.to_string()),
             user: crate::modules::github::auth::GitHubPullUser { id: user_id },
+            labels: Vec::new(),
         }
     }
 
@@ -834,9 +830,12 @@ mod tests {
     }
 
     #[test]
-    fn an_open_issue_does_not_count_as_closed() {
-        assert!(!issue_is_closed("open"));
-        assert!(issue_is_closed("closed"));
-        assert!(issue_is_closed("Closed"));
+    fn rejected_merged_pr_does_not_authorize_payment() {
+        let mut pr = pull(true, "Closes #7", 42);
+        pr.labels.push(serde_json::json!({"name": "rejected"}));
+        assert!(matches!(
+            confirm_payout_pull_request(&pr, 7, Some(42)),
+            MergeConfirmation::Blocked { .. }
+        ));
     }
 }

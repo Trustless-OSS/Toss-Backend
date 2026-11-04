@@ -1,10 +1,9 @@
-use std::time::{Duration, Instant};
+use sha2::{Digest, Sha256};
 
 use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
-use tokio::sync::Mutex;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
 use crate::{
     error::AppError,
@@ -16,7 +15,6 @@ use crate::{
     state::AppState,
 };
 
-static COMMENT_CACHE: Mutex<Option<(String, Instant)>> = Mutex::const_new(None);
 const GITHUB_ACCEPT: &str = "application/vnd.github+json";
 const GITHUB_API_VERSION: &str = "2022-11-28";
 const GITHUB_USER_AGENT: &str = "Trustless-OSS-Bot";
@@ -305,42 +303,36 @@ pub async fn post_comment(
     issue_number: i32,
     body: &str,
 ) -> Result<(), AppError> {
-    let cache_key = format!(
-        "{}#{}:{}",
+    let key = format!(
+        "gh-comment-delivery:{}:{}:{}",
         full_name,
         issue_number,
-        &body[..body.len().min(50)]
+        hex::encode(Sha256::digest(body.as_bytes()))
     );
-    {
-        let guard = COMMENT_CACHE.lock().await;
-        if let Some((key, sent_at)) = guard.as_ref() {
-            if key == &cache_key && sent_at.elapsed() < Duration::from_secs(10) {
-                debug!(
-                    repo = full_name,
-                    issue = issue_number,
-                    "skipping duplicate comment"
-                );
-                return Ok(());
-            }
-        }
-    }
+    super::comment_delivery::once(state.redis.as_ref(), key, || {
+        post_comment_inner(state, full_name, issue_number, body)
+    })
+    .await
+}
 
+async fn post_comment_inner(
+    state: &AppState,
+    full_name: &str,
+    issue_number: i32,
+    body: &str,
+) -> Result<(), AppError> {
     let github_repo_id = get_github_repo_id_by_full_name(state, full_name).await?;
 
     let Some(github_repo_id) = github_repo_id else {
-        error!(
-            repo = full_name,
-            "cannot post comment — repository not found"
-        );
-        return Ok(());
+        return Err(AppError::github(
+            "Cannot post comment: repository not found",
+        ));
     };
 
     let Some(token) = get_installation_token(state, github_repo_id).await? else {
-        error!(
-            repo = full_name,
-            "cannot post comment — failed to get token"
-        );
-        return Ok(());
+        return Err(AppError::github(
+            "Cannot post comment: installation token unavailable",
+        ));
     };
 
     let url = format!("https://api.github.com/repos/{full_name}/issues/{issue_number}/comments");
@@ -373,9 +365,6 @@ pub async fn post_comment(
             "failed to post comment to {full_name}#{issue_number} with {status}: {message}"
         )));
     }
-
-    let mut guard = COMMENT_CACHE.lock().await;
-    *guard = Some((cache_key, Instant::now()));
 
     Ok(())
 }
@@ -501,6 +490,8 @@ pub struct GitHubPullRequest {
     pub merged: bool,
     pub body: Option<String>,
     pub user: GitHubPullUser,
+    #[serde(default)]
+    pub labels: Vec<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -664,4 +655,58 @@ pub async fn delete_github_label(
     }
 
     Ok(())
+}
+
+/// GitHub timeline references include PRs opened before a bounty existed.
+pub async fn linked_pull_requests(
+    state: &AppState,
+    repo_id: i64,
+    full_name: &str,
+    issue: i32,
+) -> Result<Vec<i32>, AppError> {
+    let key = format!("gh-linked-pr:{repo_id}:{issue}");
+    if let Some(numbers) = state.cache.get::<Vec<i32>>(&key).await {
+        return Ok(numbers);
+    }
+    let mut numbers = Vec::new();
+    for page in 1..=20 {
+        let url = format!("https://api.github.com/repos/{full_name}/issues/{issue}/timeline?per_page=100&page={page}");
+        let events: Vec<serde_json::Value> =
+            github_get_json(state, repo_id, &url, "issue timeline").await?;
+        for event in &events {
+            let source = &event["source"]["issue"];
+            let expected = format!("https://api.github.com/repos/{full_name}");
+            if source["pull_request"].is_object()
+                && source["repository_url"].as_str() == Some(expected.as_str())
+            {
+                if let Some(number) = source["number"].as_i64() {
+                    numbers.push(number as i32);
+                }
+            }
+        }
+        if events.len() < 100 {
+            break;
+        }
+    }
+    numbers.sort_unstable();
+    numbers.dedup();
+    if !numbers.is_empty() {
+        state.cache.set(&key, &numbers, Some(300)).await;
+    }
+    Ok(numbers)
+}
+
+pub async fn fetch_issue_payload(
+    state: &AppState,
+    repo_id: i64,
+    full_name: &str,
+    number: i32,
+) -> Result<serde_json::Value, AppError> {
+    github_get_json(
+        state,
+        repo_id,
+        &format!("https://api.github.com/repos/{full_name}/issues/{number}"),
+        "issue recovery",
+    )
+    .await
 }

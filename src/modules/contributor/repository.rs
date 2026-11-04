@@ -74,15 +74,25 @@ pub async fn upsert_contributor_wallet(
         .await
         .map_err(map_db_err)?;
 
+    let chain = chain.trim().to_ascii_lowercase();
+    let address = address.trim();
+    let mut tx = db.transaction().await.map_err(map_db_err)?;
+    toasty::update!(schema::Wallet::filter_by_profile_id(profile.id) { is_primary: false })
+        .exec(&mut tx)
+        .await
+        .map_err(map_db_err)?;
+
     schema::Wallet::upsert_by_profile_id_and_chain_and_address(
         profile.id,
         chain.to_string(),
         address.to_string(),
     )
     .is_primary(true)
-    .exec(&mut db)
+    .exec(&mut tx)
     .await
     .map_err(map_db_err)?;
+
+    tx.commit().await.map_err(map_db_err)?;
 
     invalidate_contributor_cache(state, github_id).await;
     Ok(())

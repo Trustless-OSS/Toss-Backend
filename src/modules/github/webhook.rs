@@ -43,6 +43,20 @@ struct GithubSender {
 }
 
 pub async fn process_webhook_job(state: &AppState, job: WebhookJobData) -> Result<(), AppError> {
+    if let Some(task_id) = job.payload["_recoveryTaskId"]
+        .as_str()
+        .and_then(|id| uuid::Uuid::parse_str(id).ok())
+    {
+        let mut db = crate::error::require_db(&state.db)?;
+        let task = crate::shared::models::schema::FailedTask::filter_by_id(task_id)
+            .first()
+            .exec(&mut db)
+            .await
+            .map_err(crate::error::map_db_err)?;
+        if task.is_none_or(|task| task.status != "pending") {
+            return Ok(());
+        }
+    }
     let action = job.action.as_deref().unwrap_or("invailid");
     info!(
         event = %job.event,

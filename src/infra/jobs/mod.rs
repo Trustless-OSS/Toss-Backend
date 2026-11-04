@@ -86,6 +86,16 @@ pub async fn process(
 
     match result {
         Ok(JobOutcome::Done(value)) => {
+            if name == JOB_GITHUB_WEBHOOK {
+                if let Err(error) =
+                    crate::infra::recovery::resolve_recovered_webhook(state, job.data()).await
+                {
+                    warn!(%error, "failed to resolve recovered webhook");
+                }
+            }
+            if let Err(error) = crate::infra::recovery::resolve(state, &name, &id).await {
+                warn!(%error, "failed to resolve durable task");
+            }
             info!(job = %name, job_id = %id, attempt, "job completed");
             Ok(value)
         }
@@ -94,6 +104,17 @@ pub async fn process(
             Err(bullmq::Error::Delayed)
         }
         Err(error) => {
+            if let Err(persist_error) = crate::infra::recovery::record_failure(
+                state,
+                &name,
+                &id,
+                job.data(),
+                &error.to_string(),
+            )
+            .await
+            {
+                error!(%persist_error, "failed to persist high-value task failure");
+            }
             let job_error = to_job_error(error);
             if matches!(job_error, bullmq::Error::Unrecoverable(_)) {
                 error!(job = %name, job_id = %id, error = %job_error, "job failed permanently");
@@ -106,6 +127,12 @@ pub async fn process(
 }
 
 fn to_job_error(error: AppError) -> bullmq::Error {
+    if error
+        .to_string()
+        .contains(crate::infra::recovery::FUNDING_WAIT)
+    {
+        return bullmq::Error::Unrecoverable(error.to_string());
+    }
     match error {
         AppError::BadRequest { .. }
         | AppError::Unauthorized { .. }
@@ -142,6 +169,14 @@ mod tests {
         ));
         assert!(matches!(
             to_job_error(AppError::webhook("payload missing repository")),
+            bullmq::Error::Unrecoverable(_)
+        ));
+    }
+
+    #[test]
+    fn funding_waits_use_durable_recovery_instead_of_hot_queue_retries() {
+        assert!(matches!(
+            to_job_error(crate::infra::recovery::waiting_for_funds()),
             bullmq::Error::Unrecoverable(_)
         ));
     }

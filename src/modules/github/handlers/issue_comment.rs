@@ -7,7 +7,7 @@ use crate::{
     infra::queue::BountyJobData,
     modules::{
         bounty::{
-            automation::{self, escrow_reward_amount},
+            automation::escrow_reward_amount,
             repository::{
                 create_issue_and_reserve_balance, get_assignment_for_issue,
                 get_issue_by_repo_and_github_id, get_issue_by_repo_and_number,
@@ -117,6 +117,56 @@ pub async fn handle_issue_comment_created(
         return Ok(());
     };
 
+    crate::infra::recovery::supersede_funding(state, payload).await?;
+
+    // A maintainer can reward completed work from the merged PR itself.
+    // Keep one bounty per linked issue, so the same PR cannot create a second payout.
+    if issue_payload.get("pull_request").is_some() {
+        let Some(target_number) =
+            extract_issue_number(issue_payload.get("body").and_then(Value::as_str))
+        else {
+            post_comment(
+                state,
+                full_name,
+                issue_number,
+                &comments::addressed_to(Some(commenter_login), comments::LINKED_ISSUE_REQUIRED),
+            )
+            .await?;
+            return Ok(());
+        };
+        let mut target = crate::modules::github::auth::fetch_issue_payload(
+            state,
+            repo_github_id,
+            full_name,
+            target_number,
+        )
+        .await?;
+        if target.get("pull_request").is_some() {
+            return Err(AppError::bad_request(
+                "A reward must link to an issue, not another PR",
+            ));
+        }
+        if target
+            .get("assignees")
+            .and_then(Value::as_array)
+            .is_none_or(|assignees| assignees.is_empty())
+        {
+            target["assignees"] = serde_json::json!([issue_payload["user"].clone()]);
+        }
+        return create_or_update_manual_bounty(
+            state,
+            repo_github_id,
+            full_name,
+            &target,
+            required_i64(&target, "id")?,
+            target_number,
+            target["title"].as_str().unwrap_or("Untitled"),
+            commenter_login,
+            manual_amount,
+        )
+        .await;
+    }
+
     create_or_update_manual_bounty(
         state,
         repo_github_id,
@@ -168,7 +218,7 @@ async fn handle_payout_command(
 
     let reward = escrow_reward_amount(state, &repo, &issue).await?;
 
-    if issue.status != "assigned" {
+    if !matches!(issue.status.as_str(), "assigned" | "merged") {
         if is_reject_command(body) && issue.status != "paid" && issue.status != "cancelled" {
             cancel_bounty_with_refund(state, &repo, issue.id, reward).await?;
             post_comment(
@@ -231,41 +281,13 @@ async fn handle_payout_command(
             }
         };
 
-        let maintainer_wallet =
-            automation::get_maintainer_payout_wallet(state, repo.id, contributor.id).await?;
-        if maintainer_wallet.is_none() {
-            let login = comment_user
-                .get("login")
-                .and_then(Value::as_str)
-                .unwrap_or("repository owner");
-            post_comment(
-                state,
-                full_name,
-                comment_issue_number,
-                &comments::maintainer_wallet_required(login, &state.config.app_url),
-            )
-            .await?;
-            return Ok(());
-        }
-
-        let contributor_wallets = get_wallets_for_profile(state, contributor.id).await?;
-        let contributor_stellar = contributor_wallets
-            .iter()
-            .find(|w| w.chain == "stellar")
-            .map(|w| w.address.clone());
-
-        if contributor_stellar.is_none() {
-            post_comment(
-                state,
-                full_name,
-                comment_issue_number,
-                &comments::contributor_wallet_missing(&contributor.username),
-            )
-            .await?;
-            return Ok(());
-        }
-
+        // Save the payout choice even while a wallet is missing. The worker
+        // rechecks both wallets and resumes when either party connects one.
         set_bounty_reward_amount(state, issue.id, split.contributor_amount).await?;
+        state
+            .queue
+            .enqueue_advance_issue(BountyJobData::new(issue.id, "payout-configured"))
+            .await?;
         post_comment(
             state,
             full_name,
@@ -410,13 +432,14 @@ async fn create_or_update_manual_bounty(
         return Ok(());
     };
     if repo.escrow_contract_id.is_none() {
-        return Ok(());
+        return Err(crate::infra::recovery::waiting_for_funds());
     }
 
     let existing = get_issue_by_repo_and_github_id(state, repo.id, github_issue_id).await?;
     if let Some(existing) = existing {
         let can_update = existing.status == "open"
-            || (existing.status == "assigned" && existing.milestone_index.is_none());
+            || (matches!(existing.status.as_str(), "assigned" | "merged")
+                && existing.milestone_index.is_none());
         if can_update {
             if !update_pending_issue_reward(state, &repo, existing.id, manual_amount, "manual")
                 .await?
@@ -428,8 +451,9 @@ async fn create_or_update_manual_bounty(
                     comments::BOUNTY_UPDATE_FAILED,
                 )
                 .await?;
-                return Ok(());
+                return Err(crate::infra::recovery::waiting_for_funds());
             }
+            adopt_existing_assignee(state, issue_payload, &existing).await?;
             post_comment(
                 state,
                 full_name,
@@ -437,7 +461,9 @@ async fn create_or_update_manual_bounty(
                 &comments::manual_bounty_updated(manual_amount),
             )
             .await?;
-            if existing.status == "assigned" && existing.milestone_index.is_none() {
+            if matches!(existing.status.as_str(), "assigned" | "merged")
+                && existing.milestone_index.is_none()
+            {
                 state
                     .queue
                     .enqueue_advance_issue(
@@ -454,14 +480,31 @@ async fn create_or_update_manual_bounty(
     }
     let balance = repo.escrow_balance.unwrap_or_default();
     if balance < manual_amount {
+        Service::notify_maintainers_quiet(state, repo.id, Notify {
+            recipient: repo.id,
+            kind: Kind::InsufficientFunds,
+            title: "Escrow funding required".to_string(),
+            body: format!("Issue #{issue_number} needs {manual_amount} USDC; {balance} USDC is available. The bounty will resume after funding."),
+            ref_id: None,
+            data: serde_json::json!({"repoId": repo.id, "issueNumber": issue_number}),
+            dedupe_key: format!("insufficient:{github_issue_id}:{manual_amount}"),
+            actor: None,
+        }).await;
         post_comment(
             state,
             full_name,
             issue_number,
-            &comments::manual_insufficient_balance(balance, manual_amount, &state.config.app_url),
+            &comments::addressed_to(
+                Some(commenter_login),
+                &comments::manual_insufficient_balance(
+                    balance,
+                    manual_amount,
+                    &state.config.app_url,
+                ),
+            ),
         )
         .await?;
-        return Ok(());
+        return Err(crate::infra::recovery::waiting_for_funds());
     }
 
     let created_issue = create_issue_and_reserve_balance(

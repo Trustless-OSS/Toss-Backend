@@ -5,14 +5,11 @@ use tracing::{info, warn};
 use crate::{
     error::AppError,
     modules::{
-        bounty::automation::escrow_reward_amount,
         bounty::labels::{get_reward_amount, parse_labels},
         bounty::repository::{
-            cancel_issue, create_bounty_and_reserve_balance, create_issue_and_reserve_balance,
-            delete_assignments_for_issue, get_issue_by_repo_and_github_id,
-            update_pending_issue_reward,
+            create_bounty_and_reserve_balance, create_issue_and_reserve_balance,
+            get_issue_by_repo_and_github_id, update_pending_issue_reward,
         },
-        escrow::repository::refund_repo_balance,
         github::{
             auth::post_comment,
             comments,
@@ -53,7 +50,7 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
         .get("label")
         .and_then(|label| label.get("name"))
         .and_then(|name| name.as_str())
-        .map(str::to_ascii_lowercase);
+        .map(|name| name.trim().to_ascii_lowercase());
 
     let Some(mut repo) = get_repo_by_github_id(state, repo_github_id).await? else {
         warn!(
@@ -63,14 +60,6 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
         );
         return Ok(());
     };
-
-    if repo.escrow_contract_id.is_none() {
-        warn!(
-            repo = full_name,
-            "bounty label ignored because repository escrow is not deployed"
-        );
-        return Ok(());
-    }
 
     // Build list of all valid trigger labels: configured rewards + reserved labels
     let reward_labels: Vec<String> = repo.rewards.iter().map(|r| r.label.clone()).collect();
@@ -86,7 +75,7 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
     let is_trigger = event_label.as_ref().is_some_and(|label| {
         all_trigger_labels
             .iter()
-            .any(|trigger| trigger.eq_ignore_ascii_case(label))
+            .any(|trigger| trigger.trim().eq_ignore_ascii_case(label))
     }) || is_opened;
 
     if !is_trigger {
@@ -97,6 +86,8 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
         );
         return Ok(());
     }
+
+    crate::infra::recovery::supersede_funding(state, payload).await?;
 
     let github_issue_id = issue.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
     let issue_number = issue.get("number").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
@@ -110,29 +101,10 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
     if event_label.as_deref() == Some("rejected") {
         if let Some(ref existing) = existing {
             if existing.status != "paid" && existing.status != "cancelled" {
-                let reward = escrow_reward_amount(state, &repo, existing).await?;
-
-                // Send BountyRejected notification to assignee
-                if let Some(assignee_id) = existing.assignee_id {
-                    let n = Notify {
-                        recipient: assignee_id,
-                        kind: Kind::BountyRejected,
-                        title: format!("Bounty Rejected: #{}", issue_number),
-                        body: format!("Your work on issue #{} has been rejected", issue_number),
-                        ref_id: Some(existing.id),
-                        data: serde_json::json!({
-                            "repoId": repo.id,
-                            "issueNumber": issue_number,
-                        }),
-                        dedupe_key: format!("rejected:{}", existing.id),
-                        actor: None,
-                    };
-                    Service::notify_contributor_quiet(state, n).await;
-                }
-
-                cancel_issue(state, existing.id).await?;
-                delete_assignments_for_issue(state, existing.id).await?;
-                refund_repo_balance(state, &repo, Some(reward)).await?;
+                let reward = crate::modules::bounty::service::reject_bounty_with_pool_refund(
+                    state, existing, &repo,
+                )
+                .await?;
                 post_comment(
                     state,
                     full_name,
@@ -145,7 +117,15 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
         return Ok(());
     }
 
-    let parsed = parse_labels(&labels_from_payload(issue), &reward_labels);
+    let mut labels = labels_from_payload(issue);
+    if let Some(event_label) = &event_label {
+        labels.sort_by_key(|label| {
+            !label["name"]
+                .as_str()
+                .is_some_and(|name| name.trim().eq_ignore_ascii_case(event_label))
+        });
+    }
+    let parsed = parse_labels(&labels, &reward_labels);
     if !parsed.is_rewarded {
         info!(
             repo = full_name,
@@ -155,19 +135,35 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
         return Ok(());
     }
 
+    if repo.escrow_contract_id.is_none() {
+        post_comment(
+            state,
+            full_name,
+            issue_number,
+            &comments::addressed_to(
+                payload["sender"]["login"].as_str(),
+                comments::ESCROW_SETUP_REQUIRED,
+            ),
+        )
+        .await?;
+        return Err(crate::infra::recovery::waiting_for_funds());
+    }
+
     if let Some(ref existing) = existing {
         // Once a milestone is locked, changing the reward would leave the database
         // and escrow out of sync. Before that point, a maintainer may still choose
         // or change the amount, including after assigning a contributor.
         if existing.status != "open"
-            && !(existing.status == "assigned" && existing.milestone_index.is_none())
+            && !(matches!(existing.status.as_str(), "assigned" | "merged")
+                && existing.milestone_index.is_none())
         {
             return Ok(());
         }
     }
 
     let Some(matched_level) = &parsed.matched_level else {
-        if existing.is_some() {
+        if let Some(existing) = &existing {
+            adopt_existing_assignee(state, issue, existing).await?;
             return Ok(());
         }
 
@@ -185,6 +181,7 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
             return Ok(());
         };
 
+        adopt_existing_assignee(state, issue, &created).await?;
         post_comment(
             state,
             full_name,
@@ -209,7 +206,7 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
         if existing.is_none() {
             // Create the bounty in an unpriced state; the amount can be supplied
             // later from an issue comment without requiring a new label event.
-            create_bounty_and_reserve_balance(
+            let created = create_bounty_and_reserve_balance(
                 state,
                 &repo,
                 github_issue_id,
@@ -219,6 +216,9 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
                 None,
             )
             .await?;
+            if let Some(created) = created {
+                adopt_existing_assignee(state, issue, &created).await?;
+            }
         }
         post_comment(
             state,
@@ -260,8 +260,9 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
                 comments::BOUNTY_UPDATE_FAILED,
             )
             .await?;
-            return Ok(());
+            return Err(crate::infra::recovery::waiting_for_funds());
         }
+        adopt_existing_assignee(state, issue, existing).await?;
         info!(repo = full_name, issue = issue_number, %reward_amount, "bounty amount updated");
 
         // Send AmountUpdated notification to assignee
@@ -286,7 +287,9 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
             Service::notify_contributor_quiet(state, n).await;
         }
 
-        if existing.status == "assigned" && existing.milestone_index.is_none() {
+        if matches!(existing.status.as_str(), "assigned" | "merged")
+            && existing.milestone_index.is_none()
+        {
             state
                 .queue
                 .enqueue_advance_issue(
@@ -333,10 +336,17 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
             state,
             full_name,
             issue_number,
-            &comments::labeled_insufficient_balance(balance, reward_amount, &state.config.app_url),
+            &comments::addressed_to(
+                payload["sender"]["login"].as_str(),
+                &comments::labeled_insufficient_balance(
+                    balance,
+                    reward_amount,
+                    &state.config.app_url,
+                ),
+            ),
         )
         .await?;
-        return Ok(());
+        return Err(crate::infra::recovery::waiting_for_funds());
     }
 
     let Some(created) = create_issue_and_reserve_balance(
@@ -358,7 +368,10 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
         state,
         full_name,
         issue_number,
-        &comments::labeled_bounty_created(reward_amount, matched_level, contract_id),
+        &comments::addressed_to(
+            payload["sender"]["login"].as_str(),
+            &comments::labeled_bounty_created(reward_amount, matched_level, contract_id),
+        ),
     )
     .await?;
 

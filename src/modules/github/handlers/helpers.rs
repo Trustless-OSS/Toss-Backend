@@ -151,7 +151,9 @@ pub async fn adopt_existing_assignee(
     }
 
     let profile = ensure_contributor(state, assignee_github_id, assignee_login).await?;
-    upsert_assignment(state, bounty.id, profile.id).await?;
+    if bounty.assignee_id.is_none() {
+        upsert_assignment(state, bounty.id, profile.id).await?;
+    }
 
     let outcome = state
         .queue
