@@ -197,7 +197,7 @@ pub fn contributor_unassigned(reward: Decimal) -> String {
     format!(
         r#"### ↩️ Bounty open again
 
-The previous assignment's milestone was closed. The **{reward} USDC** bounty remains open.
+The previous incomplete milestone was disputed and rejected. Its **{reward} USDC** allocation remains in the repository escrow pool for a new assignment.
 
 > [!TIP]
 > Assign another contributor to continue."#

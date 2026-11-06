@@ -270,11 +270,35 @@ async fn advance_inline(state: &AppState, bounty_id: Uuid) -> Result<(), AppErro
     };
 
     match automation::evaluate(state, &ctx).await? {
-        Decision::PushMilestone {
-            payout_address,
-            payout_chain,
-        } => {
-            automation::push_milestone(state, &ctx, &payout_address, &payout_chain).await?;
+        Decision::PushMilestone { .. } => {
+            let Some(fresh_ctx) = automation::load_context(state, bounty_id).await? else {
+                return Ok(());
+            };
+            let Some(assignee) = fresh_ctx.assignee.as_ref() else {
+                return Ok(());
+            };
+            let live_issue = crate::modules::github::auth::fetch_github_issue(
+                state,
+                fresh_ctx.repo.github_repo_id,
+                &fresh_ctx.repo.full_name,
+                fresh_ctx.issue.github_issue_number,
+            )
+            .await?;
+            if !live_issue
+                .assignees
+                .iter()
+                .any(|current| current.id == assignee.github_id)
+            {
+                return Ok(());
+            }
+            if let Decision::PushMilestone {
+                payout_address,
+                payout_chain,
+            } = automation::evaluate(state, &fresh_ctx).await?
+            {
+                automation::push_milestone(state, &fresh_ctx, &payout_address, &payout_chain)
+                    .await?;
+            }
         }
         Decision::ReleasePayout {
             milestone_index,

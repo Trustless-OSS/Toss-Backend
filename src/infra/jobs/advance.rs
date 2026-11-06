@@ -304,6 +304,31 @@ pub(crate) async fn run_push_milestone(
         return Ok(serde_json::json!({ "skipped": "issue-not-found" }));
     };
 
+    let Some(assignee) = ctx.assignee.as_ref() else {
+        return Ok(serde_json::json!({ "skipped": "issue-has-no-assignee" }));
+    };
+
+    let github_issue = crate::modules::github::auth::fetch_github_issue(
+        state,
+        ctx.repo.github_repo_id,
+        &ctx.repo.full_name,
+        ctx.issue.github_issue_number,
+    )
+    .await?;
+    if !github_issue
+        .assignees
+        .iter()
+        .any(|current| current.id == assignee.github_id)
+    {
+        info!(
+            issue_id = %data.issue_id,
+            issue = ctx.issue.github_issue_number,
+            assignee = assignee.github_id,
+            "GitHub assignee changed before escrow push; skipping"
+        );
+        return Ok(serde_json::json!({ "skipped": "github-assignee-changed" }));
+    }
+
     match automation::evaluate(state, &ctx).await? {
         Decision::PushMilestone {
             payout_address,

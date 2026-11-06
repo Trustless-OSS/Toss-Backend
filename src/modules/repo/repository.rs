@@ -116,7 +116,7 @@ pub async fn invalidate_repo_cache(state: &AppState, repo_id: Uuid, github_repo_
 pub async fn list_repos_for_user(
     state: &AppState,
     github_id: i64,
-    github_username: Option<&str>,
+    _github_username: Option<&str>,
     limit: i64,
     offset: i64,
 ) -> Result<(Vec<Repo>, i64), AppError> {
@@ -154,25 +154,8 @@ pub async fn list_repos_for_user(
             }
         }
         repos
-    } else if let Some(username) = github_username.filter(|v| !v.is_empty()) {
-        // Fallback: match by full_name prefix (owner/*)
-        let prefix = format!("{username}/");
-        let rows = schema::Repository::all()
-            .exec(&mut db)
-            .await
-            .map_err(map_db_err)?;
-        let mut repos = Vec::new();
-        for repo in rows
-            .into_iter()
-            .filter(|repo| repo.full_name.starts_with(&prefix))
-        {
-            repos.push(repo_with_rewards(&mut db, repo).await?);
-        }
-        repos
     } else {
-        return Err(AppError::bad_request(
-            "Could not determine GitHub identity from session",
-        ));
+        Vec::new()
     };
 
     let total = all_repos.len() as i64;
@@ -217,7 +200,12 @@ pub async fn upsert_repo_with_maintainer(
     maintainer_github_id: i64,
     maintainer_username: &str,
 ) -> Result<Repo, AppError> {
-    let repo = upsert_repo(state, github_repo_id, full_name, github_install_id).await?;
+    // Reconnecting must not erase an existing App installation or reset reward tiers.
+    let repo = if let Some(repo) = get_repo_by_github_id(state, github_repo_id).await? {
+        repo
+    } else {
+        upsert_repo(state, github_repo_id, full_name, github_install_id).await?
+    };
 
     let mut db = require_db(&state.db)?;
     let profile = schema::Profile::upsert_by_github_id(maintainer_github_id)

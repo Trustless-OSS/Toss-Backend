@@ -365,6 +365,7 @@ pub async fn unassign_bounty(state: &AppState, bounty_id: Uuid) -> Result<(), Ap
     toasty::update!(schema::Bounty::filter_by_id(bounty_id) {
         assignee_id: Option::<Uuid>::None,
         assigned_at: Option::<jiff::Timestamp>::None,
+        milestone_index: Option::<i32>::None,
         status: "open".to_string(),
     })
     .exec(&mut db)

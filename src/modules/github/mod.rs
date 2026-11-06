@@ -6,4 +6,5 @@ pub mod repository;
 pub mod routes;
 pub mod webhook;
 
+pub mod authorization;
 mod comment_delivery;

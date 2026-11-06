@@ -9,8 +9,7 @@ use crate::shared::models::Repo;
 pub(crate) struct ConnectRepoInput {
     pub(crate) github_repo_id: i64,
     pub(crate) full_name: String,
-    pub(crate) owner_github_id: i64,
-    pub(crate) owner_username: String,
+    pub(crate) actor_github_id: i64,
     pub(crate) gh_token: String,
     pub(crate) webhook_url: String,
 }

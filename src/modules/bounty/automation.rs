@@ -247,6 +247,11 @@ pub async fn evaluate(state: &AppState, ctx: &IssueContext) -> Result<Decision, 
                 }
             });
         }
+        if chain.disputed || chain.resolved {
+            return Ok(Decision::Blocked {
+                reason: "on-chain milestone is disputed or resolved; it cannot be reassigned automatically".to_string(),
+            });
+        }
     }
 
     if issue.status == "paid" {

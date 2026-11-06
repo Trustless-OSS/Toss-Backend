@@ -9,7 +9,12 @@ use crate::{
             delete_assignments_for_issue, get_issue_by_repo_and_github_id, reset_issue_to_pending,
             set_bounty_reward_amount,
         },
-        github::{auth::post_comment, comments, handlers::helpers::zero_milestone_on_chain},
+        escrow::trustless_work::escrow_service::TrustlessWorkAPI,
+        github::{
+            auth::post_comment,
+            comments,
+            handlers::helpers::{hold_milestone_on_chain, reject_milestone_on_chain},
+        },
         notification::{
             kinds::{Kind, Notify},
             service::Service,
@@ -77,9 +82,38 @@ pub async fn handle_issue_unassigned(state: &AppState, payload: &Value) -> Resul
         set_bounty_reward_amount(state, issue_record.id, reward).await?;
     }
 
-    // Keep the assignment retryable if the chain refuses to close the milestone.
+    // Milestone amounts are promises against the shared escrow pool. Never
+    // zero or redirect one; dispute and reject the old claim instead.
     if let Some(milestone_index) = issue_record.milestone_index {
-        zero_milestone_on_chain(state, &repo, milestone_index).await?;
+        let contract_id = repo
+            .escrow_contract_id
+            .as_deref()
+            .ok_or_else(|| AppError::bad_request("No escrow deployed"))?;
+        let tw = TrustlessWorkAPI::new(state.clone());
+        let milestone = tw
+            .fetch_milestone_state(contract_id, milestone_index)
+            .await?
+            .ok_or_else(|| AppError::internal("Escrow milestone not found on-chain"))?;
+
+        if milestone.released {
+            return Err(AppError::bad_request(
+                "Cannot unassign a contributor after the escrow milestone was released",
+            ));
+        }
+        if milestone.resolved {
+            return Err(AppError::bad_request(
+                "Escrow milestone was already resolved; maintainer review is required",
+            ));
+        }
+
+        hold_milestone_on_chain(state, &repo, milestone_index).await?;
+
+        if milestone.approved || milestone.status.eq_ignore_ascii_case("completed") {
+            return Err(AppError::bad_request(
+                "Milestone work is completed or approved; it was disputed and needs maintainer resolution before reassignment",
+            ));
+        }
+        reject_milestone_on_chain(state, &repo, milestone_index).await?;
     }
     delete_assignments_for_issue(state, issue_record.id).await?;
 

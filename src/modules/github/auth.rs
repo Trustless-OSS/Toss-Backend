@@ -3,7 +3,7 @@ use sha2::{Digest, Sha256};
 use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 use crate::{
     error::AppError,
@@ -50,15 +50,6 @@ pub struct InstallationRepo {
     pub full_name: String,
     pub private: bool,
     pub fork: bool,
-    pub owner: InstallationRepoOwner,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct InstallationRepoOwner {
-    pub id: i64,
-    pub login: String,
-    #[serde(rename = "type")]
-    pub account_type: String,
 }
 
 fn normalize_private_key(private_key: &str) -> String {
@@ -208,7 +199,7 @@ async fn resolve_installation_id(state: &AppState, full_name: &str) -> Result<i6
         .map(|installation| installation.id)
 }
 
-async fn exchange_installation_token(
+pub(super) async fn exchange_installation_token(
     state: &AppState,
     installation_id: i64,
 ) -> Result<String, AppError> {
@@ -281,20 +272,32 @@ pub async fn list_installation_repos(
     installation_id: i64,
 ) -> Result<Vec<InstallationRepo>, AppError> {
     let token = exchange_installation_token(state, installation_id).await?;
-    let response = state
-        .http_client
-        .get("https://api.github.com/installation/repositories?per_page=100")
-        .header("Authorization", format!("Bearer {token}"))
-        .header("Accept", GITHUB_ACCEPT)
-        .header("X-GitHub-Api-Version", GITHUB_API_VERSION)
-        .header("User-Agent", GITHUB_USER_AGENT)
-        .send()
-        .await
-        .map_err(|error| AppError::github(error.to_string()))?;
-
-    github_json::<InstallationReposResponse>(response, "installation repository listing")
-        .await
-        .map(|payload| payload.repositories)
+    let client = super::authorization::client()?;
+    let mut repositories = Vec::new();
+    for page in 1..=100 {
+        let response = client
+            .get(format!(
+                "https://api.github.com/installation/repositories?per_page=100&page={page}"
+            ))
+            .bearer_auth(&token)
+            .header("Accept", GITHUB_ACCEPT)
+            .header("X-GitHub-Api-Version", GITHUB_API_VERSION)
+            .header("User-Agent", GITHUB_USER_AGENT)
+            .send()
+            .await
+            .map_err(|_| AppError::github("Installation repository listing failed"))?;
+        let batch =
+            github_json::<InstallationReposResponse>(response, "installation repository listing")
+                .await?;
+        let count = batch.repositories.len();
+        repositories.extend(batch.repositories);
+        if count < 100 {
+            return Ok(repositories);
+        }
+    }
+    Err(AppError::github(
+        "Installation repository listing exceeded 10,000 entries",
+    ))
 }
 
 pub async fn post_comment(
@@ -376,10 +379,10 @@ pub async fn install_repo_webhook(
     webhook_url: &str,
 ) -> Result<(), AppError> {
     let secret = state.config.github_webhook_secret.as_str();
+    let client = super::authorization::client()?;
 
     let hooks_url = format!("https://api.github.com/repos/{full_name}/hooks");
-    let existing = state
-        .http_client
+    let existing = client
         .get(&hooks_url)
         .header("Authorization", format!("Bearer {gh_token}"))
         .header("Accept", GITHUB_ACCEPT)
@@ -389,6 +392,11 @@ pub async fn install_repo_webhook(
         .await
         .map_err(|error| AppError::github(error.to_string()))?;
 
+    if !existing.status().is_success() {
+        return Err(AppError::github(
+            "Cannot verify existing repository webhooks",
+        ));
+    }
     let mut already_exists = false;
     if existing.status().is_success() {
         let hooks: Vec<serde_json::Value> = existing
@@ -407,8 +415,7 @@ pub async fn install_repo_webhook(
         return Ok(());
     }
 
-    let response = state
-        .http_client
+    let response = client
         .post(&hooks_url)
         .header("Authorization", format!("Bearer {gh_token}"))
         .header("Accept", GITHUB_ACCEPT)
@@ -431,7 +438,9 @@ pub async fn install_repo_webhook(
         .map_err(|error| AppError::github(error.to_string()))?;
 
     if !response.status().is_success() {
-        error!(repo = full_name, status = %response.status(), "failed to install webhook");
+        return Err(AppError::github(
+            "GitHub rejected repository webhook installation",
+        ));
     }
 
     Ok(())
@@ -502,6 +511,13 @@ pub struct GitHubPullUser {
 #[derive(Debug, Clone, Deserialize)]
 pub struct GitHubIssue {
     pub state: String,
+    #[serde(default)]
+    pub assignees: Vec<GitHubIssueAssignee>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct GitHubIssueAssignee {
+    pub id: i64,
 }
 
 pub async fn delete_github_installation(

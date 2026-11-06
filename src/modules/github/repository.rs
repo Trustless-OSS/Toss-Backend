@@ -1,4 +1,4 @@
-use rust_decimal::Decimal;
+use uuid::Uuid;
 
 use crate::{
     error::{map_db_err, require_db, AppError},
@@ -7,35 +7,44 @@ use crate::{
     state::AppState,
 };
 
-#[allow(clippy::too_many_arguments)]
 pub async fn upsert_installation_repo(
     state: &AppState,
     github_repo_id: i64,
     full_name: &str,
     maintainer_github_id: i64,
     maintainer_username: &str,
-    installer_github_id: i64,
     github_installation_id: i64,
 ) -> Result<(), AppError> {
     let mut db = require_db(&state.db)?;
-    let repo = schema::Repository::upsert_by_github_repo_id(github_repo_id)
-        .full_name(full_name.to_string())
-        .github_install_id(Some(github_installation_id))
+    let existing = schema::Repository::filter_by_github_repo_id(github_repo_id)
+        .first()
         .exec(&mut db)
         .await
         .map_err(map_db_err)?;
-
-    for (label, amount) in [
-        ("low", Decimal::from(1)),
-        ("medium", Decimal::from(2)),
-        ("high", Decimal::from(3)),
-    ] {
-        schema::Reward::upsert_by_repo_id_and_label(repo.id, label.to_string())
-            .amount(amount)
+    let repo = if let Some(existing) = existing {
+        // GitHub's numeric repository ID survives an App reinstall. Keep the same
+        // row so funded escrows, rewards, bounties and payout history survive too.
+        toasty::update!(schema::Repository::filter_by_id(existing.id) {
+            full_name: full_name.to_string(),
+            github_install_id: Some(github_installation_id),
+        })
+        .exec(&mut db)
+        .await
+        .map_err(map_db_err)?;
+        existing
+    } else {
+        schema::Repository::upsert_by_github_repo_id(github_repo_id)
+            .full_name(full_name.to_string())
+            .github_install_id(Some(github_installation_id))
             .exec(&mut db)
             .await
-            .map_err(map_db_err)?;
-    }
+            .map_err(map_db_err)?
+    };
+    // One idempotent insert fills missing defaults after a partial first sync
+    // without overwriting a customized reward on reconnect.
+    toasty::sql::statement("INSERT INTO reward_levels (id, repo_id, label, amount, created_at, updated_at) VALUES ($1, $4, 'low', 1, NOW(), NOW()), ($2, $4, 'medium', 2, NOW(), NOW()), ($3, $4, 'high', 3, NOW(), NOW()) ON CONFLICT (repo_id, label) DO NOTHING")
+        .bind(Uuid::new_v4()).bind(Uuid::new_v4()).bind(Uuid::new_v4()).bind(repo.id)
+        .exec(&mut db).await.map_err(map_db_err)?;
 
     let profile = schema::Profile::upsert_by_github_id(maintainer_github_id)
         .username(maintainer_username.to_string())
@@ -49,25 +58,11 @@ pub async fn upsert_installation_repo(
         .await
         .map_err(map_db_err)?;
 
-    if installer_github_id != maintainer_github_id {
-        let installer = schema::Profile::upsert_by_github_id(installer_github_id)
-            .username(format!("user_{installer_github_id}"))
-            .exec(&mut db)
-            .await
-            .map_err(map_db_err)?;
-
-        schema::RepoMaintainer::upsert_by_repo_id_and_profile_id(repo.id, installer.id)
-            .role("maintainer".to_string())
-            .exec(&mut db)
-            .await
-            .map_err(map_db_err)?;
-    }
-
     invalidate_repo_cache(state, repo.id, Some(repo.github_repo_id)).await;
     Ok(())
 }
 
-pub async fn delete_repos_by_installation_id(
+pub async fn detach_repos_by_installation_id(
     state: &AppState,
     installation_id: i64,
 ) -> Result<(), AppError> {
@@ -81,36 +76,44 @@ pub async fn delete_repos_by_installation_id(
     .await
     .map_err(map_db_err)?;
 
-    schema::Repository::filter(
-        schema::Repository::fields()
-            .github_install_id()
-            .eq(Some(installation_id)),
-    )
-    .delete()
-    .exec(&mut db)
-    .await
-    .map_err(map_db_err)?;
-
     for repo in repos {
-        invalidate_repo_cache(state, repo.id, Some(repo.github_repo_id)).await;
+        detach_repo_from_installation(state, repo.github_repo_id, installation_id).await?;
     }
     Ok(())
 }
 
-pub async fn delete_repo_by_github_id(
+pub async fn detach_repo_from_installation(
     state: &AppState,
     github_repo_id: i64,
+    installation_id: i64,
 ) -> Result<(), AppError> {
     let mut db = require_db(&state.db)?;
-    let repo = get_repo_by_github_id(state, github_repo_id).await?;
-    schema::Repository::filter_by_github_repo_id(github_repo_id)
-        .delete()
-        .exec(&mut db)
+    let mut tx = db.transaction().await.map_err(map_db_err)?;
+    let locked = toasty::sql::query("SELECT id FROM repositories WHERE github_repo_id = $1 AND github_install_id = $2 FOR UPDATE")
+        .bind(github_repo_id).bind(installation_id).exec(&mut tx).await.map_err(map_db_err)?;
+    if locked.is_empty() {
+        return Ok(());
+    }
+    let repo = schema::Repository::filter_by_github_repo_id(github_repo_id)
+        .first()
+        .exec(&mut tx)
+        .await
+        .map_err(map_db_err)?
+        .ok_or_else(|| AppError::internal("Repository vanished during installation detachment"))?;
+    toasty::update!(schema::Repository::filter_by_id(repo.id) {
+        github_install_id: Option::<i64>::None,
+    })
+    .exec(&mut tx)
+    .await
+    .map_err(map_db_err)?;
+    // Old local memberships cannot authorize financial actions after App removal.
+    toasty::sql::statement("DELETE FROM repo_maintainers WHERE repo_id = $1")
+        .bind(repo.id)
+        .exec(&mut tx)
         .await
         .map_err(map_db_err)?;
-    if let Some(repo) = repo {
-        invalidate_repo_cache(state, repo.id, Some(repo.github_repo_id)).await;
-    }
+    tx.commit().await.map_err(map_db_err)?;
+    invalidate_repo_cache(state, repo.id, Some(github_repo_id)).await;
     Ok(())
 }
 

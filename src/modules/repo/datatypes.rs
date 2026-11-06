@@ -9,8 +9,6 @@ use uuid::Uuid;
 pub(crate) struct ConnectRepo {
     pub gh_repo_id: i64,
     pub full_name: String,
-    pub owner_gh_id: i64,
-    pub owner_username: String,
     pub gh_token: String,
 }
 
