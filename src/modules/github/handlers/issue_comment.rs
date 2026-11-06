@@ -31,7 +31,7 @@ use crate::{
             kinds::{Kind, Notify},
             service::Service,
         },
-        repo::repository::get_repo_by_github_id,
+        repo::repository::{get_repo_by_github_id, is_maintainer},
     },
     state::AppState,
 };
@@ -66,7 +66,24 @@ pub async fn handle_issue_comment_created(
         .unwrap_or("");
     let privileged = is_privileged_association(association);
 
-    if privileged && (payout_request(body).is_some() || is_reject_command(body)) {
+    if privileged && payout_request(body).is_some() {
+        if !financial_command_authorized(state, repo_github_id, comment_user).await? {
+            return Ok(());
+        }
+        handle_payout_command(
+            state,
+            repo_github_id,
+            full_name,
+            issue_payload,
+            issue_number,
+            comment_user,
+            body,
+        )
+        .await?;
+        return Ok(());
+    }
+
+    if privileged && is_reject_command(body) {
         handle_payout_command(
             state,
             repo_github_id,
@@ -98,6 +115,9 @@ pub async fn handle_issue_comment_created(
     }
 
     if privileged && is_retry_command(body) {
+        if !financial_command_authorized(state, repo_github_id, comment_user).await? {
+            return Ok(());
+        }
         retry_bounty(
             state,
             repo_github_id,
@@ -116,6 +136,10 @@ pub async fn handle_issue_comment_created(
     let Some(manual_amount) = extract_manual_amount(Some(body)) else {
         return Ok(());
     };
+    if !financial_command_authorized(state, repo_github_id, comment_user).await? {
+        return Ok(());
+    }
+    crate::shared::money::validate_reward(manual_amount, false)?;
 
     crate::infra::recovery::supersede_funding(state, payload).await?;
 
@@ -179,6 +203,39 @@ pub async fn handle_issue_comment_created(
         manual_amount,
     )
     .await
+}
+
+async fn financial_command_authorized(
+    state: &AppState,
+    repo_github_id: i64,
+    commenter: &Value,
+) -> Result<bool, AppError> {
+    let Some(user_id) = commenter.get("id").and_then(Value::as_i64) else {
+        return Ok(false);
+    };
+    let Some(repo) = get_repo_by_github_id(state, repo_github_id).await? else {
+        return Ok(false);
+    };
+    if !is_maintainer(state, user_id, repo.id).await? {
+        return Ok(false);
+    }
+    command_authorization_result(
+        crate::modules::github::authorization::require_current_repo_maintainer(
+            state, &repo, user_id,
+        )
+        .await,
+    )
+}
+
+fn command_authorization_result(result: Result<(), AppError>) -> Result<bool, AppError> {
+    match result {
+        Ok(()) => Ok(true),
+        // The shared lookup also reports GitHub outages as Forbidden; never acknowledge a lost command.
+        Err(AppError::Forbidden { .. }) => Err(AppError::github(
+            "GitHub authorization could not be confirmed; command was not applied",
+        )),
+        Err(error) => Err(error),
+    }
 }
 
 async fn handle_payout_command(
@@ -581,4 +638,23 @@ fn required_str<'a>(value: &'a Value, key: &str) -> Result<&'a str, AppError> {
         .get(key)
         .and_then(Value::as_str)
         .ok_or_else(|| AppError::webhook(format!("issue_comment payload missing {key}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unconfirmed_command_access_is_retryable_and_never_authorized() {
+        assert!(matches!(command_authorization_result(Ok(())), Ok(true)));
+        for error in [
+            AppError::forbidden("permission denied or GitHub HTTP failure"),
+            AppError::github("GitHub connection failed"),
+        ] {
+            assert!(matches!(
+                command_authorization_result(Err(error)),
+                Err(AppError::GitHubError { .. })
+            ));
+        }
+    }
 }

@@ -10,11 +10,7 @@ use crate::{
             set_bounty_reward_amount,
         },
         escrow::trustless_work::escrow_service::TrustlessWorkAPI,
-        github::{
-            auth::post_comment,
-            comments,
-            handlers::helpers::{hold_milestone_on_chain, reject_milestone_on_chain},
-        },
+        github::handlers::helpers::{hold_milestone_on_chain, reject_milestone_on_chain},
         notification::{
             kinds::{Kind, Notify},
             service::Service,
@@ -34,11 +30,6 @@ pub async fn handle_issue_unassigned(state: &AppState, payload: &Value) -> Resul
         .ok_or_else(|| AppError::webhook("unassigned payload missing issue"))?;
 
     let repo_github_id = repository.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
-
-    let full_name = repository
-        .get("full_name")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
 
     let github_issue_id = issue.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
 
@@ -73,12 +64,8 @@ pub async fn handle_issue_unassigned(state: &AppState, payload: &Value) -> Resul
     // Capture assignee before deletion for notification
     let assignee_id = issue_record.assignee_id;
 
-    let reward = if issue_record.status == "assigned" && issue_record.milestone_index.is_some() {
-        escrow_reward_amount(state, &repo, &issue_record).await?
-    } else {
-        issue_record.reward_amount.unwrap_or_default()
-    };
     if issue_record.status == "assigned" && issue_record.milestone_index.is_some() {
+        let reward = escrow_reward_amount(state, &repo, &issue_record).await?;
         set_bounty_reward_amount(state, issue_record.id, reward).await?;
     }
 
@@ -145,14 +132,6 @@ pub async fn handle_issue_unassigned(state: &AppState, payload: &Value) -> Resul
         Service::notify_contributor_quiet(state, n).await;
     }
 
-    post_comment(
-        state,
-        full_name,
-        issue_number,
-        &comments::contributor_unassigned(reward),
-    )
-    .await?;
-
-    info!(issue = issue_number, "unassigned and closed milestone");
+    info!(issue = issue_number, "bounty assignment removed");
     Ok(())
 }

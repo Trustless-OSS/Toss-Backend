@@ -154,27 +154,23 @@ The bounty reward is now **{amount} USDC**. The reward will be locked in escrow 
 // Balance problems
 // ─────────────────────────────────────────────────────────────
 
-pub fn manual_insufficient_balance(balance: Decimal, reward: Decimal, app_url: &str) -> String {
-    insufficient_balance(balance, reward, app_url)
+pub fn manual_insufficient_balance(_balance: Decimal, _reward: Decimal, app_url: &str) -> String {
+    insufficient_balance(app_url)
 }
 
-pub fn labeled_insufficient_balance(balance: Decimal, reward: Decimal, app_url: &str) -> String {
-    insufficient_balance(balance, reward, app_url)
+pub fn labeled_insufficient_balance(_balance: Decimal, _reward: Decimal, app_url: &str) -> String {
+    insufficient_balance(app_url)
 }
 
-fn insufficient_balance(balance: Decimal, reward: Decimal, app_url: &str) -> String {
+fn insufficient_balance(app_url: &str) -> String {
     format!(
         r#"### ⚠️ Escrow needs funds
 
 This bounty cannot be created at the requested amount yet.
 
-| Available | Required |
-| ---: | ---: |
-| **{balance} USDC** | **{reward} USDC** |
-
 > [!TIP]
 > [Fund the escrow]({app_url}/dashboard) to resume automatically.\
-> Your request is saved; no retry command is needed."#
+> Your request is saved;"#
     )
 }
 
@@ -210,12 +206,9 @@ The previous incomplete milestone was disputed and rejected. Its **{reward} USDC
 
 pub fn payout_intent_saved(contributor_amount: Decimal, contributor_username: &str) -> String {
     format!(
-        r#"### 📋 Payout updated
+        r#"### Partial payment for your work
 
-@{contributor_username}, your payout is set to **{contributor_amount} USDC**.
-
-> [!TIP]
-> Merge the linked PR when the work is ready. If it is already merged, we will check payout eligibility now."#,
+@{contributor_username}, a maintainer wants to pay you **{contributor_amount} USDC** for the work completed on this issue. Payment can continue after an eligible linked pull request is merged."#
     )
 }
 
@@ -291,24 +284,15 @@ Thanks for contributing!"#
 }
 
 pub fn split_payout_released(
-    contributor_amount: Decimal,
-    maintainer_amount: Decimal,
+    _contributor_amount: Decimal,
+    _maintainer_amount: Decimal,
     username: &str,
-    contract_id: &str,
+    _contract_id: &str,
 ) -> String {
     format!(
-        r#"### ✅ Split payout released
+        r#"### Partial payment released
 
-The bounty payout has been distributed.
-
-| Recipient | Amount |
-| :--- | ---: |
-| @{username} | **{contributor_amount} USDC** |
-| Repository maintainer | **{maintainer_amount} USDC** |
-
-[View escrow →](https://viewer.trustlesswork.com/{contract_id})
-
-Thanks for contributing!"#
+@{username}, your partial payment for work on this issue has been released."#
     )
 }
 
@@ -357,5 +341,31 @@ pub fn addressed_to(login: Option<&str>, body: &str) -> String {
             _ => format!("@{login}\n\n{body}"),
         },
         None => body.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn public_payment_comments_omit_private_escrow_details() {
+        let comment = split_payout_released(
+            Decimal::new(125, 0),
+            Decimal::new(987, 0),
+            "contributor",
+            "C_PRIVATE_ESCROW",
+        );
+        assert!(comment.contains("@contributor"));
+        assert!(!comment.contains("987"));
+        assert!(!comment.contains("C_PRIVATE_ESCROW"));
+        assert!(!comment.to_lowercase().contains("maintainer"));
+        let balance = manual_insufficient_balance(
+            Decimal::new(987, 0),
+            Decimal::new(125, 0),
+            "https://app.example",
+        );
+        assert!(!balance.contains("987"));
+        assert!(!balance.contains("125"));
     }
 }

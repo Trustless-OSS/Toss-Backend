@@ -5,6 +5,7 @@ use uuid::Uuid;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskStatus {
     Pending,
+    WaitingFunding,
     Resolved,
     Dead,
 }
@@ -13,6 +14,7 @@ impl TaskStatus {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Pending => "pending",
+            Self::WaitingFunding => "waiting_funding",
             Self::Resolved => "resolved",
             Self::Dead => "dead",
         }

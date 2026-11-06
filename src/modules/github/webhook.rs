@@ -44,7 +44,8 @@ pub async fn process_webhook_job(state: &AppState, job: WebhookJobData) -> Resul
             .exec(&mut db)
             .await
             .map_err(crate::error::map_db_err)?;
-        if task.is_none_or(|task| task.status != "pending") {
+        if task.is_none_or(|task| !crate::infra::recovery::accepts_recovered_webhook(&task.status))
+        {
             return Ok(());
         }
     }

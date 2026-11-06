@@ -16,6 +16,10 @@ pub fn waiting_for_funds() -> AppError {
     AppError::internal(FUNDING_WAIT)
 }
 
+pub(crate) fn accepts_recovered_webhook(status: &str) -> bool {
+    matches!(status, "pending" | "waiting_funding")
+}
+
 fn task_id(name: &str, id: &str) -> Uuid {
     let hash = Sha256::digest(format!("{name}/{id}"));
     let mut bytes = [0; 16];
@@ -97,6 +101,17 @@ pub async fn recover(state: &AppState) -> Result<(), AppError> {
         .await
         .map_err(map_db_err)?;
     for task in tasks {
+        // Park funding waits written by older versions without replaying their comments.
+        if task.task_type == JOB_GITHUB_WEBHOOK
+            && task
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains(FUNDING_WAIT))
+        {
+            toasty::update!(schema::FailedTask::filter_by_id(task.id) { status: "waiting_funding".to_string() })
+                .exec(&mut db).await.map_err(map_db_err)?;
+            continue;
+        }
         if task
             .last_attempt_at
             .is_some_and(|at| jiff::Timestamp::now().as_second() - at.as_second() < 60)
@@ -273,7 +288,12 @@ pub async fn supersede_funding(
     }
     let mut db = require_db(&state.db)?;
     let tasks = schema::FailedTask::filter_by_task_type(JOB_GITHUB_WEBHOOK.to_string())
-        .filter(schema::FailedTask::fields().status().eq("pending"))
+        .filter(
+            schema::FailedTask::fields()
+                .status()
+                .eq("pending")
+                .or(schema::FailedTask::fields().status().eq("waiting_funding")),
+        )
         .exec(&mut db)
         .await
         .map_err(map_db_err)?;
@@ -308,7 +328,12 @@ pub async fn wake_repo(state: &AppState, repo_id: Uuid) -> Result<(), AppError> 
         }
     }
     let tasks = schema::FailedTask::filter_by_task_type(JOB_GITHUB_WEBHOOK.to_string())
-        .filter(schema::FailedTask::fields().status().eq("pending"))
+        .filter(
+            schema::FailedTask::fields()
+                .status()
+                .eq("pending")
+                .or(schema::FailedTask::fields().status().eq("waiting_funding")),
+        )
         .exec(&mut db)
         .await
         .map_err(map_db_err)?;
@@ -330,7 +355,9 @@ pub async fn wake_repo(state: &AppState, repo_id: Uuid) -> Result<(), AppError> 
 }
 
 fn failure_status(name: &str, funding: bool, attempts: i32) -> &'static str {
-    if !funding && (name == JOB_GITHUB_WEBHOOK || attempts >= 20) {
+    if funding && name == JOB_GITHUB_WEBHOOK {
+        "waiting_funding"
+    } else if !funding && (name == JOB_GITHUB_WEBHOOK || attempts >= 20) {
         "dead"
     } else {
         "pending"
@@ -342,10 +369,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn payment_retries_are_bounded_but_external_funding_waits_are_not() {
+    fn funding_wakeups_can_run_but_superseded_requests_cannot() {
+        assert!(accepts_recovered_webhook("waiting_funding"));
+        assert!(accepts_recovered_webhook("pending"));
+        assert!(!accepts_recovered_webhook("resolved"));
+        assert!(!accepts_recovered_webhook("dead"));
+    }
+
+    #[test]
+    fn funding_webhooks_are_parked_and_payment_retries_remain_bounded() {
         assert_eq!(failure_status(JOB_RELEASE_PAYOUT, false, 19), "pending");
         assert_eq!(failure_status(JOB_RELEASE_PAYOUT, false, 20), "dead");
-        assert_eq!(failure_status(JOB_GITHUB_WEBHOOK, true, 100), "pending");
+        for attempts in [1, 20, 100] {
+            assert_eq!(
+                failure_status(JOB_GITHUB_WEBHOOK, true, attempts),
+                "waiting_funding"
+            );
+        }
+        assert_eq!(failure_status(JOB_ADVANCE_ISSUE, true, 1), "pending");
     }
 
     #[test]

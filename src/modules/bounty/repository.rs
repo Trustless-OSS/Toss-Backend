@@ -220,6 +220,7 @@ pub async fn create_bounty_and_reserve_balance(
     reward_amount: Decimal,
     reward_level_id: Option<Uuid>,
 ) -> Result<Option<Bounty>, AppError> {
+    crate::shared::money::validate_reward(reward_amount, true)?;
     let mut db = require_db(&state.db)?;
     let mut tx = db.transaction().await.map_err(map_db_err)?;
 
@@ -232,7 +233,11 @@ pub async fn create_bounty_and_reserve_balance(
         return Err(crate::infra::recovery::waiting_for_funds());
     }
 
-    let new_balance = round_balance(current_balance - reward_amount);
+    let new_balance = round_balance(
+        current_balance
+            .checked_sub(reward_amount)
+            .ok_or_else(|| AppError::internal("Reward arithmetic overflow"))?,
+    );
     toasty::update!(schema_repo {
         escrow_balance: Some(new_balance),
     })
@@ -272,6 +277,7 @@ pub async fn update_pending_bounty_reward(
     reward_amount: Decimal,
     reward_level_id: Option<Uuid>,
 ) -> Result<bool, AppError> {
+    crate::shared::money::validate_reward(reward_amount, false)?;
     let mut db = require_db(&state.db)?;
     let mut tx = db.transaction().await.map_err(map_db_err)?;
 
@@ -293,7 +299,10 @@ pub async fn update_pending_bounty_reward(
     }
 
     let old_amount = bounty.reward_amount.unwrap_or(Decimal::ZERO);
-    let difference = reward_amount - old_amount;
+    crate::shared::money::validate_reward(old_amount, true)?;
+    let difference = reward_amount
+        .checked_sub(old_amount)
+        .ok_or_else(|| AppError::internal("Reward arithmetic overflow"))?;
     let mut schema_repo = schema::Repository::get_by_id(&mut tx, &repo.id)
         .await
         .map_err(map_db_err)?;
@@ -303,7 +312,11 @@ pub async fn update_pending_bounty_reward(
         return Ok(false);
     }
 
-    let new_balance = round_balance(current_balance - difference);
+    let new_balance = round_balance(
+        current_balance
+            .checked_sub(difference)
+            .ok_or_else(|| AppError::internal("Reward arithmetic overflow"))?,
+    );
     toasty::update!(schema_repo {
         escrow_balance: Some(new_balance),
     })

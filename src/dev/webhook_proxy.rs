@@ -9,6 +9,7 @@ use tracing::{info, warn};
 use crate::{error::AppError, state::AppState};
 
 const RECONNECT_DELAY: Duration = Duration::from_secs(5);
+const MAX_EVENT_BYTES: usize = 4 * 1024 * 1024;
 
 struct ForwardRequest {
     body: String,
@@ -56,6 +57,9 @@ async fn consume_events(state: &AppState, source: &str, target: &str) -> Result<
         .await
         .map_err(|error| AppError::internal(format!("Smee stream read failed: {error}")))?
     {
+        if chunk.len() > MAX_EVENT_BYTES.saturating_sub(buffer.len()) {
+            return Err(AppError::internal("Smee event exceeds size limit"));
+        }
         buffer.extend_from_slice(&chunk);
         while let Some((event_end, delimiter_len)) = event_boundary(&buffer) {
             let event = buffer.drain(..event_end).collect::<Vec<_>>();
@@ -127,14 +131,18 @@ fn build_forward_request(data: &str, webhook_secret: &str) -> Result<ForwardRequ
         .ok_or_else(|| AppError::bad_request("Smee event is missing body"))?;
     object.remove("query");
 
-    let body = serde_json::to_string(&body)
-        .map_err(|error| AppError::internal(format!("Failed to encode webhook body: {error}")))?;
+    let body = match body {
+        Value::String(raw) => raw,
+        body => serde_json::to_string(&body).map_err(|error| {
+            AppError::internal(format!("Failed to encode webhook body: {error}"))
+        })?,
+    };
     let mut headers = HeaderMap::new();
 
     for (name, value) in object.iter() {
         if matches!(
             name.to_ascii_lowercase().as_str(),
-            "host" | "content-length" | "connection" | "transfer-encoding" | "x-hub-signature-256"
+            "host" | "content-length" | "connection" | "transfer-encoding"
         ) {
             continue;
         }
@@ -154,12 +162,17 @@ fn build_forward_request(data: &str, webhook_secret: &str) -> Result<ForwardRequ
         header::CONTENT_TYPE,
         HeaderValue::from_static("application/json"),
     );
-    let signature = webhook_signature(webhook_secret, body.as_bytes())?;
-    headers.insert(
-        HeaderName::from_static("x-hub-signature-256"),
-        HeaderValue::from_str(&signature)
-            .map_err(|error| AppError::internal(format!("Invalid webhook signature: {error}")))?,
-    );
+    let signature = headers
+        .get("x-hub-signature-256")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("sha256="))
+        .and_then(|value| hex::decode(value).ok())
+        .ok_or_else(|| AppError::bad_request("Missing or invalid GitHub signature"))?;
+    let mut mac = Hmac::<Sha256>::new_from_slice(webhook_secret.as_bytes())
+        .map_err(|_| AppError::internal("Invalid webhook secret"))?;
+    mac.update(body.as_bytes());
+    mac.verify_slice(&signature)
+        .map_err(|_| AppError::bad_request("Invalid GitHub signature"))?;
 
     let event = headers
         .get("x-github-event")
@@ -185,6 +198,7 @@ fn build_forward_request(data: &str, webhook_secret: &str) -> Result<ForwardRequ
     })
 }
 
+#[cfg(test)]
 fn webhook_signature(secret: &str, body: &[u8]) -> Result<String, AppError> {
     let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes())
         .map_err(|_| AppError::internal("Invalid webhook secret"))?;
@@ -230,6 +244,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn preserves_signed_raw_body_and_rejects_reserialized_body() {
+        let body = "{ \"action\": \"opened\" }\n";
+        let signature = webhook_signature("secret", body.as_bytes()).unwrap();
+        let mut event = serde_json::json!({
+            "body": body,
+            "x-hub-signature-256": signature,
+            "x-github-event": "issues"
+        });
+        let request = build_forward_request(&event.to_string(), "secret").unwrap();
+        assert_eq!(request.body, body);
+        assert_eq!(request.headers["x-hub-signature-256"], signature);
+        event["body"] = serde_json::from_str(body).unwrap();
+        assert!(build_forward_request(&event.to_string(), "secret").is_err());
+    }
+
+    #[test]
     fn extracts_sse_data_with_both_line_endings() {
         assert_eq!(event_boundary(b"data: {}\r\n\r\nnext"), Some((8, 4)));
         assert_eq!(event_boundary(b"data: {}\n\nnext"), Some((8, 2)));
@@ -242,11 +272,12 @@ mod tests {
     }
 
     #[test]
-    fn builds_forward_request_with_github_headers_and_new_signature() {
+    fn forwards_only_events_with_valid_original_signature() {
+        let signature = webhook_signature("secret", b"{\"action\":\"opened\"}").unwrap();
         let data = serde_json::json!({
             "x-github-event": "issues",
             "x-github-delivery": "delivery-1",
-            "x-hub-signature-256": "sha256=original",
+            "x-hub-signature-256": signature,
             "host": "smee.io",
             "body": { "action": "opened" },
             "query": { "ignored": "true" }
@@ -265,5 +296,13 @@ mod tests {
             request.headers["x-hub-signature-256"],
             webhook_signature("secret", request.body.as_bytes()).unwrap()
         );
+        let mut tampered: Value = serde_json::from_str(&data).unwrap();
+        tampered["body"]["action"] = Value::String("deleted".into());
+        assert!(build_forward_request(&tampered.to_string(), "secret").is_err());
+        tampered
+            .as_object_mut()
+            .unwrap()
+            .remove("x-hub-signature-256");
+        assert!(build_forward_request(&tampered.to_string(), "secret").is_err());
     }
 }

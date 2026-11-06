@@ -252,9 +252,12 @@ pub(crate) async fn update_rewards(
         ));
     }
 
-    if input.amount == Decimal::ZERO {
-        return Err(AppError::bad_request("Reward amounts must be non-negative"));
-    }
+    let repo = get_repo_by_id(state, input.repo_id)
+        .await?
+        .ok_or_else(|| AppError::not_found("Repo not found"))?;
+    require_live_maintainer(state, &repo, input.maintainer_github_id).await?;
+
+    crate::shared::money::validate_reward(input.amount, false)?;
 
     if input.label.is_empty() {
         return Err(AppError::bad_request("Reward Label must be non-negative"));
@@ -285,6 +288,8 @@ pub(crate) async fn delete_repo(
     let repo = get_repo_by_id(state, input.repo_id)
         .await?
         .ok_or_else(|| AppError::not_found("Repo not found"))?;
+
+    require_live_maintainer(state, &repo, input.github_id).await?;
 
     let balance = repo.escrow_balance.unwrap_or(Decimal::ZERO);
     if balance > Decimal::ZERO {
@@ -365,6 +370,11 @@ pub(crate) async fn delete_reward(
         ));
     }
 
+    let repo = get_repo_by_id(state, repo_id)
+        .await?
+        .ok_or_else(|| AppError::not_found("Repo not found"))?;
+    require_live_maintainer(state, &repo, maintainer_github_id).await?;
+
     delete_repo_reward(state, repo_id, &label).await?;
     invalidate_repo_cache(state, repo_id, None).await;
 
@@ -383,4 +393,19 @@ pub(crate) async fn delete_reward(
     }
 
     Ok(OkResponse { ok: true })
+}
+
+async fn require_live_maintainer(
+    state: &AppState,
+    repo: &crate::shared::models::Repo,
+    user_id: i64,
+) -> Result<(), AppError> {
+    crate::modules::github::authorization::require_current_repo_maintainer(state, repo, user_id)
+        .await
+        .map_err(|error| match error {
+            AppError::Forbidden { .. } => {
+                AppError::forbidden("Current GitHub maintainer access is required")
+            }
+            other => other,
+        })
 }

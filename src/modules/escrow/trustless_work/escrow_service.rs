@@ -12,7 +12,8 @@ use crate::{
         escrow::{
             milestone::MilestoneStatus,
             repository::{
-                clear_repo_escrow, update_repo_escrow_balance, update_repo_escrow_contract,
+                clear_repo_escrow, finalize_refund, update_repo_escrow_balance,
+                update_repo_escrow_contract,
             },
             trustless_work::api_client::{decimal_json_number, tw_fetch},
         },
@@ -105,11 +106,23 @@ impl TrustlessWorkAPI {
         milestone_index: i32,
         status: MilestoneStatus,
     ) -> Result<(), AppError> {
+        let response = self
+            .milestone_status_transaction(repo, milestone_index, status)
+            .await?;
+        self.sign_platform_transaction_if_present(&response).await
+    }
+
+    async fn milestone_status_transaction(
+        &self,
+        repo: &Repo,
+        milestone_index: i32,
+        status: MilestoneStatus,
+    ) -> Result<Value, AppError> {
         let contract_id = repo
             .escrow_contract_id
             .as_deref()
             .ok_or_else(|| AppError::bad_request("No escrow deployed"))?;
-        let response = tw_fetch(
+        tw_fetch(
             &self.state,
             "/escrow/multi-release/change-milestone-status",
             Method::POST,
@@ -121,8 +134,7 @@ impl TrustlessWorkAPI {
                 "serviceProvider": self.state.config.platform_stellar_public_key,
             })),
         )
-        .await?;
-        self.sign_platform_transaction_if_present(&response).await
+        .await
     }
 
     pub async fn push_milestone(
@@ -523,6 +535,15 @@ impl TrustlessWorkAPI {
         repo: &Repo,
         maintainer_wallet: &str,
     ) -> Result<(Decimal, i64), AppError> {
+        let (amount, issues) = self.refund_with_issues(repo, maintainer_wallet).await?;
+        Ok((amount, issues.len() as i64))
+    }
+
+    pub(crate) async fn refund_with_issues(
+        &self,
+        repo: &Repo,
+        maintainer_wallet: &str,
+    ) -> Result<(Decimal, Vec<Bounty>), AppError> {
         let platform_key = self.state.config.platform_stellar_public_key.as_str();
         let contract_id = repo
             .escrow_contract_id
@@ -538,20 +559,38 @@ impl TrustlessWorkAPI {
             .config
             .dispute_resolver_stellar_secret_key
             .clone();
-        let escrow_data = self.fetch_escrow(contract_id).await?;
-        let milestones = escrow_data
-            .get("milestones")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        let is_dual_wallet = escrow_data
+        let (escrow_data, initial_balance) = tokio::try_join!(
+            self.fetch_escrow(contract_id),
+            self.current_balance(contract_id)
+        )?;
+        if escrow_data
+            .get("trustline")
+            .and_then(|trustline| trustline.get("address"))
+            .and_then(Value::as_str)
+            != Some(self.state.config.token_address.as_str())
+        {
+            return Err(AppError::bad_request(
+                "Escrow token does not match the configured asset",
+            ));
+        }
+        let milestones = refund_milestones(&escrow_data)?;
+        let resolver = escrow_data
             .get("roles")
             .and_then(|roles| roles.get("disputeResolver"))
             .and_then(Value::as_str)
-            == Some(resolver_public_key.as_str());
+            .ok_or_else(|| AppError::internal("Escrow dispute resolver is missing"))?;
+        let is_dual_wallet = if resolver == resolver_public_key {
+            true
+        } else if resolver == platform_key {
+            false
+        } else {
+            return Err(AppError::bad_request(
+                "Escrow dispute resolver does not match a configured signing wallet",
+            ));
+        };
 
         let mut total_refunded = Decimal::ZERO;
-        let mut remaining_balance = self.current_balance(contract_id).await?;
+        let mut remaining_balance = initial_balance;
 
         if is_dual_wallet {
             for (index, milestone) in milestones.iter().enumerate() {
@@ -581,19 +620,19 @@ impl TrustlessWorkAPI {
                     )));
                 }
 
-                let dispute = tw_fetch(
-                    &self.state,
-                    "/escrow/multi-release/dispute-milestone",
-                    Method::POST,
-                    Some(json!({
-                        "signer": platform_key,
-                        "contractId": contract_id,
-                        "milestoneIndex": index.to_string(),
-                    })),
-                )
-                .await;
-                if let Ok(response) = dispute {
-                    self.sign_platform_transaction_if_present(&response).await?;
+                if !milestone_flag(milestone, "disputed") {
+                    let dispute = tw_fetch(
+                        &self.state,
+                        "/escrow/multi-release/dispute-milestone",
+                        Method::POST,
+                        Some(json!({
+                            "signer": platform_key,
+                            "contractId": contract_id,
+                            "milestoneIndex": index.to_string(),
+                        })),
+                    )
+                    .await?;
+                    self.sign_refund_transaction(&dispute, None).await?;
                 }
 
                 let resolve = tw_fetch(
@@ -611,19 +650,16 @@ impl TrustlessWorkAPI {
                     })),
                 )
                 .await?;
-                if let Some(unsigned) = resolve.get("unsignedTransaction").and_then(Value::as_str) {
-                    sign_and_send_transaction(&self.state, unsigned, Some(&resolver_secret_key))
-                        .await?;
-                    self.set_milestone_status(repo, index as i32, MilestoneStatus::Refunded)
-                        .await?;
-                    remaining_balance = (remaining_balance
-                        - consumed_balance_amount(
-                            distribution_amount,
-                            self.state.config.is_mainnet(),
-                        ))
-                    .max(Decimal::ZERO);
-                    total_refunded += distribution_amount;
-                }
+                self.sign_refund_transaction(&resolve, Some(&resolver_secret_key))
+                    .await?;
+                let status = self
+                    .milestone_status_transaction(repo, index as i32, MilestoneStatus::Refunded)
+                    .await?;
+                self.sign_refund_transaction(&status, None).await?;
+                remaining_balance = (remaining_balance
+                    - consumed_balance_amount(distribution_amount, self.state.config.is_mainnet()))
+                .max(Decimal::ZERO);
+                total_refunded += distribution_amount;
             }
         } else {
             let new_milestones: Vec<Value> = milestones
@@ -663,14 +699,11 @@ impl TrustlessWorkAPI {
                 })),
             )
             .await?;
-            self.sign_platform_transaction_if_present(&update).await?;
+            self.sign_refund_transaction(&update, None).await?;
 
-            for (index, milestone) in new_milestones.iter().enumerate() {
-                let description = milestone
-                    .get("description")
-                    .and_then(Value::as_str)
-                    .unwrap_or("");
-                if !description.starts_with("Refund:") {
+            for (index, (original, milestone)) in milestones.iter().zip(&new_milestones).enumerate()
+            {
+                if milestone_is_terminal(original) {
                     continue;
                 }
                 let amount = milestone
@@ -697,11 +730,13 @@ impl TrustlessWorkAPI {
                     ),
                 ] {
                     let response = tw_fetch(&self.state, path, Method::POST, Some(body)).await?;
-                    self.sign_platform_transaction_if_present(&response).await?;
+                    self.sign_refund_transaction(&response, None).await?;
                 }
                 total_refunded += amount;
-                self.set_milestone_status(repo, index as i32, MilestoneStatus::Refunded)
+                let status = self
+                    .milestone_status_transaction(repo, index as i32, MilestoneStatus::Refunded)
                     .await?;
+                self.sign_refund_transaction(&status, None).await?;
             }
         }
 
@@ -731,41 +766,33 @@ impl TrustlessWorkAPI {
                 })),
             )
             .await?;
-            if let Some(unsigned) = withdrawal
-                .get("unsignedTransaction")
-                .and_then(Value::as_str)
-            {
-                sign_and_send_transaction(
-                    &self.state,
-                    unsigned,
-                    if is_dual_wallet {
-                        Some(&resolver_secret_key)
-                    } else {
-                        None
-                    },
-                )
-                .await?;
-                total_refunded += distribution_amount;
-            }
+            self.sign_refund_transaction(
+                &withdrawal,
+                if is_dual_wallet {
+                    Some(&resolver_secret_key)
+                } else {
+                    None
+                },
+            )
+            .await?;
+            total_refunded += distribution_amount;
         }
 
         let issues =
             crate::modules::bounty::repository::list_issues_to_cancel(&self.state, repo.id).await?;
-        let issue_ids: Vec<_> = issues.iter().map(|issue| issue.id).collect();
-        crate::modules::bounty::repository::fail_assignments_for_issues(&self.state, &issue_ids)
-            .await?;
-        for issue in &issues {
-            update_issue_status(&self.state, issue.id, "cancelled", None).await?;
-        }
-        update_repo_escrow_balance(
-            &self.state,
-            repo.id,
-            Decimal::ZERO,
-            Some(repo.github_repo_id),
-        )
-        .await?;
+        let issues = finalize_refund(&self.state, repo, issues).await?;
 
-        Ok((total_refunded, issues.len() as i64))
+        Ok((total_refunded, issues))
+    }
+
+    async fn sign_refund_transaction(
+        &self,
+        response: &Value,
+        secret: Option<&str>,
+    ) -> Result<(), AppError> {
+        let result =
+            sign_and_send_transaction(&self.state, unsigned_transaction(response)?, secret).await?;
+        require_successful_refund_submission(&result)
     }
 
     async fn submit_signed_transaction(&self, signed_xdr: &str) -> Result<Value, AppError> {
@@ -895,7 +922,17 @@ fn unsigned_transaction(response: &Value) -> Result<&str, AppError> {
     response
         .get("unsignedTransaction")
         .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| AppError::internal("TrustlessWork response missing unsignedTransaction"))
+}
+
+fn require_successful_refund_submission(response: &Value) -> Result<(), AppError> {
+    match response.get("status").and_then(Value::as_str) {
+        Some(status) if status.eq_ignore_ascii_case("success") => Ok(()),
+        _ => Err(AppError::internal(
+            "Trustless Work did not report a successful refund submission; reconcile its status before retrying",
+        )),
+    }
 }
 
 fn milestone_flag(milestone: &Value, name: &str) -> bool {
@@ -908,6 +945,38 @@ fn milestone_flag(milestone: &Value, name: &str) -> bool {
 
 fn milestone_is_terminal(milestone: &Value) -> bool {
     milestone_flag(milestone, "released") || milestone_flag(milestone, "resolved")
+}
+
+fn refund_milestones(escrow: &Value) -> Result<Vec<Value>, AppError> {
+    let milestones = escrow
+        .get("milestones")
+        .and_then(Value::as_array)
+        .ok_or_else(|| AppError::internal("Escrow milestone data is missing"))?;
+    for (index, milestone) in milestones.iter().enumerate() {
+        for flag in ["released", "resolved", "disputed"] {
+            if milestone
+                .get("flags")
+                .and_then(|flags| flags.get(flag))
+                .and_then(Value::as_bool)
+                .is_none()
+            {
+                return Err(AppError::internal(format!(
+                    "Escrow milestone {index} is missing the {flag} flag"
+                )));
+            }
+        }
+        if !milestone_is_terminal(milestone)
+            && !milestone
+                .get("amount")
+                .and_then(decimal_from_value)
+                .is_some_and(|amount| amount > Decimal::ZERO)
+        {
+            return Err(AppError::bad_request(format!(
+                "Cannot resolve milestone {index}: its amount is not positive"
+            )));
+        }
+    }
+    Ok(milestones.clone())
 }
 
 fn build_receiver(payout_chain: &str, payout_address: &str) -> Result<Value, AppError> {
@@ -982,6 +1051,31 @@ fn consumed_balance_amount(distribution_amount: Decimal, is_mainnet: bool) -> De
 mod tests {
     use super::*;
     use crate::modules::escrow::trustless_work::api_client::decimal_json_number;
+
+    #[test]
+    fn refund_requires_unsigned_xdr_and_successful_submission() {
+        assert!(unsigned_transaction(&json!({})).is_err());
+        assert!(unsigned_transaction(&json!({"unsignedTransaction":"  "})).is_err());
+        assert!(unsigned_transaction(&json!({"unsignedTransaction":"xdr"})).is_ok());
+        assert!(require_successful_refund_submission(&json!({"status":"SUCCESS"})).is_ok());
+        for result in [
+            json!({}),
+            json!({"status":"ERROR"}),
+            json!({"status":"PENDING"}),
+        ] {
+            assert!(require_successful_refund_submission(&result).is_err());
+        }
+    }
+
+    #[test]
+    fn refund_rejects_missing_flags_and_nonpositive_active_amounts() {
+        assert!(refund_milestones(&json!({})).is_err());
+        assert!(refund_milestones(&json!({"milestones":[{"amount":1}]})).is_err());
+        let flags = json!({"released":false,"resolved":false,"disputed":false});
+        assert!(refund_milestones(&json!({"milestones":[{"amount":0,"flags":flags}]})).is_err());
+        assert!(refund_milestones(&json!({"milestones":[{"amount":1,"flags":flags}]})).is_ok());
+        assert!(refund_milestones(&json!({"milestones":[{"amount":0,"flags":{"released":true,"resolved":false,"disputed":false}}]})).is_ok());
+    }
 
     #[test]
     fn decimal_json_number_serializes_as_number() {

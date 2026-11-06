@@ -10,6 +10,16 @@ pub(crate) fn decimal_json_number(value: Decimal, field_name: &str) -> Result<Va
         .to_f64()
         .and_then(Number::from_f64)
         .ok_or_else(|| AppError::internal(format!("Invalid {field_name}")))?;
+    let encoded = number.to_string();
+    let round_trip = encoded
+        .parse::<Decimal>()
+        .or_else(|_| Decimal::from_scientific(&encoded))
+        .map_err(|_| AppError::bad_request(format!("Invalid {field_name}")))?;
+    if round_trip != value {
+        return Err(AppError::bad_request(format!(
+            "{field_name} cannot be represented accurately"
+        )));
+    }
 
     Ok(Value::Number(number))
 }
@@ -100,5 +110,12 @@ mod tests {
     fn decimal_json_string_formats_fund_amount() {
         let value = decimal_json_string(Decimal::new(1, 2), "amount").unwrap();
         assert_eq!(value, Value::String("0.01".into()));
+    }
+
+    #[test]
+    fn decimal_json_number_rejects_precision_loss() {
+        assert!(decimal_json_number(Decimal::new(1, 7), "amount").is_ok());
+        assert!(decimal_json_number(Decimal::new(12345678, 7), "amount").is_ok());
+        assert!(decimal_json_number(Decimal::from(9_007_199_254_740_993_u64), "amount").is_err());
     }
 }

@@ -105,6 +105,50 @@ fn is_admin(permission: &Value, id: i64) -> bool {
         && permission["permission"].as_str() == Some("admin")
 }
 
+fn is_current_maintainer(permission: &Value, id: i64) -> bool {
+    id > 0
+        && permission["user"]["id"].as_i64() == Some(id)
+        && (permission["permission"].as_str() == Some("admin")
+            || (permission["permission"].as_str() == Some("write")
+                && permission["role_name"].as_str() == Some("maintain")))
+}
+
+pub async fn require_current_repo_maintainer(
+    state: &AppState,
+    repo: &crate::shared::models::Repo,
+    user_id: i64,
+) -> Result<(), AppError> {
+    if !valid_repo_name(&repo.full_name) || repo.github_repo_id <= 0 || user_id <= 0 {
+        return Err(AppError::forbidden("Cannot verify repository access"));
+    }
+    let token = super::auth::get_installation_token(state, repo.github_repo_id)
+        .await?
+        .ok_or_else(|| AppError::forbidden("Cannot verify repository access"))?;
+    let client = client()?;
+    let user_path = format!("/user/{user_id}");
+    let repo_path = format!("/repos/{}", repo.full_name);
+    let (user, github_repo) = tokio::try_join!(
+        get(&client, &token, &user_path),
+        get(&client, &token, &repo_path)
+    )?;
+    let login = verified_login(&user, user_id)?;
+    if github_repo["id"].as_i64() != Some(repo.github_repo_id) {
+        return Err(AppError::forbidden("GitHub repository identity changed"));
+    }
+    let permission = get(
+        &client,
+        &token,
+        &format!("{repo_path}/collaborators/{login}/permission"),
+    )
+    .await?;
+    if !is_current_maintainer(&permission, user_id) {
+        return Err(AppError::forbidden(
+            "Current GitHub maintainer access is required to refund escrow",
+        ));
+    }
+    Ok(())
+}
+
 pub async fn require_installation_repo_admin(
     state: &AppState,
     installation: i64,
@@ -236,6 +280,24 @@ mod tests {
             assert!(!is_admin(&json!({"user":{"id":42},"permission":role}), 42));
         }
         assert!(!is_admin(&json!({"permission":"admin"}), 42));
+    }
+    #[test]
+    fn refund_permission_requires_current_maintainer_and_matching_identity() {
+        assert!(is_current_maintainer(
+            &json!({"user":{"id":42},"permission":"admin"}),
+            42
+        ));
+        assert!(is_current_maintainer(
+            &json!({"user":{"id":42},"permission":"write","role_name":"maintain"}),
+            42
+        ));
+        for permission in [
+            json!({"user":{"id":42},"permission":"write","role_name":"write"}),
+            json!({"user":{"id":99},"permission":"admin"}),
+            json!({"permission":"admin"}),
+        ] {
+            assert!(!is_current_maintainer(&permission, 42));
+        }
     }
     #[test]
     fn repository_paths_cannot_inject_other_api_routes() {
