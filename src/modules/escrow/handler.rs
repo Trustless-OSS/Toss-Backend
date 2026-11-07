@@ -198,7 +198,8 @@ pub async fn submit_fund(
         )
         .await?;
 
-    // Funding succeeded even if waking parked bounty requests fails; do not ask for another transfer.
+    // Funding succeeded even if Redis is temporarily unavailable. The durable
+    // scanner will retry a failed wake-up without asking the maintainer to fund twice.
     if let Err(error) = crate::infra::recovery::wake_repo(&state, body.repo_id).await {
         tracing::warn!(%error, "escrow funded; failed to wake pending bounty requests");
     }
@@ -300,6 +301,7 @@ pub async fn refund(
         let repo_id = repo.id;
         let comment = comments::bounty_cancelled_after_refund(&contract_id);
         deliveries.spawn(async move {
+            // Send BountyCancelled notification to assignee
             if let Some(assignee_id) = issue.assignee_id {
                 let n = Notify {
                     recipient: assignee_id,

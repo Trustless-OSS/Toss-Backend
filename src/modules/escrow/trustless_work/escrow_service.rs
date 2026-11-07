@@ -283,8 +283,14 @@ impl TrustlessWorkAPI {
             issue = issue.github_issue_number,
             milestone_index, "TW step 1/3: complete milestone"
         );
-        self.complete_milestone(contract_id, milestone_index, platform_key, &evidence)
-            .await?;
+        self.complete_milestone(
+            contract_id,
+            milestone_index,
+            platform_key,
+            &evidence,
+            &state,
+        )
+        .await?;
         state = self
             .require_milestone_state(contract_id, milestone_index)
             .await?;
@@ -299,7 +305,7 @@ impl TrustlessWorkAPI {
             issue = issue.github_issue_number,
             milestone_index, "TW step 2/3: approve milestone"
         );
-        self.approve_milestone(contract_id, milestone_index, platform_key)
+        self.approve_milestone(contract_id, milestone_index, platform_key, &state)
             .await?;
         state = self
             .require_milestone_state(contract_id, milestone_index)
@@ -367,10 +373,8 @@ impl TrustlessWorkAPI {
         milestone_index: i32,
         platform_key: &str,
         evidence: &str,
+        state: &MilestoneChainState,
     ) -> Result<(), AppError> {
-        let state = self
-            .require_milestone_state(contract_id, milestone_index)
-            .await?;
         if state.is_completed() {
             return Ok(());
         }
@@ -397,10 +401,8 @@ impl TrustlessWorkAPI {
         contract_id: &str,
         milestone_index: i32,
         platform_key: &str,
+        state: &MilestoneChainState,
     ) -> Result<(), AppError> {
-        let state = self
-            .require_milestone_state(contract_id, milestone_index)
-            .await?;
         if state.approved {
             return Ok(());
         }
