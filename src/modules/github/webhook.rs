@@ -1,5 +1,5 @@
 use serde::Deserialize;
-use tracing::{error, info};
+use tracing::info;
 
 use crate::{
     error::AppError,
@@ -9,7 +9,7 @@ use crate::{
         handle_issue_deleted, handle_issue_labeled, handle_issue_unassigned, handle_pr_merged,
     },
     modules::github::repository::{
-        delete_repo_by_github_id, delete_repos_by_installation_id, sync_repo_full_name,
+        detach_repo_from_installation, detach_repos_by_installation_id, sync_repo_full_name,
         upsert_installation_repo,
     },
     state::AppState,
@@ -18,15 +18,6 @@ use crate::{
 #[derive(Debug, Deserialize)]
 struct GithubInstallation {
     id: i64,
-    account: GithubAccount,
-}
-
-#[derive(Debug, Deserialize)]
-struct GithubAccount {
-    id: i64,
-    login: String,
-    #[serde(rename = "type")]
-    account_type: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -43,6 +34,21 @@ struct GithubSender {
 }
 
 pub async fn process_webhook_job(state: &AppState, job: WebhookJobData) -> Result<(), AppError> {
+    if let Some(task_id) = job.payload["_recoveryTaskId"]
+        .as_str()
+        .and_then(|id| uuid::Uuid::parse_str(id).ok())
+    {
+        let mut db = crate::error::require_db(&state.db)?;
+        let task = crate::shared::models::schema::FailedTask::filter_by_id(task_id)
+            .first()
+            .exec(&mut db)
+            .await
+            .map_err(crate::error::map_db_err)?;
+        if task.is_none_or(|task| !crate::infra::recovery::accepts_recovered_webhook(&task.status))
+        {
+            return Ok(());
+        }
+    }
     let action = job.action.as_deref().unwrap_or("invailid");
     info!(
         event = %job.event,
@@ -155,52 +161,19 @@ async fn handle_installation(
         )
         .unwrap_or_default();
 
-        for repo in repositories {
-            // Filter out forks and private repositories
-            if repo.fork || repo.private {
-                info!(full_name = %repo.full_name, "skipping repo (fork/private)");
-                continue;
-            }
-
-            if let Err(e) = upsert_installation_repo(
-                state,
-                repo.id,
-                &repo.full_name,
-                installation.account.id,
-                &installation.account.login,
-                sender.id,
-                installation.id,
-            )
-            .await
-            {
-                error!(
-                    err = %e,
-                    repo = %repo.full_name,
-                    "failed to save repo on installation"
-                );
-            } else {
-                info!(
-                    repo = %repo.full_name,
-                    installer = sender.id,
-                    installation_id = installation.id,
-                    "app installed on repo"
-                );
-            }
-        }
+        let synced = import_verified_repos(state, repositories, installation.id, sender.id).await?;
+        info!(
+            synced,
+            installer = sender.id,
+            installation_id = installation.id,
+            "app installation repositories synced"
+        );
     } else if action == "deleted" {
-        // Delete all repos for this installation
-        if let Err(e) = delete_repos_by_installation_id(state, installation.id).await {
-            error!(
-                err = %e,
-                installation_id = installation.id,
-                "failed to cleanup repos for uninstalled installation"
-            );
-        } else {
-            info!(
-                installation_id = installation.id,
-                "cleared all repos for installation"
-            );
-        }
+        detach_repos_by_installation_id(state, installation.id).await?;
+        info!(
+            installation_id = installation.id,
+            "detached installation; repository and escrow records retained"
+        );
     }
 
     Ok(())
@@ -242,37 +215,14 @@ async fn handle_installation_repositories(
         )
         .unwrap_or_default();
 
-        for repo in repositories_added {
-            // Filter out forks and private repositories
-            if repo.fork || repo.private {
-                info!(full_name = %repo.full_name, "skipping added repo (fork/private)");
-                continue;
-            }
-
-            if let Err(e) = upsert_installation_repo(
-                state,
-                repo.id,
-                &repo.full_name,
-                installation.account.id,
-                &installation.account.login,
-                sender.id,
-                installation.id,
-            )
-            .await
-            {
-                error!(
-                    err = %e,
-                    repo = %repo.full_name,
-                    "failed to add repo to installation"
-                );
-            } else {
-                info!(
-                    repo = %repo.full_name,
-                    installer = sender.id,
-                    "added repo to installation"
-                );
-            }
-        }
+        let synced =
+            import_verified_repos(state, repositories_added, installation.id, sender.id).await?;
+        info!(
+            synced,
+            installer = sender.id,
+            installation_id = installation.id,
+            "added installation repositories synced"
+        );
     } else if action == "removed" {
         let repositories_removed: Vec<GithubRepository> = serde_json::from_value(
             payload
@@ -284,17 +234,62 @@ async fn handle_installation_repositories(
 
         for repo in repositories_removed {
             info!(full_name = %repo.full_name, repo_id = repo.id, "removed repo from installation");
-            if let Err(e) = delete_repo_by_github_id(state, repo.id).await {
-                error!(
-                    err = %e,
-                    repo = %repo.full_name,
-                    "failed to remove repo from DB"
-                );
-            } else {
-                info!(full_name = %repo.full_name, "removed repo from DB");
-            }
+            detach_repo_from_installation(state, repo.id, installation.id).await?;
+            info!(full_name = %repo.full_name, "repo detached; escrow and bounties retained");
         }
     }
 
     Ok(())
+}
+
+async fn import_verified_repos(
+    state: &AppState,
+    repositories: Vec<GithubRepository>,
+    installation_id: i64,
+    sender_id: i64,
+) -> Result<usize, AppError> {
+    let eligible: Vec<_> = repositories
+        .into_iter()
+        .filter(|repo| !repo.fork && !repo.private)
+        .collect();
+    if eligible.is_empty() {
+        return Ok(0);
+    }
+    let names: Vec<_> = eligible.iter().map(|repo| repo.full_name.clone()).collect();
+    let (login, allowed) =
+        super::authorization::installation_repo_admins(state, installation_id, sender_id, &names)
+            .await?;
+    let mut writes = tokio::task::JoinSet::new();
+    let mut synced = 0;
+    for repo in eligible
+        .into_iter()
+        .filter(|repo| allowed.contains(&repo.full_name))
+    {
+        let state = state.clone();
+        let login = login.clone();
+        writes.spawn(async move {
+            upsert_installation_repo(
+                &state,
+                repo.id,
+                &repo.full_name,
+                sender_id,
+                &login,
+                installation_id,
+            )
+            .await
+        });
+        if writes.len() >= 8 {
+            writes
+                .join_next()
+                .await
+                .ok_or_else(|| AppError::internal("Installation import task disappeared"))?
+                .map_err(|_| AppError::internal("Installation import task failed"))??;
+            synced += 1;
+        }
+    }
+    while let Some(result) = writes.join_next().await {
+        result.map_err(|_| AppError::internal("Installation import task failed"))??;
+        synced += 1;
+    }
+    Ok(synced)
 }

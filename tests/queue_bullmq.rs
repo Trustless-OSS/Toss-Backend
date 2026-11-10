@@ -744,3 +744,88 @@ async fn a_killed_worker_does_not_leave_a_job_active_past_the_stall_window() {
 
     cleanup(&prefix).await;
 }
+
+// Internal handoffs are not new GitHub/wallet events. Coalescing an active
+// financial job must not feed another advance -> handoff -> dirty-drain loop.
+async fn assert_active_financial_job_does_not_retrigger_advance(release: bool) {
+    let (queue, prefix) = skip_without_redis!();
+    let issue_id = Uuid::now_v7();
+    let started = std::sync::Arc::new(tokio::sync::Notify::new());
+    let gate = std::sync::Arc::new(tokio::sync::Notify::new());
+    let worker_started = started.clone();
+    let worker_gate = gate.clone();
+    let worker = Worker::with_options(
+        BOUNTY_QUEUE,
+        move |_job: bullmq::Job, _token| {
+            let started = worker_started.clone();
+            let gate = worker_gate.clone();
+            async move {
+                started.notify_one();
+                gate.notified().await;
+                Ok(serde_json::json!({"ok": true}))
+            }
+        },
+        WorkerOptions::new()
+            .prefix(&prefix)
+            .concurrency(1)
+            .connection(RedisConnectionOptions {
+                url: redis_url(),
+                ..Default::default()
+            }),
+    )
+    .await
+    .unwrap();
+
+    let data = BountyJobData::new(issue_id, "rules-passed");
+    let first = if release {
+        queue.enqueue_release_payout(data.clone()).await
+    } else {
+        queue.enqueue_push_milestone(data.clone()).await
+    }
+    .unwrap();
+    assert_eq!(first, EnqueueOutcome::Enqueued);
+    tokio::time::timeout(Duration::from_secs(5), started.notified())
+        .await
+        .unwrap();
+
+    let mut outcomes = Vec::new();
+    for _ in 0..3 {
+        outcomes.push(
+            if release {
+                queue.enqueue_release_payout(data.clone()).await
+            } else {
+                queue.enqueue_push_milestone(data.clone()).await
+            }
+            .unwrap(),
+        );
+    }
+    let dirty = queue.is_dirty(issue_id).await.unwrap();
+    // Drain while the financial job is still active, just like the advance worker.
+    let drain = queue.drain_dirty_advance(issue_id).await.unwrap();
+    gate.notify_one();
+    worker.close(2_000).await.unwrap();
+    cleanup(&prefix).await;
+
+    assert!(outcomes
+        .iter()
+        .all(|outcome| *outcome == EnqueueOutcome::Coalesced));
+    assert!(
+        !dirty,
+        "a duplicate financial handoff must not mark the issue dirty"
+    );
+    assert_eq!(
+        drain,
+        EnqueueOutcome::AlreadyPending,
+        "no new advance job should be created"
+    );
+}
+
+#[tokio::test]
+async fn active_milestone_duplicates_do_not_create_a_dirty_drain_loop() {
+    assert_active_financial_job_does_not_retrigger_advance(false).await;
+}
+
+#[tokio::test]
+async fn active_payout_duplicates_do_not_create_a_dirty_drain_loop() {
+    assert_active_financial_job_does_not_retrigger_advance(true).await;
+}

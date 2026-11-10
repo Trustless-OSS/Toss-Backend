@@ -56,9 +56,9 @@ impl Config {
             && required_bool("DEV_WEBHOOK_PROXY_ENABLED")?;
 
         let auth_bypass = optional_bool("AUTH_BYPASS").unwrap_or(false);
-        if auth_bypass && !node_env.eq_ignore_ascii_case("development") {
+        if auth_bypass {
             return Err(AppError::env_var_error(
-                "AUTH_BYPASS requires NODE_ENV=development",
+                "AUTH_BYPASS is disabled; use a verified login",
             ));
         }
 

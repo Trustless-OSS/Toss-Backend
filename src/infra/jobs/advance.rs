@@ -157,7 +157,22 @@ async fn apply(
             }
         }
 
-        Decision::Waiting { .. } => {}
+        Decision::Waiting { reason } => {
+            if data.notify && data.recheck == 0 && reason.contains("maintainer must connect") {
+                if let Err(error) = crate::modules::github::auth::post_comment(
+                    state,
+                    &ctx.repo.full_name,
+                    ctx.issue.github_issue_number,
+                    &crate::modules::github::comments::split_payout_waiting_for_wallet(
+                        &state.config.app_url,
+                    ),
+                )
+                .await
+                {
+                    warn!(%error, "failed to notify about the missing maintainer wallet");
+                }
+            }
+        }
 
         Decision::Settled => {
             info!(
@@ -288,6 +303,31 @@ pub(crate) async fn run_push_milestone(
     let Some(ctx) = automation::load_context(state, data.issue_id).await? else {
         return Ok(serde_json::json!({ "skipped": "issue-not-found" }));
     };
+
+    let Some(assignee) = ctx.assignee.as_ref() else {
+        return Ok(serde_json::json!({ "skipped": "issue-has-no-assignee" }));
+    };
+
+    let github_issue = crate::modules::github::auth::fetch_github_issue(
+        state,
+        ctx.repo.github_repo_id,
+        &ctx.repo.full_name,
+        ctx.issue.github_issue_number,
+    )
+    .await?;
+    if !github_issue
+        .assignees
+        .iter()
+        .any(|current| current.id == assignee.github_id)
+    {
+        info!(
+            issue_id = %data.issue_id,
+            issue = ctx.issue.github_issue_number,
+            assignee = assignee.github_id,
+            "GitHub assignee changed before escrow push; skipping"
+        );
+        return Ok(serde_json::json!({ "skipped": "github-assignee-changed" }));
+    }
 
     match automation::evaluate(state, &ctx).await? {
         Decision::PushMilestone {

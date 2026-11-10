@@ -6,7 +6,7 @@ use tracing::info;
 use uuid::Uuid;
 
 use crate::{
-    error::{map_db_err, require_db, AppError},
+    error::AppError,
     infra::queue::{BountyJobData, EnqueueOutcome},
     middleware::auth::AuthedUser,
     modules::{
@@ -25,7 +25,6 @@ use crate::{
         },
         repo::repository::{get_repo_by_github_id, is_maintainer},
     },
-    shared::models::schema,
     state::AppState,
 };
 
@@ -52,12 +51,19 @@ impl BountyService {
             .payout_chain
             .as_deref()
             .unwrap_or("stellar")
-            .to_string();
+            .trim()
+            .to_ascii_lowercase();
         let payout_address = body
             .payout_address
             .as_deref()
             .unwrap_or(&body.wallet)
+            .trim()
             .to_string();
+
+        if payout_chain == "stellar" {
+            crate::infra::stellar::accounts::require_usdc_payout_account(&state, &payout_address)
+                .await?;
+        }
 
         upsert_profile_wallet(
             &state,
@@ -74,7 +80,7 @@ impl BountyService {
                 AppError::bad_request("Issue is not in a valid state to connect wallet")
             })?;
 
-        if bounty.status != "open" && bounty.status != "assigned" {
+        if !matches!(bounty.status.as_str(), "open" | "assigned" | "merged") {
             return Err(AppError::bad_request(
                 "Issue is not in a valid state to connect wallet",
             ));
@@ -250,25 +256,10 @@ async fn upsert_profile_wallet(
     chain: &str,
     address: &str,
 ) -> Result<(), AppError> {
-    let mut db = require_db(&state.db)?;
-
-    let profile = schema::Profile::upsert_by_github_id(github_id)
-        .username(username.to_string())
-        .exec(&mut db)
-        .await
-        .map_err(map_db_err)?;
-
-    schema::Wallet::upsert_by_profile_id_and_chain_and_address(
-        profile.id,
-        chain.to_string(),
-        address.to_string(),
+    crate::modules::contributor::repository::upsert_contributor_wallet(
+        state, github_id, username, chain, address,
     )
-    .is_primary(true)
-    .exec(&mut db)
     .await
-    .map_err(map_db_err)?;
-
-    Ok(())
 }
 
 async fn advance_inline(state: &AppState, bounty_id: Uuid) -> Result<(), AppError> {
@@ -279,11 +270,35 @@ async fn advance_inline(state: &AppState, bounty_id: Uuid) -> Result<(), AppErro
     };
 
     match automation::evaluate(state, &ctx).await? {
-        Decision::PushMilestone {
-            payout_address,
-            payout_chain,
-        } => {
-            automation::push_milestone(state, &ctx, &payout_address, &payout_chain).await?;
+        Decision::PushMilestone { .. } => {
+            let Some(fresh_ctx) = automation::load_context(state, bounty_id).await? else {
+                return Ok(());
+            };
+            let Some(assignee) = fresh_ctx.assignee.as_ref() else {
+                return Ok(());
+            };
+            let live_issue = crate::modules::github::auth::fetch_github_issue(
+                state,
+                fresh_ctx.repo.github_repo_id,
+                &fresh_ctx.repo.full_name,
+                fresh_ctx.issue.github_issue_number,
+            )
+            .await?;
+            if !live_issue
+                .assignees
+                .iter()
+                .any(|current| current.id == assignee.github_id)
+            {
+                return Ok(());
+            }
+            if let Decision::PushMilestone {
+                payout_address,
+                payout_chain,
+            } = automation::evaluate(state, &fresh_ctx).await?
+            {
+                automation::push_milestone(state, &fresh_ctx, &payout_address, &payout_chain)
+                    .await?;
+            }
         }
         Decision::ReleasePayout {
             milestone_index,

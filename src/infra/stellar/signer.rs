@@ -11,6 +11,15 @@ use crate::{
     error::AppError, modules::escrow::trustless_work::api_client::tw_fetch, state::AppState,
 };
 
+const MAX_ENCODED_XDR_LEN: usize = 2 * 1024 * 1024;
+
+fn xdr_limits() -> Limits {
+    Limits {
+        depth: 128,
+        len: 1024 * 1024,
+    }
+}
+
 pub async fn sign_and_send_transaction(
     state: &AppState,
     unsigned_xdr: &str,
@@ -47,7 +56,11 @@ fn sign_xdr(
     keypair: &DalekKeyPair,
     network: &Network,
 ) -> Result<String, AppError> {
-    let mut envelope = TransactionEnvelope::from_xdr_base64(unsigned_xdr.trim(), Limits::none())
+    let unsigned_xdr = unsigned_xdr.trim();
+    if unsigned_xdr.len() > MAX_ENCODED_XDR_LEN {
+        return Err(AppError::stellar("unsigned XDR is too large"));
+    }
+    let mut envelope = TransactionEnvelope::from_xdr_base64(unsigned_xdr, xdr_limits())
         .map_err(|error| AppError::stellar(format!("invalid unsigned XDR: {error}")))?;
 
     let payload = match &envelope {
@@ -72,7 +85,7 @@ fn sign_xdr(
     };
 
     let payload_xdr = payload
-        .to_xdr(Limits::none())
+        .to_xdr(xdr_limits())
         .map_err(|error| AppError::stellar(format!("failed to encode signing payload: {error}")))?;
     let signature = keypair.sign(&stellar_base::crypto::hash(&payload_xdr));
     let decorated_signature = DecoratedSignature {
@@ -94,7 +107,7 @@ fn sign_xdr(
     }
 
     envelope
-        .to_xdr_base64(Limits::none())
+        .to_xdr_base64(xdr_limits())
         .map_err(|error| AppError::stellar(format!("failed to encode signed XDR: {error}")))
 }
 
@@ -160,5 +173,15 @@ mod tests {
             TransactionEnvelope::Tx(envelope) => assert_eq!(envelope.signatures.len(), 1),
             _ => panic!("expected a regular transaction envelope"),
         }
+    }
+
+    #[test]
+    fn refuses_oversized_provider_xdr() {
+        let keypair = DalekKeyPair::from_secret_seed(
+            "SD7X7LEHBNMUIKQGKPARG5TDJNBHKC346OUARHGZL5ITC6IJPXHILY36",
+        )
+        .unwrap();
+        let oversized = "A".repeat(MAX_ENCODED_XDR_LEN + 1);
+        assert!(sign_xdr(&oversized, &keypair, &Network::new_test()).is_err());
     }
 }

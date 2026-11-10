@@ -103,7 +103,30 @@ pub async fn handle_github_webhook(
         })?;
 
     if outcome == WebhookEnqueueOutcome::Unavailable {
-        crate::modules::github::webhook::process_webhook_job(&state, job).await?;
+        let id = format!(
+            "github-webhook:{}",
+            delivery_id
+                .map(str::to_string)
+                .unwrap_or_else(|| uuid::Uuid::now_v7().to_string())
+        );
+        if let Err(error) =
+            crate::modules::github::webhook::process_webhook_job(&state, job.clone()).await
+        {
+            crate::infra::recovery::record_failure(
+                &state,
+                crate::infra::queue::JOB_GITHUB_WEBHOOK,
+                &id,
+                &serde_json::to_value(&job).map_err(|e| AppError::internal(e.to_string()))?,
+                &error,
+            )
+            .await?;
+            if !error
+                .to_string()
+                .contains(crate::infra::recovery::FUNDING_WAIT)
+            {
+                return Err(error);
+            }
+        }
     }
 
     Ok(StatusCode::ACCEPTED)

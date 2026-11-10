@@ -57,19 +57,22 @@ pub(crate) async fn connect_repo(
     state: &AppState,
     input: ConnectRepoInput,
 ) -> Result<RepoResponse, AppError> {
-    if let Err(error) =
-        install_repo_webhook(state, &input.full_name, &input.gh_token, &input.webhook_url).await
-    {
-        error!(err = %error, repo = %input.full_name, "exception while installing webhook");
-    }
+    let (login, full_name) = crate::modules::github::authorization::verify_connect(
+        &input.gh_token,
+        input.actor_github_id,
+        input.github_repo_id,
+        &input.full_name,
+    )
+    .await?;
+    install_repo_webhook(state, &full_name, &input.gh_token, &input.webhook_url).await?;
 
     let repo = upsert_repo_with_maintainer(
         state,
         input.github_repo_id,
-        &input.full_name,
+        &full_name,
         None,
-        input.owner_github_id,
-        &input.owner_username,
+        input.actor_github_id,
+        &login,
     )
     .await?;
 
@@ -81,11 +84,27 @@ pub(crate) async fn connect_repo(
 pub(crate) async fn list_installation_repos_for_sync(
     state: &AppState,
     installation_id: i64,
+    github_id: i64,
 ) -> Result<InstallationReposList, AppError> {
+    if installation_id <= 0 {
+        return Err(AppError::bad_request("Invalid installation ID"));
+    }
     let repos = list_installation_repos(state, installation_id).await?;
-    let repositories = repos
+    let eligible: Vec<_> = repos
         .into_iter()
         .filter(|repo| !repo.fork && !repo.private)
+        .collect();
+    let names: Vec<_> = eligible.iter().map(|repo| repo.full_name.clone()).collect();
+    let (_, allowed) = crate::modules::github::authorization::installation_repo_admins(
+        state,
+        installation_id,
+        github_id,
+        &names,
+    )
+    .await?;
+    let repositories = eligible
+        .into_iter()
+        .filter(|repo| allowed.contains(&repo.full_name))
         .map(|repo| InstallationRepoSummary {
             github_repo_id: repo.id,
             full_name: repo.full_name,
@@ -99,6 +118,9 @@ pub(crate) async fn sync_installation(
     state: &AppState,
     input: SyncInstallationInput,
 ) -> Result<SyncInstallationResult, AppError> {
+    if input.installation_id <= 0 {
+        return Err(AppError::bad_request("Invalid installation ID"));
+    }
     let repos = list_installation_repos(state, input.installation_id).await?;
     let mut synced = 0;
 
@@ -111,6 +133,7 @@ pub(crate) async fn sync_installation(
                 .map(|id| std::collections::HashSet::from([id]))
         };
 
+    let mut selected = Vec::new();
     for repo in repos {
         if repo.fork || repo.private {
             continue;
@@ -122,17 +145,63 @@ pub(crate) async fn sync_installation(
             }
         }
 
-        upsert_installation_repo(
-            state,
-            repo.id,
-            &repo.full_name,
-            repo.owner.id,
-            &repo.owner.login,
-            input.installer_github_id,
-            input.installation_id,
-        )
-        .await?;
+        selected.push(repo);
+    }
 
+    if filter_ids.is_some() && selected.is_empty() {
+        return Err(AppError::not_found(
+            "Requested public installation repositories not found",
+        ));
+    }
+    let names: Vec<_> = selected.iter().map(|repo| repo.full_name.clone()).collect();
+    let (login, allowed) = crate::modules::github::authorization::installation_repo_admins(
+        state,
+        input.installation_id,
+        input.installer_github_id,
+        &names,
+    )
+    .await?;
+    if filter_ids.is_some()
+        && selected
+            .iter()
+            .any(|repo| !allowed.contains(&repo.full_name))
+    {
+        return Err(AppError::forbidden(
+            "A selected repository is not administered by the caller",
+        ));
+    }
+    // Complete authorization for the whole requested batch before any database write.
+    let mut writes = tokio::task::JoinSet::new();
+    for repo in selected
+        .into_iter()
+        .filter(|repo| allowed.contains(&repo.full_name))
+    {
+        let state = state.clone();
+        let login = login.clone();
+        let installer_id = input.installer_github_id;
+        let installation_id = input.installation_id;
+        writes.spawn(async move {
+            upsert_installation_repo(
+                &state,
+                repo.id,
+                &repo.full_name,
+                installer_id,
+                &login,
+                installation_id,
+            )
+            .await
+        });
+        if writes.len() >= 8 {
+            writes
+                .join_next()
+                .await
+                .ok_or_else(|| AppError::internal("Repository sync task disappeared"))?
+                .map_err(|_| AppError::internal("Repository sync task failed"))??;
+            synced += 1;
+        }
+    }
+    while let Some(result) = writes.join_next().await {
+        result.map_err(|_| AppError::internal("Repository sync task failed"))??;
         synced += 1;
     }
 
@@ -183,9 +252,12 @@ pub(crate) async fn update_rewards(
         ));
     }
 
-    if input.amount == Decimal::ZERO {
-        return Err(AppError::bad_request("Reward amounts must be non-negative"));
-    }
+    let repo = get_repo_by_id(state, input.repo_id)
+        .await?
+        .ok_or_else(|| AppError::not_found("Repo not found"))?;
+    require_live_maintainer(state, &repo, input.maintainer_github_id).await?;
+
+    crate::shared::money::validate_reward(input.amount, false)?;
 
     if input.label.is_empty() {
         return Err(AppError::bad_request("Reward Label must be non-negative"));
@@ -216,6 +288,8 @@ pub(crate) async fn delete_repo(
     let repo = get_repo_by_id(state, input.repo_id)
         .await?
         .ok_or_else(|| AppError::not_found("Repo not found"))?;
+
+    require_live_maintainer(state, &repo, input.github_id).await?;
 
     let balance = repo.escrow_balance.unwrap_or(Decimal::ZERO);
     if balance > Decimal::ZERO {
@@ -296,6 +370,11 @@ pub(crate) async fn delete_reward(
         ));
     }
 
+    let repo = get_repo_by_id(state, repo_id)
+        .await?
+        .ok_or_else(|| AppError::not_found("Repo not found"))?;
+    require_live_maintainer(state, &repo, maintainer_github_id).await?;
+
     delete_repo_reward(state, repo_id, &label).await?;
     invalidate_repo_cache(state, repo_id, None).await;
 
@@ -314,4 +393,19 @@ pub(crate) async fn delete_reward(
     }
 
     Ok(OkResponse { ok: true })
+}
+
+async fn require_live_maintainer(
+    state: &AppState,
+    repo: &crate::shared::models::Repo,
+    user_id: i64,
+) -> Result<(), AppError> {
+    crate::modules::github::authorization::require_current_repo_maintainer(state, repo, user_id)
+        .await
+        .map_err(|error| match error {
+            AppError::Forbidden { .. } => {
+                AppError::forbidden("Current GitHub maintainer access is required")
+            }
+            other => other,
+        })
 }

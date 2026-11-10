@@ -54,6 +54,27 @@ pub enum AppError {
 }
 
 impl AppError {
+    pub(crate) fn is_permanent_job_failure(&self) -> bool {
+        match self {
+            Self::BadRequest { .. }
+            | Self::Unauthorized { .. }
+            | Self::Forbidden { .. }
+            | Self::NotFound { .. }
+            | Self::WebhookError { .. }
+            | Self::EnvVarError { .. } => true,
+            Self::GitHubError {
+                context: Some(context),
+                ..
+            } => {
+                matches!(
+                    context["status"].as_u64(),
+                    Some(400 | 401 | 404 | 410 | 422)
+                )
+            }
+            _ => false,
+        }
+    }
+
     pub fn bad_request(message: impl Into<String>) -> Self {
         Self::BadRequest {
             message: message.into(),
@@ -144,6 +165,7 @@ impl IntoResponse for AppError {
         let message = self.to_string();
         if status.is_server_error() {
             tracing::error!(%status, error = %message, "request failed");
+            return (status, Json(json!({ "error": "Internal server error" }))).into_response();
         }
 
         (status, Json(json!({ "error": message }))).into_response()
@@ -183,5 +205,15 @@ mod tests {
     fn rate_limit_error_uses_too_many_requests_status() {
         let response = AppError::too_many_requests("Rate limit exceeded").into_response();
         assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[tokio::test]
+    async fn server_error_does_not_disclose_internal_details() {
+        let response = AppError::database("sensitive database details").into_response();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .unwrap();
+        assert_eq!(body.as_ref(), br#"{"error":"Internal server error"}"#);
     }
 }

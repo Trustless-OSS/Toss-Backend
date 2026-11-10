@@ -1,10 +1,9 @@
-use std::time::{Duration, Instant};
+use sha2::{Digest, Sha256};
 
 use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
-use tokio::sync::Mutex;
-use tracing::{debug, error, info, warn};
+use tracing::{info, warn};
 
 use crate::{
     error::AppError,
@@ -16,7 +15,6 @@ use crate::{
     state::AppState,
 };
 
-static COMMENT_CACHE: Mutex<Option<(String, Instant)>> = Mutex::const_new(None);
 const GITHUB_ACCEPT: &str = "application/vnd.github+json";
 const GITHUB_API_VERSION: &str = "2022-11-28";
 const GITHUB_USER_AGENT: &str = "Trustless-OSS-Bot";
@@ -52,15 +50,6 @@ pub struct InstallationRepo {
     pub full_name: String,
     pub private: bool,
     pub fork: bool,
-    pub owner: InstallationRepoOwner,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct InstallationRepoOwner {
-    pub id: i64,
-    pub login: String,
-    #[serde(rename = "type")]
-    pub account_type: String,
 }
 
 fn normalize_private_key(private_key: &str) -> String {
@@ -210,7 +199,7 @@ async fn resolve_installation_id(state: &AppState, full_name: &str) -> Result<i6
         .map(|installation| installation.id)
 }
 
-async fn exchange_installation_token(
+pub(super) async fn exchange_installation_token(
     state: &AppState,
     installation_id: i64,
 ) -> Result<String, AppError> {
@@ -254,13 +243,14 @@ async fn github_json<T: serde::de::DeserializeOwned>(
         let hint = if status.as_u16() == 401 && message.contains("could not be decoded") {
             " GitHub rejected the App JWT. The iss claim must be a string App ID, and GITHUB_APP_PRIVATE_KEY must be the matching PEM."
         } else if status.as_u16() == 404 && operation.contains("installation") {
-            " GitHub App ID or private key does not match the installed app, or the PEM key is malformed."
+            " GitHub App installation is missing or inaccessible; check repository access and the configured App credentials."
         } else {
             ""
         };
-        return Err(AppError::github(format!(
-            "{operation} failed with {status}: {message}.{hint}"
-        )));
+        return Err(AppError::GitHubError {
+            message: format!("{operation} failed with {status}: {message}.{hint}"),
+            context: Some(serde_json::json!({ "status": status.as_u16() })),
+        });
     }
 
     serde_json::from_str(&text)
@@ -283,20 +273,32 @@ pub async fn list_installation_repos(
     installation_id: i64,
 ) -> Result<Vec<InstallationRepo>, AppError> {
     let token = exchange_installation_token(state, installation_id).await?;
-    let response = state
-        .http_client
-        .get("https://api.github.com/installation/repositories?per_page=100")
-        .header("Authorization", format!("Bearer {token}"))
-        .header("Accept", GITHUB_ACCEPT)
-        .header("X-GitHub-Api-Version", GITHUB_API_VERSION)
-        .header("User-Agent", GITHUB_USER_AGENT)
-        .send()
-        .await
-        .map_err(|error| AppError::github(error.to_string()))?;
-
-    github_json::<InstallationReposResponse>(response, "installation repository listing")
-        .await
-        .map(|payload| payload.repositories)
+    let client = super::authorization::client()?;
+    let mut repositories = Vec::new();
+    for page in 1..=100 {
+        let response = client
+            .get(format!(
+                "https://api.github.com/installation/repositories?per_page=100&page={page}"
+            ))
+            .bearer_auth(&token)
+            .header("Accept", GITHUB_ACCEPT)
+            .header("X-GitHub-Api-Version", GITHUB_API_VERSION)
+            .header("User-Agent", GITHUB_USER_AGENT)
+            .send()
+            .await
+            .map_err(|_| AppError::github("Installation repository listing failed"))?;
+        let batch =
+            github_json::<InstallationReposResponse>(response, "installation repository listing")
+                .await?;
+        let count = batch.repositories.len();
+        repositories.extend(batch.repositories);
+        if count < 100 {
+            return Ok(repositories);
+        }
+    }
+    Err(AppError::github(
+        "Installation repository listing exceeded 10,000 entries",
+    ))
 }
 
 pub async fn post_comment(
@@ -305,42 +307,36 @@ pub async fn post_comment(
     issue_number: i32,
     body: &str,
 ) -> Result<(), AppError> {
-    let cache_key = format!(
-        "{}#{}:{}",
+    let key = format!(
+        "gh-comment-delivery:{}:{}:{}",
         full_name,
         issue_number,
-        &body[..body.len().min(50)]
+        hex::encode(Sha256::digest(body.as_bytes()))
     );
-    {
-        let guard = COMMENT_CACHE.lock().await;
-        if let Some((key, sent_at)) = guard.as_ref() {
-            if key == &cache_key && sent_at.elapsed() < Duration::from_secs(10) {
-                debug!(
-                    repo = full_name,
-                    issue = issue_number,
-                    "skipping duplicate comment"
-                );
-                return Ok(());
-            }
-        }
-    }
+    super::comment_delivery::once(state.redis.as_ref(), key, || {
+        post_comment_inner(state, full_name, issue_number, body)
+    })
+    .await
+}
 
+async fn post_comment_inner(
+    state: &AppState,
+    full_name: &str,
+    issue_number: i32,
+    body: &str,
+) -> Result<(), AppError> {
     let github_repo_id = get_github_repo_id_by_full_name(state, full_name).await?;
 
     let Some(github_repo_id) = github_repo_id else {
-        error!(
-            repo = full_name,
-            "cannot post comment — repository not found"
-        );
-        return Ok(());
+        return Err(AppError::github(
+            "Cannot post comment: repository not found",
+        ));
     };
 
     let Some(token) = get_installation_token(state, github_repo_id).await? else {
-        error!(
-            repo = full_name,
-            "cannot post comment — failed to get token"
-        );
-        return Ok(());
+        return Err(AppError::github(
+            "Cannot post comment: installation token unavailable",
+        ));
     };
 
     let url = format!("https://api.github.com/repos/{full_name}/issues/{issue_number}/comments");
@@ -374,9 +370,6 @@ pub async fn post_comment(
         )));
     }
 
-    let mut guard = COMMENT_CACHE.lock().await;
-    *guard = Some((cache_key, Instant::now()));
-
     Ok(())
 }
 
@@ -387,10 +380,10 @@ pub async fn install_repo_webhook(
     webhook_url: &str,
 ) -> Result<(), AppError> {
     let secret = state.config.github_webhook_secret.as_str();
+    let client = super::authorization::client()?;
 
     let hooks_url = format!("https://api.github.com/repos/{full_name}/hooks");
-    let existing = state
-        .http_client
+    let existing = client
         .get(&hooks_url)
         .header("Authorization", format!("Bearer {gh_token}"))
         .header("Accept", GITHUB_ACCEPT)
@@ -400,6 +393,11 @@ pub async fn install_repo_webhook(
         .await
         .map_err(|error| AppError::github(error.to_string()))?;
 
+    if !existing.status().is_success() {
+        return Err(AppError::github(
+            "Cannot verify existing repository webhooks",
+        ));
+    }
     let mut already_exists = false;
     if existing.status().is_success() {
         let hooks: Vec<serde_json::Value> = existing
@@ -418,8 +416,7 @@ pub async fn install_repo_webhook(
         return Ok(());
     }
 
-    let response = state
-        .http_client
+    let response = client
         .post(&hooks_url)
         .header("Authorization", format!("Bearer {gh_token}"))
         .header("Accept", GITHUB_ACCEPT)
@@ -442,7 +439,9 @@ pub async fn install_repo_webhook(
         .map_err(|error| AppError::github(error.to_string()))?;
 
     if !response.status().is_success() {
-        error!(repo = full_name, status = %response.status(), "failed to install webhook");
+        return Err(AppError::github(
+            "GitHub rejected repository webhook installation",
+        ));
     }
 
     Ok(())
@@ -501,6 +500,8 @@ pub struct GitHubPullRequest {
     pub merged: bool,
     pub body: Option<String>,
     pub user: GitHubPullUser,
+    #[serde(default)]
+    pub labels: Vec<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -511,6 +512,13 @@ pub struct GitHubPullUser {
 #[derive(Debug, Clone, Deserialize)]
 pub struct GitHubIssue {
     pub state: String,
+    #[serde(default)]
+    pub assignees: Vec<GitHubIssueAssignee>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct GitHubIssueAssignee {
+    pub id: i64,
 }
 
 pub async fn delete_github_installation(
@@ -664,4 +672,76 @@ pub async fn delete_github_label(
     }
 
     Ok(())
+}
+
+/// GitHub timeline references include PRs opened before a bounty existed.
+pub async fn linked_pull_requests(
+    state: &AppState,
+    repo_id: i64,
+    full_name: &str,
+    issue: i32,
+) -> Result<Vec<i32>, AppError> {
+    let key = format!("gh-linked-pr:{repo_id}:{issue}");
+    if let Some(numbers) = state.cache.get::<Vec<i32>>(&key).await {
+        return Ok(numbers);
+    }
+    let mut numbers = Vec::new();
+    for page in 1..=20 {
+        let url = format!("https://api.github.com/repos/{full_name}/issues/{issue}/timeline?per_page=100&page={page}");
+        let events: Vec<serde_json::Value> =
+            github_get_json(state, repo_id, &url, "issue timeline").await?;
+        for event in &events {
+            let source = &event["source"]["issue"];
+            let expected = format!("https://api.github.com/repos/{full_name}");
+            if source["pull_request"].is_object()
+                && source["repository_url"].as_str() == Some(expected.as_str())
+            {
+                if let Some(number) = source["number"].as_i64() {
+                    numbers.push(number as i32);
+                }
+            }
+        }
+        if events.len() < 100 {
+            break;
+        }
+    }
+    numbers.sort_unstable();
+    numbers.dedup();
+    if !numbers.is_empty() {
+        state.cache.set(&key, &numbers, Some(300)).await;
+    }
+    Ok(numbers)
+}
+
+pub async fn fetch_issue_payload(
+    state: &AppState,
+    repo_id: i64,
+    full_name: &str,
+    number: i32,
+) -> Result<serde_json::Value, AppError> {
+    github_get_json(
+        state,
+        repo_id,
+        &format!("https://api.github.com/repos/{full_name}/issues/{number}"),
+        "issue recovery",
+    )
+    .await
+}
+
+#[cfg(test)]
+mod response_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn deleted_issue_response_preserves_status_for_retry_policy() {
+        let response = axum::http::Response::builder()
+            .status(410)
+            .body(r#"{"message":"This issue was deleted"}"#.to_string())
+            .unwrap();
+        let error = github_json::<serde_json::Value>(response.into(), "issue lookup")
+            .await
+            .unwrap_err();
+        assert!(error.is_permanent_job_failure());
+        assert!(error.to_string().contains("This issue was deleted"));
+    }
 }

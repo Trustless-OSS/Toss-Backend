@@ -220,6 +220,7 @@ pub async fn create_bounty_and_reserve_balance(
     reward_amount: Decimal,
     reward_level_id: Option<Uuid>,
 ) -> Result<Option<Bounty>, AppError> {
+    crate::shared::money::validate_reward(reward_amount, true)?;
     let mut db = require_db(&state.db)?;
     let mut tx = db.transaction().await.map_err(map_db_err)?;
 
@@ -229,10 +230,14 @@ pub async fn create_bounty_and_reserve_balance(
 
     let current_balance = schema_repo.escrow_balance.unwrap_or(Decimal::ZERO);
     if current_balance < reward_amount {
-        return Err(AppError::bad_request("Insufficient escrow balance"));
+        return Err(crate::infra::recovery::waiting_for_funds());
     }
 
-    let new_balance = round_balance(current_balance - reward_amount);
+    let new_balance = round_balance(
+        current_balance
+            .checked_sub(reward_amount)
+            .ok_or_else(|| AppError::internal("Reward arithmetic overflow"))?,
+    );
     toasty::update!(schema_repo {
         escrow_balance: Some(new_balance),
     })
@@ -272,6 +277,7 @@ pub async fn update_pending_bounty_reward(
     reward_amount: Decimal,
     reward_level_id: Option<Uuid>,
 ) -> Result<bool, AppError> {
+    crate::shared::money::validate_reward(reward_amount, false)?;
     let mut db = require_db(&state.db)?;
     let mut tx = db.transaction().await.map_err(map_db_err)?;
 
@@ -286,13 +292,17 @@ pub async fn update_pending_bounty_reward(
     };
 
     let can_change_before_lock = bounty.status == "open"
-        || (bounty.status == "assigned" && bounty.milestone_index.is_none());
+        || (matches!(bounty.status.as_str(), "assigned" | "merged")
+            && bounty.milestone_index.is_none());
     if !can_change_before_lock {
         return Ok(false);
     }
 
     let old_amount = bounty.reward_amount.unwrap_or(Decimal::ZERO);
-    let difference = reward_amount - old_amount;
+    crate::shared::money::validate_reward(old_amount, true)?;
+    let difference = reward_amount
+        .checked_sub(old_amount)
+        .ok_or_else(|| AppError::internal("Reward arithmetic overflow"))?;
     let mut schema_repo = schema::Repository::get_by_id(&mut tx, &repo.id)
         .await
         .map_err(map_db_err)?;
@@ -302,7 +312,11 @@ pub async fn update_pending_bounty_reward(
         return Ok(false);
     }
 
-    let new_balance = round_balance(current_balance - difference);
+    let new_balance = round_balance(
+        current_balance
+            .checked_sub(difference)
+            .ok_or_else(|| AppError::internal("Reward arithmetic overflow"))?,
+    );
     toasty::update!(schema_repo {
         escrow_balance: Some(new_balance),
     })
@@ -364,6 +378,7 @@ pub async fn unassign_bounty(state: &AppState, bounty_id: Uuid) -> Result<(), Ap
     toasty::update!(schema::Bounty::filter_by_id(bounty_id) {
         assignee_id: Option::<Uuid>::None,
         assigned_at: Option::<jiff::Timestamp>::None,
+        milestone_index: Option::<i32>::None,
         status: "open".to_string(),
     })
     .exec(&mut db)

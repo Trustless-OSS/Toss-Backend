@@ -2,12 +2,12 @@ use governor::middleware::NoOpMiddleware;
 use std::{sync::Arc, time::Duration};
 use tower_governor::{
     governor::{GovernorConfig, GovernorConfigBuilder},
-    key_extractor::SmartIpKeyExtractor,
+    key_extractor::PeerIpKeyExtractor,
 };
 
 use crate::{error::AppError, state::AppState};
 
-pub type IpLimiterConfig = GovernorConfig<SmartIpKeyExtractor, NoOpMiddleware>;
+pub type IpLimiterConfig = GovernorConfig<PeerIpKeyExtractor, NoOpMiddleware>;
 
 const USER_LIMIT_SCRIPT: &str = r#"
 local count = redis.call('INCR', KEYS[1])
@@ -22,7 +22,7 @@ pub fn ip_limiter_config(refill_sec: u64, burst: u32) -> Arc<IpLimiterConfig> {
         GovernorConfigBuilder::default()
             .per_second(refill_sec)
             .burst_size(burst)
-            .key_extractor(SmartIpKeyExtractor)
+            .key_extractor(PeerIpKeyExtractor)
             .finish()
             .expect("[RL]: refill period and burst size must be non-zero"),
     );
@@ -91,4 +91,26 @@ async fn incr_window(
         .query_async(&mut connection)
         .await
         .map_err(|error| AppError::internal(format!("[RL] Redis command failed: {error}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{extract::ConnectInfo, http::Request};
+    use tower_governor::key_extractor::KeyExtractor;
+
+    #[test]
+    fn ignores_spoofed_forwarded_headers() {
+        let mut request = Request::builder()
+            .header("x-forwarded-for", "203.0.113.9")
+            .body(())
+            .unwrap();
+        request.extensions_mut().insert(ConnectInfo(
+            "192.0.2.1:1234".parse::<std::net::SocketAddr>().unwrap(),
+        ));
+        assert_eq!(
+            PeerIpKeyExtractor.extract(&request).unwrap(),
+            "192.0.2.1".parse::<std::net::IpAddr>().unwrap()
+        );
+    }
 }

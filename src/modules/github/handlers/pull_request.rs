@@ -87,6 +87,10 @@ pub async fn handle_pr_merged(state: &AppState, payload: &Value) -> Result<(), A
     }
 
     update_assignment_pr_merge(state, assignment.id, pr_number).await?;
+    state
+        .cache
+        .invalidate(&format!("gh-linked-pr:{repo_github_id}:{issue_number}"))
+        .await;
 
     let outcome = state
         .queue

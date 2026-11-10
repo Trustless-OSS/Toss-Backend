@@ -1,6 +1,5 @@
 use axum::{
     extract::{Path, Query, State},
-    http::HeaderMap,
     Json,
 };
 use uuid::Uuid;
@@ -25,19 +24,24 @@ use crate::{
     state::AppState,
 };
 
-fn resolve_webhook_url(state: &AppState, headers: &HeaderMap) -> String {
-    if let Some(url) = state.config.webhook_url.as_deref() {
-        return url.to_string();
+fn resolve_webhook_url(state: &AppState) -> Result<String, AppError> {
+    let raw = state
+        .config
+        .webhook_url
+        .as_deref()
+        .ok_or_else(|| AppError::internal("WEBHOOK_URL must be configured"))?;
+    let url = reqwest::Url::parse(raw).map_err(|_| AppError::internal("Invalid WEBHOOK_URL"))?;
+    if url.scheme() != "https"
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(AppError::internal(
+            "WEBHOOK_URL must be a canonical HTTPS URL",
+        ));
     }
-
-    let protocol = headers
-        .get("x-forwarded-proto")
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or("http");
-    let host = headers.get("host").and_then(|value| value.to_str().ok());
-
-    host.map(|host| format!("{protocol}://{host}/api/v1/webhooks/github"))
-        .unwrap_or_else(|| "https://smee.io/trustless-oss-dev-webhook".to_string())
+    Ok(url.to_string())
 }
 
 #[utoipa::path(
@@ -77,24 +81,33 @@ pub(crate) async fn list_repos(
     security(("bearer_auth" = [])),
     request_body = ConnectRepo,
     responses(
-        (status = 200, description = "Repository connected (webhook install attempted)", body = RepoResponse),
+        (status = 200, description = "Verified administrator connected repository and installed webhook", body = RepoResponse),
         (status = 401, description = "Missing or invalid bearer token", body = ErrorResponse),
+        (status = 403, description = "GitHub identity or administrator permission could not be verified", body = ErrorResponse),
+        (status = 429, description = "Per-user rate limit exceeded", body = ErrorResponse),
         (status = 500, description = "Failed to connect repository", body = ErrorResponse)
     )
 )]
 pub(crate) async fn connect_repo(
     State(state): State<AppState>,
-    headers: HeaderMap,
-    _user: AuthedUser,
+    user: AuthedUser,
     Json(body): Json<ConnectRepo>,
 ) -> Result<Json<RepoResponse>, AppError> {
+    crate::middleware::rate_limit::check_user_limit(
+        &state,
+        "repo-connect",
+        user.github_id,
+        10,
+        60,
+        false,
+    )
+    .await?;
     let input = ConnectRepoInput {
         github_repo_id: body.gh_repo_id,
         full_name: body.full_name,
-        owner_github_id: body.owner_gh_id,
-        owner_username: body.owner_username,
+        actor_github_id: user.github_id,
         gh_token: body.gh_token,
-        webhook_url: resolve_webhook_url(&state, &headers),
+        webhook_url: resolve_webhook_url(&state)?,
     };
     let response = service::connect_repo(&state, input).await?;
     Ok(Json(response))
@@ -107,17 +120,30 @@ pub(crate) async fn connect_repo(
     security(("bearer_auth" = [])),
     params(InstallationReposQuery),
     responses(
-        (status = 200, description = "Public non-fork repositories on a GitHub App installation", body = InstallationReposList),
+        (status = 200, description = "Public non-fork repositories verified as administered by the caller", body = InstallationReposList),
         (status = 401, description = "Missing or invalid bearer token", body = ErrorResponse),
+        (status = 403, description = "Caller cannot administer the installation repositories", body = ErrorResponse),
+        (status = 429, description = "Per-user rate limit exceeded", body = ErrorResponse),
         (status = 500, description = "Failed to list installation repositories", body = ErrorResponse)
     )
 )]
 pub(crate) async fn list_installation_repos(
     State(state): State<AppState>,
-    _user: AuthedUser,
+    user: AuthedUser,
     Query(query): Query<InstallationReposQuery>,
 ) -> Result<Json<InstallationReposList>, AppError> {
-    let response = service::list_installation_repos_for_sync(&state, query.installation_id).await?;
+    crate::middleware::rate_limit::check_user_limit(
+        &state,
+        "installation-list",
+        user.github_id,
+        10,
+        60,
+        false,
+    )
+    .await?;
+    let response =
+        service::list_installation_repos_for_sync(&state, query.installation_id, user.github_id)
+            .await?;
     Ok(Json(response))
 }
 
@@ -130,6 +156,8 @@ pub(crate) async fn list_installation_repos(
     responses(
         (status = 200, description = "GitHub App installation repositories synced", body = SyncInstallationResult),
         (status = 401, description = "Missing or invalid bearer token", body = ErrorResponse),
+        (status = 403, description = "Caller cannot administer a selected repository", body = ErrorResponse),
+        (status = 429, description = "Per-user rate limit exceeded", body = ErrorResponse),
         (status = 404, description = "Requested installation repository not found", body = ErrorResponse),
         (status = 500, description = "Failed to sync installation", body = ErrorResponse)
     )
@@ -139,6 +167,15 @@ pub(crate) async fn sync_installation(
     user: AuthedUser,
     Json(body): Json<SyncInstallation>,
 ) -> Result<Json<SyncInstallationResult>, AppError> {
+    crate::middleware::rate_limit::check_user_limit(
+        &state,
+        "installation-sync",
+        user.github_id,
+        5,
+        60,
+        false,
+    )
+    .await?;
     let input = SyncInstallationInput {
         installation_id: body.installation_id,
         installer_github_id: user.github_id,

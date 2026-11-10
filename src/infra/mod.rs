@@ -7,3 +7,5 @@ pub mod queue;
 pub mod redis;
 pub mod s3_client;
 pub mod stellar;
+
+pub mod recovery;

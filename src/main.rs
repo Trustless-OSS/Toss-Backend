@@ -19,6 +19,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let state = AppState::new(config).await?;
 
     let workers = infra::queue::start_workers(state.clone()).await?;
+    let recovery = infra::recovery::start(state.clone());
     info!("background workers started");
 
     let listener = TcpListener::bind(address).await?;
@@ -39,6 +40,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .with_graceful_shutdown(lifecycle::shutdown_signal())
     .await?;
 
+    recovery.abort();
     workers.shutdown().await;
     state.queue.close().await;
 

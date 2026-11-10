@@ -1,5 +1,5 @@
 use serde_json::Value;
-use tracing::{error, info};
+use tracing::info;
 
 use crate::{
     error::AppError,
@@ -9,7 +9,8 @@ use crate::{
             delete_assignments_for_issue, get_issue_by_repo_and_github_id, reset_issue_to_pending,
             set_bounty_reward_amount,
         },
-        github::{auth::post_comment, comments, handlers::helpers::zero_milestone_on_chain},
+        escrow::trustless_work::escrow_service::TrustlessWorkAPI,
+        github::handlers::helpers::{hold_milestone_on_chain, reject_milestone_on_chain},
         notification::{
             kinds::{Kind, Notify},
             service::Service,
@@ -30,11 +31,6 @@ pub async fn handle_issue_unassigned(state: &AppState, payload: &Value) -> Resul
 
     let repo_github_id = repository.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
 
-    let full_name = repository
-        .get("full_name")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-
     let github_issue_id = issue.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
 
     let issue_number = issue.get("number").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
@@ -53,27 +49,60 @@ pub async fn handle_issue_unassigned(state: &AppState, payload: &Value) -> Resul
         return Ok(());
     }
 
+    if let Some(removed_id) = payload["assignee"]["id"].as_i64() {
+        let assignment =
+            crate::modules::bounty::repository::get_assignment_for_issue(state, issue_record.id)
+                .await?;
+        if assignment
+            .and_then(|(_, profile)| profile)
+            .is_some_and(|profile| profile.github_id != removed_id)
+        {
+            return Ok(());
+        }
+    }
+
     // Capture assignee before deletion for notification
     let assignee_id = issue_record.assignee_id;
 
-    let reward = if issue_record.status == "assigned" && issue_record.milestone_index.is_some() {
-        escrow_reward_amount(state, &repo, &issue_record).await?
-    } else {
-        issue_record.reward_amount.unwrap_or_default()
-    };
     if issue_record.status == "assigned" && issue_record.milestone_index.is_some() {
+        let reward = escrow_reward_amount(state, &repo, &issue_record).await?;
         set_bounty_reward_amount(state, issue_record.id, reward).await?;
     }
 
-    delete_assignments_for_issue(state, issue_record.id).await?;
+    // Milestone amounts are promises against the shared escrow pool. Never
+    // zero or redirect one; dispute and reject the old claim instead.
+    if let Some(milestone_index) = issue_record.milestone_index {
+        let contract_id = repo
+            .escrow_contract_id
+            .as_deref()
+            .ok_or_else(|| AppError::bad_request("No escrow deployed"))?;
+        let tw = TrustlessWorkAPI::new(state.clone());
+        let milestone = tw
+            .fetch_milestone_state(contract_id, milestone_index)
+            .await?
+            .ok_or_else(|| AppError::internal("Escrow milestone not found on-chain"))?;
 
-    if issue_record.status == "assigned" {
-        if let Some(milestone_index) = issue_record.milestone_index {
-            if let Err(err) = zero_milestone_on_chain(state, &repo, milestone_index).await {
-                error!(%err, "failed to zero out milestone on unassign");
-            }
+        if milestone.released {
+            return Err(AppError::bad_request(
+                "Cannot unassign a contributor after the escrow milestone was released",
+            ));
         }
+        if milestone.resolved {
+            return Err(AppError::bad_request(
+                "Escrow milestone was already resolved; maintainer review is required",
+            ));
+        }
+
+        hold_milestone_on_chain(state, &repo, milestone_index).await?;
+
+        if milestone.approved || milestone.status.eq_ignore_ascii_case("completed") {
+            return Err(AppError::bad_request(
+                "Milestone work is completed or approved; it was disputed and needs maintainer resolution before reassignment",
+            ));
+        }
+        reject_milestone_on_chain(state, &repo, milestone_index).await?;
     }
+    delete_assignments_for_issue(state, issue_record.id).await?;
 
     reset_issue_to_pending(state, issue_record.id).await?;
 
@@ -103,14 +132,6 @@ pub async fn handle_issue_unassigned(state: &AppState, payload: &Value) -> Resul
         Service::notify_contributor_quiet(state, n).await;
     }
 
-    post_comment(
-        state,
-        full_name,
-        issue_number,
-        &comments::contributor_unassigned(reward),
-    )
-    .await?;
-
-    info!(issue = issue_number, "unassigned and closed milestone");
+    info!(issue = issue_number, "bounty assignment removed");
     Ok(())
 }

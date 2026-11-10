@@ -7,7 +7,6 @@ use crate::{
     middleware::auth::AuthedUser,
     middleware::rate_limit::check_user_limit,
     modules::{
-        bounty::repository::list_issues_to_cancel,
         escrow::{
             dto::{
                 CloseEscrow, ContractIdResponse, CreateEscrow, FundEscrow, OkResponse,
@@ -16,7 +15,7 @@ use crate::{
             },
             trustless_work::{escrow_service::TrustlessWorkAPI, tx_builder::TxBuilder},
         },
-        github::{auth::post_comment, labels::ensure_default_repository_labels},
+        github::{auth::post_comment, comments, labels::ensure_default_repository_labels},
         notification::{
             kinds::{Kind, Notify},
             service::Service,
@@ -199,6 +198,12 @@ pub async fn submit_fund(
         )
         .await?;
 
+    // Funding succeeded even if Redis is temporarily unavailable. The durable
+    // scanner will retry a failed wake-up without asking the maintainer to fund twice.
+    if let Err(error) = crate::infra::recovery::wake_repo(&state, body.repo_id).await {
+        tracing::warn!(%error, "escrow funded; failed to wake pending bounty requests");
+    }
+
     // Send EscrowFunded notification to maintainers
     let n = Notify {
         recipient: body.repo_id, // Placeholder; Service::notify_maintainers will set actual recipients
@@ -244,28 +249,34 @@ pub async fn refund(
 ) -> Result<Json<RefundResponse>, AppError> {
     check_user_limit(&state, "escrow", user.github_id, 5, 60, false).await?;
 
-    if !is_maintainer(&state, user.github_id, body.repo_id).await? {
+    let (maintainer, repo) = tokio::try_join!(
+        is_maintainer(&state, user.github_id, body.repo_id),
+        get_repo_by_id(&state, body.repo_id)
+    )?;
+    if !maintainer {
         return Err(AppError::forbidden(
             "Forbidden: Only maintainers can refund funds",
         ));
     }
-
-    let repo = get_repo_by_id(&state, body.repo_id)
-        .await?
-        .ok_or_else(|| AppError::not_found("Repo or escrow not found"))?;
+    let repo = repo.ok_or_else(|| AppError::not_found("Repo or escrow not found"))?;
 
     if repo.escrow_contract_id.is_none() {
         return Err(AppError::not_found("Repo or escrow not found"));
     }
 
-    let funder_wallet = body.maintainer_wallet.as_str();
-
-    let issues_to_cancel = list_issues_to_cancel(&state, repo.id).await?;
+    let funder_wallet = validate_refund_wallet(&body.maintainer_wallet)?;
+    crate::modules::github::authorization::require_current_repo_maintainer(
+        &state,
+        &repo,
+        user.github_id,
+    )
+    .await?;
     let contract_id = repo.escrow_contract_id.clone().unwrap_or_default();
 
-    let (refunded_amount, cancelled_issues) = TrustlessWorkAPI::new(state.clone())
-        .refund(&repo, funder_wallet)
+    let (refunded_amount, issues_to_cancel) = TrustlessWorkAPI::new(state.clone())
+        .refund_with_issues(&repo, funder_wallet)
         .await?;
+    let cancelled_issues = issues_to_cancel.len() as i64;
 
     // Send EscrowRefunded notification to maintainers
     let n = Notify {
@@ -283,40 +294,45 @@ pub async fn refund(
     };
     Service::notify_maintainers_quiet(&state, repo.id, n).await;
 
-    for issue in &issues_to_cancel {
-        let comment = format!(
-            "## 🚫 Bounty Cancelled\n\n\
-             > **Status:** Cancelled  \n\
-             > **Reason:** A repository maintainer withdrew the escrowed funds.\n\n\
-             ### What this means\n\n\
-             - No further work or pull requests for this issue are eligible for a payout.\n\
-             - The bounty will not be reopened unless the repository maintainer creates a new one.\n\n\
-             ### Escrow\n\n\
-             [View escrow contract →](https://viewer.trustlesswork.com/{contract_id})"
-        );
-
-        // Send BountyCancelled notification to assignee
-        if let Some(assignee_id) = issue.assignee_id {
-            let n = Notify {
-                recipient: assignee_id,
-                kind: Kind::BountyCancelled,
-                title: format!("Bounty Cancelled: #{}", issue.github_issue_number),
-                body: "A repository maintainer withdrew the escrowed funds".to_string(),
-                ref_id: Some(issue.id),
-                data: serde_json::json!({
-                    "repoId": repo.id,
-                    "issueNumber": issue.github_issue_number,
-                }),
-                dedupe_key: format!("cancelled:{}:refund", issue.id),
-                actor: None,
-            };
-            Service::notify_contributor_quiet(&state, n).await;
+    let mut deliveries = tokio::task::JoinSet::new();
+    for issue in issues_to_cancel {
+        let state = state.clone();
+        let repo_name = repo.full_name.clone();
+        let repo_id = repo.id;
+        let comment = comments::bounty_cancelled_after_refund(&contract_id);
+        deliveries.spawn(async move {
+            // Send BountyCancelled notification to assignee
+            if let Some(assignee_id) = issue.assignee_id {
+                let n = Notify {
+                    recipient: assignee_id,
+                    kind: Kind::BountyCancelled,
+                    title: format!("Bounty Cancelled: #{}", issue.github_issue_number),
+                    body: "A repository maintainer withdrew the escrowed funds".to_string(),
+                    ref_id: Some(issue.id),
+                    data: serde_json::json!({
+                        "repoId": repo_id,
+                        "issueNumber": issue.github_issue_number,
+                    }),
+                    dedupe_key: format!("cancelled:{}:refund", issue.id),
+                    actor: None,
+                };
+                Service::notify_contributor_quiet(&state, n).await;
+            }
+            if let Err(error) =
+                post_comment(&state, &repo_name, issue.github_issue_number, &comment).await
+            {
+                error!(%error, issue = issue.github_issue_number, "failed to post refund cancellation comment");
+            }
+        });
+        if deliveries.len() >= 4 {
+            if let Some(Err(error)) = deliveries.join_next().await {
+                error!(%error, "refund notification task failed");
+            }
         }
-
-        if let Err(error) =
-            post_comment(&state, &repo.full_name, issue.github_issue_number, &comment).await
-        {
-            error!(%error, issue = issue.github_issue_number, "failed to post refund cancellation comment");
+    }
+    while let Some(result) = deliveries.join_next().await {
+        if let Err(error) = result {
+            error!(%error, "refund notification task failed");
         }
     }
 
@@ -324,6 +340,31 @@ pub async fn refund(
         refunded_amount,
         cancelled_issues,
     }))
+}
+
+fn validate_refund_wallet(value: &str) -> Result<&str, AppError> {
+    let wallet = value.trim();
+    stellar_base::crypto::PublicKey::from_account_id(wallet)
+        .map_err(|_| AppError::bad_request("Invalid Stellar refund wallet"))?;
+    Ok(wallet)
+}
+
+#[cfg(test)]
+mod refund_tests {
+    use super::validate_refund_wallet;
+
+    #[test]
+    fn refund_wallet_requires_a_valid_stellar_account() {
+        assert!(
+            validate_refund_wallet("GDTNILC7HOK4QGBBUPYLWFDOCW66H5BAIL374PJFIS7SZKHR4QJCH43D")
+                .is_ok()
+        );
+        assert!(validate_refund_wallet("").is_err());
+        assert!(
+            validate_refund_wallet("GDTNILC7HOK4QGBBUPYLWFDOCW66H5BAIL374PJFIS7SZKHR4QJCH43E")
+                .is_err()
+        );
+    }
 }
 
 #[utoipa::path(

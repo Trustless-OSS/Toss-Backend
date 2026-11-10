@@ -86,6 +86,16 @@ pub async fn process(
 
     match result {
         Ok(JobOutcome::Done(value)) => {
+            if name == JOB_GITHUB_WEBHOOK {
+                if let Err(error) =
+                    crate::infra::recovery::resolve_recovered_webhook(state, job.data()).await
+                {
+                    warn!(%error, "failed to resolve recovered webhook");
+                }
+            }
+            if let Err(error) = crate::infra::recovery::resolve(state, &name, &id).await {
+                warn!(%error, "failed to resolve durable task");
+            }
             info!(job = %name, job_id = %id, attempt, "job completed");
             Ok(value)
         }
@@ -94,9 +104,24 @@ pub async fn process(
             Err(bullmq::Error::Delayed)
         }
         Err(error) => {
+            if let Err(persist_error) =
+                crate::infra::recovery::record_failure(state, &name, &id, job.data(), &error).await
+            {
+                error!(%persist_error, "failed to persist high-value task failure");
+            }
+            if error
+                .to_string()
+                .contains(crate::infra::recovery::FUNDING_WAIT)
+            {
+                info!(job = %name, job_id = %id, "job waiting for maintainer escrow funding; resumes after funding");
+                // Keep the failed queue entry replayable by the existing funding wake-up.
+                return Err(to_job_error(error));
+            }
             let job_error = to_job_error(error);
             if matches!(job_error, bullmq::Error::Unrecoverable(_)) {
                 error!(job = %name, job_id = %id, error = %job_error, "job failed permanently");
+            } else if attempt.saturating_add(1) >= job.opts().attempts.unwrap_or(1) {
+                error!(job = %name, job_id = %id, attempt, error = %job_error, "job exhausted queue attempts");
             } else {
                 warn!(job = %name, job_id = %id, attempt, error = %job_error, "job failed; will retry with backoff");
             }
@@ -106,18 +131,16 @@ pub async fn process(
 }
 
 fn to_job_error(error: AppError) -> bullmq::Error {
-    match error {
-        AppError::BadRequest { .. }
-        | AppError::Unauthorized { .. }
-        | AppError::Forbidden { .. }
-        | AppError::NotFound { .. }
-        | AppError::TooManyRequests { .. }
-        | AppError::WebhookError { .. }
-        | AppError::EnvVarError { .. } => bullmq::Error::Unrecoverable(error.to_string()),
-        AppError::StellarError { .. }
-        | AppError::GitHubError { .. }
-        | AppError::DatabaseError { .. }
-        | AppError::Internal { .. } => bullmq::Error::ProcessingError(error.to_string()),
+    if error
+        .to_string()
+        .contains(crate::infra::recovery::FUNDING_WAIT)
+    {
+        return bullmq::Error::Unrecoverable(error.to_string());
+    }
+    if error.is_permanent_job_failure() {
+        bullmq::Error::Unrecoverable(error.to_string())
+    } else {
+        bullmq::Error::ProcessingError(error.to_string())
     }
 }
 
@@ -147,6 +170,14 @@ mod tests {
     }
 
     #[test]
+    fn funding_waits_use_durable_recovery_instead_of_hot_queue_retries() {
+        assert!(matches!(
+            to_job_error(crate::infra::recovery::waiting_for_funds()),
+            bullmq::Error::Unrecoverable(_)
+        ));
+    }
+
+    #[test]
     fn transient_failures_are_retried() {
         assert!(matches!(
             to_job_error(AppError::internal("TrustlessWork request failed: timeout")),
@@ -158,6 +189,25 @@ mod tests {
         ));
         assert!(matches!(
             to_job_error(AppError::database("connection reset")),
+            bullmq::Error::ProcessingError(_)
+        ));
+    }
+
+    #[test]
+    fn github_http_status_controls_retries_without_parsing_messages() {
+        for status in [400, 401, 404, 410, 422, 403, 408, 429, 500, 502, 503] {
+            let error = AppError::GitHubError {
+                message: "upstream request failed".to_string(),
+                context: Some(serde_json::json!({ "status": status })),
+            };
+            assert_eq!(
+                matches!(to_job_error(error), bullmq::Error::Unrecoverable(_)),
+                matches!(status, 400 | 401 | 404 | 410 | 422),
+                "status {status}",
+            );
+        }
+        assert!(matches!(
+            to_job_error(AppError::too_many_requests("rate limited")),
             bullmq::Error::ProcessingError(_)
         ));
     }
