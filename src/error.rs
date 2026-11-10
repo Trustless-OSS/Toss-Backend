@@ -54,6 +54,27 @@ pub enum AppError {
 }
 
 impl AppError {
+    pub(crate) fn is_permanent_job_failure(&self) -> bool {
+        match self {
+            Self::BadRequest { .. }
+            | Self::Unauthorized { .. }
+            | Self::Forbidden { .. }
+            | Self::NotFound { .. }
+            | Self::WebhookError { .. }
+            | Self::EnvVarError { .. } => true,
+            Self::GitHubError {
+                context: Some(context),
+                ..
+            } => {
+                matches!(
+                    context["status"].as_u64(),
+                    Some(400 | 401 | 404 | 410 | 422)
+                )
+            }
+            _ => false,
+        }
+    }
+
     pub fn bad_request(message: impl Into<String>) -> Self {
         Self::BadRequest {
             message: message.into(),

@@ -243,13 +243,14 @@ async fn github_json<T: serde::de::DeserializeOwned>(
         let hint = if status.as_u16() == 401 && message.contains("could not be decoded") {
             " GitHub rejected the App JWT. The iss claim must be a string App ID, and GITHUB_APP_PRIVATE_KEY must be the matching PEM."
         } else if status.as_u16() == 404 && operation.contains("installation") {
-            " GitHub App ID or private key does not match the installed app, or the PEM key is malformed."
+            " GitHub App installation is missing or inaccessible; check repository access and the configured App credentials."
         } else {
             ""
         };
-        return Err(AppError::github(format!(
-            "{operation} failed with {status}: {message}.{hint}"
-        )));
+        return Err(AppError::GitHubError {
+            message: format!("{operation} failed with {status}: {message}.{hint}"),
+            context: Some(serde_json::json!({ "status": status.as_u16() })),
+        });
     }
 
     serde_json::from_str(&text)
@@ -725,4 +726,22 @@ pub async fn fetch_issue_payload(
         "issue recovery",
     )
     .await
+}
+
+#[cfg(test)]
+mod response_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn deleted_issue_response_preserves_status_for_retry_policy() {
+        let response = axum::http::Response::builder()
+            .status(410)
+            .body(r#"{"message":"This issue was deleted"}"#.to_string())
+            .unwrap();
+        let error = github_json::<serde_json::Value>(response.into(), "issue lookup")
+            .await
+            .unwrap_err();
+        assert!(error.is_permanent_job_failure());
+        assert!(error.to_string().contains("This issue was deleted"));
+    }
 }

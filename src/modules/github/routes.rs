@@ -117,7 +117,7 @@ pub async fn handle_github_webhook(
                 crate::infra::queue::JOB_GITHUB_WEBHOOK,
                 &id,
                 &serde_json::to_value(&job).map_err(|e| AppError::internal(e.to_string()))?,
-                &error.to_string(),
+                &error,
             )
             .await?;
             if !error

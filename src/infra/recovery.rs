@@ -32,7 +32,7 @@ pub async fn record_failure(
     name: &str,
     id: &str,
     data: &serde_json::Value,
-    error: &str,
+    error: &AppError,
 ) -> Result<(), AppError> {
     if !matches!(
         name,
@@ -54,9 +54,9 @@ pub async fn record_failure(
     let attempts = previous
         .as_ref()
         .map_or(1, |task| task.attempts.saturating_add(1));
-    let funding = error.contains(FUNDING_WAIT);
+    let funding = error.to_string().contains(FUNDING_WAIT);
     // Unexpected webhook failures are retained for inspection, never blindly replayed.
-    let status = failure_status(name, funding, attempts);
+    let status = failure_status(name, funding, error.is_permanent_job_failure(), attempts);
     schema::FailedTask::upsert_by_id(task_id)
         .task_type(name.to_string())
         .ref_id(
@@ -354,10 +354,10 @@ pub async fn wake_repo(state: &AppState, repo_id: Uuid) -> Result<(), AppError> 
     Ok(())
 }
 
-fn failure_status(name: &str, funding: bool, attempts: i32) -> &'static str {
+fn failure_status(name: &str, funding: bool, permanent: bool, attempts: i32) -> &'static str {
     if funding && name == JOB_GITHUB_WEBHOOK {
         "waiting_funding"
-    } else if !funding && (name == JOB_GITHUB_WEBHOOK || attempts >= 20) {
+    } else if !funding && (permanent || name == JOB_GITHUB_WEBHOOK || attempts >= 20) {
         "dead"
     } else {
         "pending"
@@ -378,20 +378,31 @@ mod tests {
 
     #[test]
     fn funding_webhooks_are_parked_and_payment_retries_remain_bounded() {
-        assert_eq!(failure_status(JOB_RELEASE_PAYOUT, false, 19), "pending");
-        assert_eq!(failure_status(JOB_RELEASE_PAYOUT, false, 20), "dead");
+        assert_eq!(
+            failure_status(JOB_RELEASE_PAYOUT, false, false, 19),
+            "pending"
+        );
+        assert_eq!(failure_status(JOB_RELEASE_PAYOUT, false, false, 20), "dead");
         for attempts in [1, 20, 100] {
             assert_eq!(
-                failure_status(JOB_GITHUB_WEBHOOK, true, attempts),
+                failure_status(JOB_GITHUB_WEBHOOK, true, false, attempts),
                 "waiting_funding"
             );
         }
-        assert_eq!(failure_status(JOB_ADVANCE_ISSUE, true, 1), "pending");
+        assert_eq!(failure_status(JOB_ADVANCE_ISSUE, true, false, 1), "pending");
+    }
+
+    #[test]
+    fn permanent_financial_failures_do_not_restart_the_retry_budget() {
+        for name in [JOB_ADVANCE_ISSUE, JOB_PUSH_MILESTONE, JOB_RELEASE_PAYOUT] {
+            assert_eq!(failure_status(name, false, true, 1), "dead");
+            assert_eq!(failure_status(name, false, false, 1), "pending");
+        }
     }
 
     #[test]
     fn stale_webhooks_are_not_blindly_replayed() {
-        assert_eq!(failure_status(JOB_GITHUB_WEBHOOK, false, 1), "dead");
+        assert_eq!(failure_status(JOB_GITHUB_WEBHOOK, false, false, 1), "dead");
         assert_ne!(
             task_id(JOB_RELEASE_PAYOUT, "same-id"),
             task_id(JOB_PUSH_MILESTONE, "same-id")

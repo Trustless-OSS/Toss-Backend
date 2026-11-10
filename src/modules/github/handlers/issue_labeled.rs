@@ -305,7 +305,7 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
 
     let balance = repo.escrow_balance.unwrap_or_default();
     if reward_amount > Decimal::ZERO && balance < reward_amount {
-        warn!(
+        info!(
             repo = full_name,
             issue = issue_number,
             available_balance = %balance,

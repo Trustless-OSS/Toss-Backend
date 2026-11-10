@@ -100,6 +100,19 @@ Errors are classified in [`src/infra/jobs/mod.rs`](../src/infra/jobs/mod.rs):
 
 Failed jobs are kept for 7 days: `failed` *is* the dead-letter queue.
 
+Durable recovery in Postgres uses the same permanent-error classification as the
+worker: permanent failures become `dead` immediately, so the recovery scanner
+cannot restart their retry budget. GitHub 400/401/404/410/422 responses require
+review; rate limits, timeouts and server failures remain retryable. Manual retries
+and new events still re-evaluate live preconditions after a problem is corrected.
+
+Missing escrow funding is an expected `waiting_funding` state, logged at INFO.
+Its BullMQ entry remains in `failed` so the funding wake-up can replay it; this
+queue count does not mean the funding request is permanently dead. Funding
+confirmation wakes the retained request. Transient failures log “will retry”
+only while queue attempts remain.
+
+
 BullMQ recovers stalled jobs: workers take a lock (`BULLMQ_LOCK_DURATION_MS`)
 and scan for expired locks (`BULLMQ_STALLED_INTERVAL_MS`). A killed worker stops
 renewing its lock, so the job cannot sit in `active` indefinitely.
