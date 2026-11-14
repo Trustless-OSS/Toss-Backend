@@ -170,6 +170,17 @@ The reward for this issue is now **{amount} USDC**. This updates the offered amo
 // Balance problems
 // ─────────────────────────────────────────────────────────────
 
+pub(super) fn funding_notice(body: &str) -> Option<&str> {
+    body.lines().next().filter(|heading| {
+        matches!(
+            *heading,
+            "**🏦 Reward awaiting funding**"
+                | "**🏦 Reward increase awaiting funding**"
+                | "**🏦 Escrow setup required**"
+        )
+    })
+}
+
 pub fn manual_insufficient_balance(balance: Decimal, reward: Decimal, app_url: &str) -> String {
     insufficient_balance(balance, reward, app_url)
 }
@@ -301,7 +312,7 @@ pub fn payout_released(reward: Decimal, username: &str, explorer_url: &str) -> S
     format!(
         r#"**✅ Reward payment completed**
 
-Hi @{username},
+Congratulations, @{username}! 🎉
 
 **{reward} USDC** has been released to you. View the transaction below to inspect the payment.
 
@@ -320,7 +331,7 @@ pub fn split_payout_released(
     format!(
         r#"**✅ Partial payment completed**
 
-Hi @{username},
+Congratulations, @{username}! 🎉
 
 Your partial payment is complete. The remaining allocation returned to the reward pool.
 
@@ -435,6 +446,11 @@ mod tests {
         assert!(payout.contains("125 USDC"));
         assert!(payout.contains("Hi @contributor,\n\n"));
         let split = split_payout_released(reward, balance, "contributor", "C_ESCROW");
+        assert!(split.contains("Congratulations, @contributor!"));
+        let released = payout_released(reward, "contributor", "https://explorer.example/tx");
+        assert!(released.contains("Congratulations, @contributor!"));
+        assert!(released.contains("125 USDC"));
+        assert!(released.contains("https://explorer.example/tx"));
         assert!(split.contains("@contributor"));
         assert!(split.contains("125 USDC"));
         assert!(split.contains("987 USDC"));

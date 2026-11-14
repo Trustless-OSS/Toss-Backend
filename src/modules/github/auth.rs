@@ -353,7 +353,11 @@ pub async fn post_comment(
         "gh-comment-delivery:{}:{}:{}",
         full_name,
         issue_number,
-        hex::encode(Sha256::digest(body.as_bytes()))
+        hex::encode(Sha256::digest(
+            super::comments::funding_notice(body)
+                .unwrap_or(body)
+                .as_bytes()
+        ))
     );
     super::comment_delivery::once(state.redis.as_ref(), key, || {
         post_comment_inner(state, full_name, issue_number, body)
@@ -382,6 +386,32 @@ async fn post_comment_inner(
     };
 
     let url = format!("https://api.github.com/repos/{full_name}/issues/{issue_number}/comments");
+    // Funding retries outlive the delivery cache; GitHub keeps the durable notice history.
+    if let Some(notice) = super::comments::funding_notice(body) {
+        for page in 1u64.. {
+            let response = state
+                .http_client
+                .get(&url)
+                .query(&[("per_page", 100), ("page", page)])
+                .header("Authorization", format!("Bearer {token}"))
+                .header("Accept", GITHUB_ACCEPT)
+                .header("X-GitHub-Api-Version", GITHUB_API_VERSION)
+                .header("User-Agent", GITHUB_USER_AGENT)
+                .send()
+                .await
+                .map_err(|error| AppError::github(error.to_string()))?;
+            let comments: Vec<serde_json::Value> =
+                github_json(response, "funding notice lookup").await?;
+            if comments.iter().any(|comment| {
+                is_existing_funding_notice(comment, notice, &state.config.github_app_id)
+            }) {
+                return Ok(());
+            }
+            if comments.len() < 100 {
+                break;
+            }
+        }
+    }
     let response = state
         .http_client
         .post(&url)
@@ -413,6 +443,16 @@ async fn post_comment_inner(
     }
 
     Ok(())
+}
+
+fn is_existing_funding_notice(comment: &serde_json::Value, notice: &str, app_id: &str) -> bool {
+    comment["performed_via_github_app"]["id"]
+        .as_u64()
+        .is_some_and(|id| id.to_string() == app_id)
+        && comment["body"]
+            .as_str()
+            .and_then(super::comments::funding_notice)
+            == Some(notice)
 }
 
 pub async fn install_repo_webhook(
@@ -773,6 +813,34 @@ pub async fn fetch_issue_payload(
 #[cfg(test)]
 mod response_tests {
     use super::*;
+
+    #[test]
+    fn funding_notice_survives_cache_expiry_and_message_changes() {
+        let body = super::super::comments::manual_insufficient_balance(
+            rust_decimal::Decimal::ZERO,
+            rust_decimal::Decimal::ONE,
+            "https://app.example",
+        );
+        let notice = super::super::comments::funding_notice(&body).unwrap();
+        let mut comment = serde_json::json!({
+            "body": super::super::comments::addressed_to(Some("owner"), &body),
+            "performed_via_github_app": {"id": 42},
+            "created_at": "2020-01-01T00:00:00Z"
+        });
+        assert!(is_existing_funding_notice(&comment, notice, "42"));
+        assert!(!is_existing_funding_notice(&comment, notice, "99"));
+        comment["performed_via_github_app"] = serde_json::Value::Null;
+        assert!(!is_existing_funding_notice(&comment, notice, "42"));
+        comment["performed_via_github_app"] = serde_json::json!({"id": 42});
+        comment["body"] = serde_json::json!(super::super::comments::HELP);
+        assert!(!is_existing_funding_notice(&comment, notice, "42"));
+        for body in [
+            super::super::comments::ESCROW_SETUP_REQUIRED,
+            super::super::comments::BOUNTY_UPDATE_FAILED,
+        ] {
+            assert!(super::super::comments::funding_notice(body).is_some());
+        }
+    }
 
     #[tokio::test]
     async fn deleted_issue_response_preserves_status_for_retry_policy() {
