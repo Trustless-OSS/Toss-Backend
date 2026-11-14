@@ -301,6 +301,48 @@ pub async fn list_installation_repos(
     ))
 }
 
+pub async fn post_maintainer_comment(
+    state: &AppState,
+    repo: &crate::shared::models::Repo,
+    issue_number: i32,
+    body: &str,
+) -> Result<(), AppError> {
+    use crate::{
+        error::{map_db_err, require_db},
+        shared::models::schema,
+    };
+
+    let mut db = require_db(&state.db)?;
+    let mut maintainers = schema::RepoMaintainer::filter_by_repo_id(repo.id)
+        .exec(&mut db)
+        .await
+        .map_err(map_db_err)?;
+    // Prefer the registered owner; stable ordering keeps comment deduplication effective.
+    maintainers.sort_by_key(|maintainer| (maintainer.role != "owner", maintainer.profile_id));
+    let mut addressed = body.to_owned();
+    for maintainer in maintainers {
+        if let Some(profile) = schema::Profile::filter_by_id(maintainer.profile_id)
+            .first()
+            .exec(&mut db)
+            .await
+            .map_err(map_db_err)?
+        {
+            addressed = super::comments::addressed_to(Some(&profile.username), body);
+            if addressed != body {
+                break;
+            }
+        }
+    }
+    if addressed == body {
+        warn!(repo = %repo.full_name, "no valid registered maintainer available for comment mention");
+    }
+    addressed.push_str(&format!(
+        "\n\n[Open dashboard]({}/dashboard)",
+        state.config.app_url.trim_end_matches('/')
+    ));
+    post_comment(state, &repo.full_name, issue_number, &addressed).await
+}
+
 pub async fn post_comment(
     state: &AppState,
     full_name: &str,

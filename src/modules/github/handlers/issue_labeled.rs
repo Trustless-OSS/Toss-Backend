@@ -11,7 +11,7 @@ use crate::{
             get_issue_by_repo_and_github_id, update_pending_issue_reward,
         },
         github::{
-            auth::post_comment,
+            auth::post_maintainer_comment,
             comments,
             handlers::helpers::{
                 adopt_existing_assignee, extract_manual_amount, labels_from_payload,
@@ -105,9 +105,9 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
                     state, existing, &repo,
                 )
                 .await?;
-                post_comment(
+                post_maintainer_comment(
                     state,
-                    full_name,
+                    &repo,
                     issue_number,
                     &comments::bounty_cancelled(reward),
                 )
@@ -136,16 +136,8 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
     }
 
     if repo.escrow_contract_id.is_none() {
-        post_comment(
-            state,
-            full_name,
-            issue_number,
-            &comments::addressed_to(
-                payload["sender"]["login"].as_str(),
-                comments::ESCROW_SETUP_REQUIRED,
-            ),
-        )
-        .await?;
+        post_maintainer_comment(state, &repo, issue_number, comments::ESCROW_SETUP_REQUIRED)
+            .await?;
         return Err(crate::infra::recovery::waiting_for_funds());
     }
 
@@ -182,9 +174,9 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
         };
 
         adopt_existing_assignee(state, issue, &created).await?;
-        post_comment(
+        post_maintainer_comment(
             state,
-            full_name,
+            &repo,
             issue_number,
             comments::UNPRICED_BOUNTY_CREATED,
         )
@@ -220,13 +212,7 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
                 adopt_existing_assignee(state, issue, &created).await?;
             }
         }
-        post_comment(
-            state,
-            full_name,
-            issue_number,
-            comments::MANUAL_AMOUNT_NEEDED,
-        )
-        .await?;
+        post_maintainer_comment(state, &repo, issue_number, comments::MANUAL_AMOUNT_NEEDED).await?;
         return Ok(());
     }
 
@@ -253,13 +239,8 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
             };
             Service::notify_maintainers_quiet(state, repo.id, n).await;
 
-            post_comment(
-                state,
-                full_name,
-                issue_number,
-                comments::BOUNTY_UPDATE_FAILED,
-            )
-            .await?;
+            post_maintainer_comment(state, &repo, issue_number, comments::BOUNTY_UPDATE_FAILED)
+                .await?;
             return Err(crate::infra::recovery::waiting_for_funds());
         }
         adopt_existing_assignee(state, issue, existing).await?;
@@ -332,18 +313,11 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
         };
         Service::notify_maintainers_quiet(state, repo.id, n).await;
 
-        post_comment(
+        post_maintainer_comment(
             state,
-            full_name,
+            &repo,
             issue_number,
-            &comments::addressed_to(
-                payload["sender"]["login"].as_str(),
-                &comments::labeled_insufficient_balance(
-                    balance,
-                    reward_amount,
-                    &state.config.app_url,
-                ),
-            ),
+            &comments::labeled_insufficient_balance(balance, reward_amount, &state.config.app_url),
         )
         .await?;
         return Err(crate::infra::recovery::waiting_for_funds());
@@ -364,14 +338,11 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
     };
 
     let contract_id = repo.escrow_contract_id.as_deref().unwrap_or("");
-    post_comment(
+    post_maintainer_comment(
         state,
-        full_name,
+        &repo,
         issue_number,
-        &comments::addressed_to(
-            payload["sender"]["login"].as_str(),
-            &comments::labeled_bounty_created(reward_amount, matched_level, contract_id),
-        ),
+        &comments::labeled_bounty_created(reward_amount, matched_level, contract_id),
     )
     .await?;
 

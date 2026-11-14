@@ -299,10 +299,17 @@ pub async fn refund(
         let state = state.clone();
         let repo_name = repo.full_name.clone();
         let repo_id = repo.id;
-        let comment = comments::bounty_cancelled_after_refund(&contract_id);
+        let mut comment = comments::bounty_cancelled_after_refund(&contract_id);
         deliveries.spawn(async move {
             // Send BountyCancelled notification to assignee
             if let Some(assignee_id) = issue.assignee_id {
+                match crate::modules::contributor::repository::get_profile_by_id(&state, assignee_id).await {
+                    Ok(Some(profile)) => {
+                        comment = comments::addressed_to(Some(&profile.username), &comment);
+                    }
+                    Ok(None) => {}
+                    Err(error) => error!(%error, "failed to look up refund comment recipient"),
+                }
                 let n = Notify {
                     recipient: assignee_id,
                     kind: Kind::BountyCancelled,

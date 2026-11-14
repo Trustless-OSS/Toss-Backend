@@ -9,7 +9,7 @@ use crate::{
             get_assignment_for_issue, get_issue_by_repo_and_number, update_assignment_pr_merge,
         },
         github::{
-            auth::post_comment,
+            auth::post_maintainer_comment,
             comments,
             handlers::helpers::{extract_issue_number, has_rejected_label, labels_from_payload},
         },
@@ -30,7 +30,7 @@ pub async fn handle_pr_merged(state: &AppState, payload: &Value) -> Result<(), A
         .get("id")
         .and_then(Value::as_i64)
         .ok_or_else(|| AppError::webhook("pull_request repository.id missing"))?;
-    let full_name = repository
+    repository
         .get("full_name")
         .and_then(Value::as_str)
         .ok_or_else(|| AppError::webhook("pull_request repository.full_name missing"))?;
@@ -76,9 +76,9 @@ pub async fn handle_pr_merged(state: &AppState, payload: &Value) -> Result<(), A
     let assigned_github_id = assignee.as_ref().map(|p| p.github_id);
 
     if pr_author_id.is_none() || pr_author_id != assigned_github_id {
-        post_comment(
+        post_maintainer_comment(
             state,
-            full_name,
+            &repo,
             issue_number,
             &comments::payout_aborted_for_pr_author(issue_number),
         )

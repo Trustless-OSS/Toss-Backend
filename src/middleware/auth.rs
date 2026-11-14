@@ -93,10 +93,10 @@ impl FromRequestParts<AppState> for AuthedUser {
                 })?;
 
             if user.status() != StatusCode::OK {
-                error!(
-                    status = %user.status(),
-                    "Auth rejected bearer token"
-                );
+                // error!(
+                //     status = %user.status(),
+                //     "Auth rejected bearer token"
+                // );
                 return Err(unauthorized_response());
             }
 

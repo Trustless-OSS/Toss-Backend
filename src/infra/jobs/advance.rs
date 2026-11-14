@@ -159,9 +159,9 @@ async fn apply(
 
         Decision::Waiting { reason } => {
             if data.notify && data.recheck == 0 && reason.contains("maintainer must connect") {
-                if let Err(error) = crate::modules::github::auth::post_comment(
+                if let Err(error) = crate::modules::github::auth::post_maintainer_comment(
                     state,
-                    &ctx.repo.full_name,
+                    &ctx.repo,
                     ctx.issue.github_issue_number,
                     &crate::modules::github::comments::split_payout_waiting_for_wallet(
                         &state.config.app_url,

@@ -11,7 +11,9 @@ use crate::{
         },
         escrow::trustless_work::escrow_service::TrustlessWorkAPI,
         github::{
-            auth::{fetch_github_pull_request, post_comment, GitHubPullRequest},
+            auth::{
+                fetch_github_pull_request, post_comment, post_maintainer_comment, GitHubPullRequest,
+            },
             comments,
             handlers::helpers::{
                 dispute_milestone, explorer_tx_url, extract_issue_number, resolve_milestone_dispute,
@@ -616,9 +618,9 @@ async fn release_split(
     let maintainer_wallet = get_maintainer_payout_wallet(state, ctx.repo.id, assignee.id).await?;
 
     let Some(maintainer_wallet) = maintainer_wallet else {
-        post_comment(
+        post_maintainer_comment(
             state,
-            &ctx.repo.full_name,
+            &ctx.repo,
             ctx.issue.github_issue_number,
             &comments::split_payout_waiting_for_wallet(&state.config.app_url),
         )

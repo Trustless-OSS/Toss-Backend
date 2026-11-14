@@ -133,6 +133,7 @@ fn build_forward_request(data: &str, webhook_secret: &str) -> Result<ForwardRequ
 
     let body = match body {
         Value::String(raw) => raw,
+        // shortcut: Smee must preserve original JSON formatting, use a raw-body tunnel if it changes bytes.
         body => serde_json::to_string(&body).map_err(|error| {
             AppError::internal(format!("Failed to encode webhook body: {error}"))
         })?,
@@ -242,6 +243,20 @@ fn event_data(event: &[u8]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preserves_signed_object_key_order() {
+        let body = r#"{"action":"opened","issue":{"title":"Test","id":42},"repository":{"name":"repo","id":1}}"#;
+        let signature = webhook_signature("secret", body.as_bytes()).unwrap();
+        let data = format!(
+            r#"{{"body":{body},"x-hub-signature-256":"{signature}","x-github-event":"issues"}}"#
+        );
+
+        let request = build_forward_request(&data, "secret").unwrap();
+        assert_eq!(request.body, body);
+        assert_eq!(request.headers["x-hub-signature-256"], signature);
+        assert!(build_forward_request(&data, "wrong-secret").is_err());
+    }
 
     #[test]
     fn preserves_signed_raw_body_and_rejects_reserialized_body() {

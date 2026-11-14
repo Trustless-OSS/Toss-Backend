@@ -18,7 +18,7 @@ use crate::{
         contributor::repository::{get_profile_by_github_id, get_wallets_for_profile},
         escrow::repository::refund_repo_balance,
         github::{
-            auth::post_comment,
+            auth::{post_comment, post_maintainer_comment},
             comments,
             handlers::helpers::{
                 adopt_existing_assignee, cancel_bounty_with_refund, dispute_milestone,
@@ -110,7 +110,13 @@ pub async fn handle_issue_comment_created(
     }
 
     if is_help_command(body) {
-        post_comment(state, full_name, issue_number, comments::HELP).await?;
+        post_comment(
+            state,
+            full_name,
+            issue_number,
+            &comments::addressed_to(Some(commenter_login), comments::HELP),
+        )
+        .await?;
         return Ok(());
     }
 
@@ -124,6 +130,7 @@ pub async fn handle_issue_comment_created(
             full_name,
             github_issue_id,
             issue_number,
+            commenter_login,
         )
         .await?;
         return Ok(());
@@ -282,7 +289,10 @@ async fn handle_payout_command(
                 state,
                 full_name,
                 target_number,
-                &comments::bounty_cancelled(reward),
+                &comments::addressed_to(
+                    comment_user["login"].as_str(),
+                    &comments::bounty_cancelled(reward),
+                ),
             )
             .await?;
         }
@@ -301,7 +311,10 @@ async fn handle_payout_command(
             state,
             full_name,
             comment_issue_number,
-            &comments::pr_author_mismatch(target_number),
+            &comments::addressed_to(
+                comment_user["login"].as_str(),
+                &comments::pr_author_mismatch(target_number),
+            ),
         )
         .await?;
         return Ok(());
@@ -314,7 +327,10 @@ async fn handle_payout_command(
                 state,
                 full_name,
                 target_number,
-                &comments::bounty_cancelled(reward),
+                &comments::addressed_to(
+                    comment_user["login"].as_str(),
+                    &comments::bounty_cancelled(reward),
+                ),
             )
             .await?;
         } else {
@@ -331,7 +347,10 @@ async fn handle_payout_command(
                     state,
                     full_name,
                     comment_issue_number,
-                    comments::INVALID_SPLIT,
+                    &comments::addressed_to(
+                        comment_user["login"].as_str(),
+                        comments::INVALID_SPLIT,
+                    ),
                 )
                 .await?;
                 return Ok(());
@@ -434,7 +453,10 @@ async fn handle_payout_command(
             state,
             full_name,
             target_number,
-            &comments::bounty_rejected(reward, contract_id),
+            &comments::addressed_to(
+                Some(&contributor.username),
+                &comments::bounty_rejected(reward, contract_id),
+            ),
         )
         .await?;
     }
@@ -448,6 +470,7 @@ async fn retry_bounty(
     full_name: &str,
     github_issue_id: i64,
     issue_number: i32,
+    commenter_login: &str,
 ) -> Result<(), AppError> {
     let Some(repo) = get_repo_by_github_id(state, repo_github_id).await? else {
         return Ok(());
@@ -468,7 +491,13 @@ async fn retry_bounty(
         "manual retry command received"
     );
 
-    post_comment(state, full_name, issue_number, comments::RETRYING_BOUNTY).await?;
+    post_comment(
+        state,
+        full_name,
+        issue_number,
+        &comments::addressed_to(Some(commenter_login), comments::RETRYING_BOUNTY),
+    )
+    .await?;
 
     Ok(())
 }
@@ -489,6 +518,8 @@ async fn create_or_update_manual_bounty(
         return Ok(());
     };
     if repo.escrow_contract_id.is_none() {
+        post_maintainer_comment(state, &repo, issue_number, comments::ESCROW_SETUP_REQUIRED)
+            .await?;
         return Err(crate::infra::recovery::waiting_for_funds());
     }
 
@@ -505,7 +536,14 @@ async fn create_or_update_manual_bounty(
                     state,
                     full_name,
                     issue_number,
-                    comments::BOUNTY_UPDATE_FAILED,
+                    &comments::addressed_to(
+                        Some(commenter_login),
+                        &format!(
+                            "{}\n\n[Fund the escrow]({}/dashboard)",
+                            comments::BOUNTY_UPDATE_FAILED,
+                            state.config.app_url
+                        ),
+                    ),
                 )
                 .await?;
                 return Err(crate::infra::recovery::waiting_for_funds());
@@ -515,7 +553,10 @@ async fn create_or_update_manual_bounty(
                 state,
                 full_name,
                 issue_number,
-                &comments::manual_bounty_updated(manual_amount),
+                &comments::addressed_to(
+                    Some(commenter_login),
+                    &comments::manual_bounty_updated(manual_amount),
+                ),
             )
             .await?;
             if matches!(existing.status.as_str(), "assigned" | "merged")

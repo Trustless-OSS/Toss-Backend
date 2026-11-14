@@ -8,7 +8,7 @@ use crate::{
     modules::{
         bounty::repository::{get_issue_by_repo_and_github_id, upsert_assignment},
         contributor::repository::ensure_contributor,
-        github::{auth::post_comment, comments},
+        github::{auth::post_maintainer_comment, comments},
         notification::{
             kinds::{Kind, Notify},
             service::Service,
@@ -103,9 +103,9 @@ pub async fn handle_issue_assigned(state: &AppState, payload: &Value) -> Result<
         // Notify maintainers (gets BellAndEmail)
         Service::notify_maintainers_quiet(state, repo.id, n_missing).await;
 
-        post_comment(
+        post_maintainer_comment(
             state,
-            &repo.full_name,
+            &repo,
             issue_record.github_issue_number,
             &comments::contributor_assigned_without_amount(assignee_login),
         )
