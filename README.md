@@ -2,7 +2,6 @@
 
 <img width="280" alt="toss" src="https://github.com/user-attachments/assets/eb15200e-c4c5-4405-aca1-bbb692bd3480" />
 
-
 [![Rust CI](https://github.com/Trustless-OSS/Toss-Backend/actions/workflows/rust.yml/badge.svg)](https://github.com/Trustless-OSS/Toss-Backend/actions/workflows/rust.yml)
 ![Rust 2021](https://img.shields.io/badge/Rust-2021-000000?logo=rust&logoColor=white)
 ![Axum](https://img.shields.io/badge/Axum-0.8-7C3AED)
