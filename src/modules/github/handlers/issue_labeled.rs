@@ -66,8 +66,12 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
     let mut all_trigger_labels = reward_labels.clone();
     all_trigger_labels.extend(vec![
         "rewarded".to_string(),
+        "trustless-oss".to_string(),
+        "bounty".to_string(),
         "rejected".to_string(),
+        "reject".to_string(),
         "manual".to_string(),
+        "custom".to_string(),
     ]);
 
     // Check if this event_label is a trigger
@@ -130,7 +134,7 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
         info!(
             repo = full_name,
             issue = issue_number,
-            "bounty label ignored; issue is missing `rewarded`"
+            "bounty label ignored; issue is missing `rewarded`, `trustless-oss`, or `bounty`"
         );
         return Ok(());
     }

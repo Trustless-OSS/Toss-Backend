@@ -10,9 +10,15 @@ pub fn parse_labels(labels: &[Value], reward_labels: &[String]) -> ParsedLabels 
         .map(|name| name.trim().to_ascii_lowercase())
         .collect();
 
-    let is_rewarded = names.iter().any(|name| name == "rewarded");
-    let is_rejected = names.iter().any(|name| name == "rejected");
-    let is_manual = names.iter().any(|name| name == "manual");
+    let is_rewarded = names
+        .iter()
+        .any(|name| name == "rewarded" || name == "trustless-oss" || name == "bounty");
+    let is_rejected = names
+        .iter()
+        .any(|name| name == "rejected" || name == "reject");
+    let is_manual = names
+        .iter()
+        .any(|name| name == "manual" || name == "custom");
 
     // Match against repo's configured reward levels first (case-insensitive)
     let matched_level = names.iter().find_map(|name| {
@@ -68,23 +74,43 @@ mod tests {
 
     #[test]
     fn manual_does_not_need_a_configured_reward_mapping() {
-        let parsed = parse_labels(
-            &[json!({"name": "manual"}), json!({"name": "rewarded"})],
-            &[],
-        );
-        assert!(parsed.is_manual && parsed.is_rewarded);
-        assert_eq!(parsed.matched_level.as_deref(), Some("manual"));
+        for label in ["manual", " CuStOm "] {
+            let parsed = parse_labels(&[json!({"name": label}), json!({"name": "rewarded"})], &[]);
+            assert!(parsed.is_manual && parsed.is_rewarded);
+            assert_eq!(parsed.matched_level.as_deref(), Some("manual"));
+        }
     }
 
     #[test]
-    fn rewarded_is_required_with_or_without_a_price_label() {
-        for labels in [
-            vec![json!({"name": "ReWaRdEd"})],
-            vec![json!({"name": "rewarded"}), json!({"name": "low"})],
-        ] {
+    fn reward_label_aliases_work_with_or_without_a_price_label() {
+        for name in ["ReWaRdEd", " TrUsTlEsS-OsS ", " BoUnTy "] {
+            let mut labels = vec![json!({"name": name})];
             assert!(parse_labels(&labels, &["low".into()]).is_rewarded);
+            labels.push(json!({"name": "low"}));
+            let parsed = parse_labels(&labels, &["low".into()]);
+            assert!(parsed.is_rewarded);
+            assert_eq!(parsed.matched_level.as_deref(), Some("low"));
+            for rejected in ["rejected", " ReJeCt "] {
+                let mut rejected_labels = labels.clone();
+                rejected_labels.push(json!({"name": rejected}));
+                let parsed = parse_labels(&rejected_labels, &["low".into()]);
+                assert!(parsed.is_rejected && !parsed.is_rewarded);
+            }
         }
         assert!(!parse_labels(&[json!({"name": "manual"})], &[]).is_rewarded);
+    }
+
+    #[test]
+    fn hyphens_are_preserved_in_reward_and_price_labels() {
+        for level in ["low", "good-first-issue"] {
+            let parsed = parse_labels(
+                &[json!({"name": "trustless-oss"}), json!({"name": level})],
+                &[level.into()],
+            );
+            assert!(parsed.is_rewarded);
+            assert_eq!(parsed.matched_level.as_deref(), Some(level));
+        }
+        assert!(!parse_labels(&[json!({"name": "trustlessoss"})], &[]).is_rewarded);
     }
 
     #[test]

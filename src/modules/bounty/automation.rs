@@ -1,3 +1,7 @@
+use crate::{
+    error::{map_db_err, require_db},
+    shared::models::schema,
+};
 use rust_decimal::Decimal;
 use tracing::{info, warn};
 use uuid::Uuid;
@@ -141,18 +145,12 @@ async fn get_primary_wallet(
     state: &AppState,
     profile_id: Uuid,
 ) -> Result<Option<Wallet>, AppError> {
-    use crate::{
-        error::{map_db_err, require_db},
-        shared::models::schema,
-    };
-
     let mut db = require_db(&state.db)?;
-    let wallets = schema::Wallet::filter_by_profile_id(profile_id)
+    let mut wallets = schema::Wallet::filter_by_profile_id(profile_id)
         .exec(&mut db)
         .await
         .map_err(map_db_err)?;
 
-    let mut wallets = wallets;
     wallets.sort_by_key(|wallet| (wallet.chain != "stellar", !wallet.is_primary));
     Ok(wallets
         .into_iter()

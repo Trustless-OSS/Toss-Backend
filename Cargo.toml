@@ -41,12 +41,9 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 uuid = { version = "1", features = ["serde", "v4", "v7"] }
 utoipa = { version = "5.5.0", features = ["axum_extras", "uuid", "chrono", "decimal"] }
-utoipa-axum = "0.2.0"
 utoipa-swagger-ui = { version = "9.0.2", features = ["axum"] }
 bullmq-official = "1.2.6"
 resend-rs = "0.32.1"
-html-escape = "0.2"
-maud = "0.26"
 tower_governor = "0.8.0"
 governor = "0.10.4"
 aws-config = "1.13.0"

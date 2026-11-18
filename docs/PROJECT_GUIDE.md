@@ -265,7 +265,7 @@ flowchart TD
 
 ### Bounty creation and pricing
 
-An issue becomes a priced bounty when it carries `rewarded` plus a configured reward label. A `manual` flow can obtain the amount from `@trustless-oss <amount>` in an issue body or privileged comment. An unpriced bounty may exist with zero reward while waiting for a valid amount.
+An issue becomes a priced bounty when it carries `rewarded`, `trustless-oss`, or `bounty` plus a configured reward label. A `manual` (or `custom`) flow can obtain the amount from `@trustless-oss <amount>` in an issue body or privileged comment. An unpriced bounty may exist with zero reward while waiting for a valid amount. Label matching ignores case and surrounding whitespace; `rejected` or `reject` overrides reward labels.
 
 Creation reserves the reward from the repository's cached available balance. If funds are insufficient, the operation does not create an unsafe reservation and maintainers are notified/commented. Before a milestone is locked, maintainers may change a pending reward. Once chain state exists, amount changes are restricted to avoid database/escrow divergence.
 

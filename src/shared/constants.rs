@@ -34,9 +34,19 @@ pub struct DefaultGithubLabel {
 }
 
 /// Labels required for bounty discovery and priority classification.
-pub const DEFAULT_GITHUB_REPOSITORY_LABELS: [DefaultGithubLabel; 4] = [
+pub const DEFAULT_GITHUB_REPOSITORY_LABELS: [DefaultGithubLabel; 6] = [
     DefaultGithubLabel {
         name: "rewarded",
+        color: "0E8A16",
+        description: "Issue has a bounty",
+    },
+    DefaultGithubLabel {
+        name: "trustless-oss",
+        color: "0E8A16",
+        description: "Issue has a bounty",
+    },
+    DefaultGithubLabel {
+        name: "bounty",
         color: "0E8A16",
         description: "Issue has a bounty",
     },
