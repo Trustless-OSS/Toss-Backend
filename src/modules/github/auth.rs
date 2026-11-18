@@ -23,9 +23,6 @@ const GITHUB_USER_AGENT: &str = "Trustless-OSS-Bot";
 struct AppClaims {
     iat: i64,
     exp: i64,
-    /// JWT RFC 7519 requires `iss` to be a string. GitHub accepts the App ID
-    /// as a decimal string (e.g. "4084634"). A JSON number makes GitHub return
-    /// 401 "A JSON web token could not be decoded."
     iss: String,
 }
 
@@ -801,18 +798,74 @@ pub async fn fetch_issue_payload(
     full_name: &str,
     number: i32,
 ) -> Result<serde_json::Value, AppError> {
-    github_get_json(
+    let issue = github_get_json(
         state,
         repo_id,
         &format!("https://api.github.com/repos/{full_name}/issues/{number}"),
-        "issue recovery",
+        "issue lookup",
     )
-    .await
+    .await?;
+    validate_issue_state(&issue)?;
+    Ok(issue)
+}
+
+fn validate_issue_state(issue: &serde_json::Value) -> Result<(), AppError> {
+    let labels = issue["labels"]
+        .as_array()
+        .ok_or_else(|| AppError::github("Issue response missing labels"))?;
+    let assignees = issue["assignees"]
+        .as_array()
+        .ok_or_else(|| AppError::github("Issue response missing assignees"))?;
+    if labels.iter().any(|label| label["name"].as_str().is_none())
+        || assignees.iter().any(|assignee| {
+            !assignee["id"].as_i64().is_some_and(|id| id > 0)
+                || assignee["login"].as_str().is_none_or(str::is_empty)
+        })
+    {
+        return Err(AppError::github(
+            "Issue response has invalid labels or assignees",
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod response_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn issue_response_preserves_all_labels_and_assignees() {
+        let body = serde_json::json!({
+            "labels": [{"name": "Core-Team"}, {"name": "rewarded"}],
+            "assignees": [{"id": 1, "login": "alice"}, {"id": 2, "login": "bob"}],
+            "assignee": {"id": 1, "login": "alice"}
+        });
+        let response = axum::http::Response::builder()
+            .status(200)
+            .body(body.to_string())
+            .unwrap();
+        let issue = github_json::<serde_json::Value>(response.into(), "issue lookup")
+            .await
+            .unwrap();
+        validate_issue_state(&issue).unwrap();
+        assert_eq!(issue["labels"], body["labels"]);
+        assert_eq!(issue["assignees"], body["assignees"]);
+    }
+
+    #[test]
+    fn issue_state_requires_explicit_valid_arrays_but_allows_empty_arrays() {
+        validate_issue_state(&serde_json::json!({"labels": [], "assignees": []})).unwrap();
+        for issue in [
+            serde_json::json!({"labels": []}),
+            serde_json::json!({"assignees": []}),
+            serde_json::json!({"labels": null, "assignees": []}),
+            serde_json::json!({"labels": [{}], "assignees": []}),
+            serde_json::json!({"labels": [], "assignees": [{"id": 0, "login": "alice"}]}),
+            serde_json::json!({"labels": [], "assignees": [{"id": 1}]}),
+        ] {
+            assert!(validate_issue_state(&issue).is_err(), "{issue}");
+        }
+    }
 
     #[test]
     fn funding_notice_survives_cache_expiry_and_message_changes() {

@@ -1,11 +1,3 @@
-//! Data access for the dashboard & leaderboard.
-//!
-//! All reads come from `Bounty` rows (the authoritative state) joined with
-//! `Profile` (contributor username) and `Repository` (the `owner/name` slug).
-//! We follow the codebase convention (see `repo::repository::list_repos_for_user`)
-//! of fetching rows and filtering/joining in Rust rather than SQL joins, because
-//! Toasty's query API here exposes only single-field `filter_by_*` helpers.
-
 use std::collections::HashMap;
 
 use rust_decimal::Decimal;

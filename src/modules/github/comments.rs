@@ -125,7 +125,21 @@ Connect your Stellar wallet through your profile so a maintainer can configure y
 // Reward created / updated
 // ─────────────────────────────────────────────────────────────
 
-pub fn manual_bounty_created(reward: Decimal, contract_id: &str, creator: &str) -> String {
+fn reward_created_next_step(has_assignee: bool) -> &'static str {
+    if has_assignee {
+        "A contributor is already assigned. The bot will check their connected wallet and escrow requirements automatically; watch for the escrow confirmation or any required action."
+    } else {
+        "Assign a contributor with a connected wallet to lock the reward."
+    }
+}
+
+pub fn manual_bounty_created(
+    reward: Decimal,
+    contract_id: &str,
+    creator: &str,
+    has_assignee: bool,
+) -> String {
+    let next_step = reward_created_next_step(has_assignee);
     format!(
         r#"**💰 Reward created**
 
@@ -136,22 +150,28 @@ Your reward has been added to this issue. Funds will be locked for an eligible a
 **Reward:** {reward} USDC · [View escrow](https://viewer.trustlesswork.com/{contract_id})
 
 > [!TIP]
-> **Next step:** Assign a contributor with a connected wallet to lock the reward."#
+> **Next step:** {next_step}"#
     )
 }
 
-pub fn labeled_bounty_created(reward: Decimal, difficulty: &str, contract_id: &str) -> String {
+pub fn labeled_bounty_created(
+    reward: Decimal,
+    difficulty: &str,
+    contract_id: &str,
+    has_assignee: bool,
+) -> String {
+    let next_step = reward_created_next_step(has_assignee);
     format!(
         r#"**💰 Reward created**
 
-This reward was set from the issue’s configured label. Funds still need to be locked for an assigned contributor before payment can proceed.
+This reward was set from the issue’s configured label. Escrow locking is confirmed separately; creating a reward does not make a payment.
 
 **Reward:** {reward} USDC · **Label:** `{difficulty}`
 
 [View escrow](https://viewer.trustlesswork.com/{contract_id})
 
 > [!TIP]
-> **Next step:** Assign a contributor with a connected wallet to lock the reward. You can change the amount before it is locked."#
+> **Next step:** {next_step} You can change the amount before it is locked."#
     )
 }
 
@@ -403,6 +423,35 @@ pub fn addressed_to(login: Option<&str>, body: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn reward_created_guidance_matches_current_assignment() {
+        for has_assignee in [false, true] {
+            for body in [
+                super::labeled_bounty_created(
+                    rust_decimal::Decimal::ONE,
+                    "bug",
+                    "escrow",
+                    has_assignee,
+                ),
+                super::manual_bounty_created(
+                    rust_decimal::Decimal::ONE,
+                    "escrow",
+                    "owner",
+                    has_assignee,
+                ),
+            ] {
+                assert_eq!(
+                    body.contains("A contributor is already assigned"),
+                    has_assignee
+                );
+                assert_eq!(body.contains("Assign a contributor"), !has_assignee);
+                assert!(body.contains("1 USDC"));
+                assert!(body.contains("https://viewer.trustlesswork.com/escrow"));
+                assert!(!body.contains("Reward secured"));
+            }
+        }
+    }
+
     use super::*;
 
     #[test]

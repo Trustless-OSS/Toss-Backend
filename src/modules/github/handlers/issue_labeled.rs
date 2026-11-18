@@ -98,7 +98,8 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
 
     let existing = get_issue_by_repo_and_github_id(state, repo.id, github_issue_id).await?;
 
-    if event_label.as_deref() == Some("rejected") {
+    let mut labels = labels_from_payload(issue);
+    if parse_labels(&labels, &reward_labels).is_rejected {
         if let Some(ref existing) = existing {
             if existing.status != "paid" && existing.status != "cancelled" {
                 let reward = crate::modules::bounty::service::reject_bounty_with_pool_refund(
@@ -117,7 +118,6 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
         return Ok(());
     }
 
-    let mut labels = labels_from_payload(issue);
     if let Some(event_label) = &event_label {
         labels.sort_by_key(|label| {
             !label["name"]
@@ -342,7 +342,14 @@ pub async fn handle_issue_labeled(state: &AppState, payload: &Value) -> Result<(
         state,
         &repo,
         issue_number,
-        &comments::labeled_bounty_created(reward_amount, matched_level, contract_id),
+        &comments::labeled_bounty_created(
+            reward_amount,
+            matched_level,
+            contract_id,
+            issue["assignees"]
+                .as_array()
+                .is_some_and(|assignees| !assignees.is_empty()),
+        ),
     )
     .await?;
 

@@ -130,12 +130,10 @@ pub async fn adopt_existing_assignee(
     issue: &Value,
     bounty: &Bounty,
 ) -> Result<(), AppError> {
-    // Prefer the full `assignees` list; fall back to the single `assignee`.
     let assignee = issue
         .get("assignees")
         .and_then(Value::as_array)
-        .and_then(|list| list.first())
-        .or_else(|| issue.get("assignee"));
+        .and_then(|list| list.first());
 
     let Some(assignee) = assignee.filter(|a| !a.is_null()) else {
         return Ok(());

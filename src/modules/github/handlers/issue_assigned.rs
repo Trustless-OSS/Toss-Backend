@@ -31,6 +31,14 @@ pub async fn handle_issue_assigned(state: &AppState, payload: &Value) -> Result<
         .get("assignee")
         .ok_or_else(|| AppError::webhook("issues.assigned payload missing assignee"))?;
 
+    let Some(assignee) = issue["assignees"].as_array().and_then(|assignees| {
+        assignees
+            .iter()
+            .find(|current| current["id"] == assignee["id"])
+    }) else {
+        return Ok(());
+    };
+
     let repo_github_id = repository.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
     let github_issue_id = issue.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
     let assignee_github_id = assignee.get("id").and_then(|v| v.as_i64()).unwrap_or(0);

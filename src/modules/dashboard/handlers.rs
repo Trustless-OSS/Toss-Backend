@@ -1,8 +1,3 @@
-//! Dashboard & leaderboard HTTP handlers.
-//!
-//! The four `dashboard/*` endpoints are maintainer-scoped (via `AuthedUser` →
-//! `RepoMaintainer`). `/api/leaderboard` is public, cached, and paginated.
-
 use axum::{
     extract::{Query, State},
     Json,

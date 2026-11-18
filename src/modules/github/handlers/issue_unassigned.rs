@@ -49,16 +49,20 @@ pub async fn handle_issue_unassigned(state: &AppState, payload: &Value) -> Resul
         return Ok(());
     }
 
-    if let Some(removed_id) = payload["assignee"]["id"].as_i64() {
-        let assignment =
-            crate::modules::bounty::repository::get_assignment_for_issue(state, issue_record.id)
-                .await?;
-        if assignment
-            .and_then(|(_, profile)| profile)
-            .is_some_and(|profile| profile.github_id != removed_id)
-        {
-            return Ok(());
-        }
+    let assignment =
+        crate::modules::bounty::repository::get_assignment_for_issue(state, issue_record.id)
+            .await?;
+    if assignment
+        .and_then(|(_, profile)| profile)
+        .is_some_and(|profile| {
+            issue["assignees"].as_array().is_some_and(|assignees| {
+                assignees
+                    .iter()
+                    .any(|assignee| assignee["id"].as_i64() == Some(profile.github_id))
+            })
+        })
+    {
+        return Ok(());
     }
 
     // Capture assignee before deletion for notification

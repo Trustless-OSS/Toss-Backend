@@ -165,7 +165,7 @@ pub async fn handle_issue_comment_created(
             .await?;
             return Ok(());
         };
-        let mut target = crate::modules::github::auth::fetch_issue_payload(
+        let target = crate::modules::github::auth::fetch_issue_payload(
             state,
             repo_github_id,
             full_name,
@@ -176,13 +176,6 @@ pub async fn handle_issue_comment_created(
             return Err(AppError::bad_request(
                 "A reward must link to an issue, not another PR",
             ));
-        }
-        if target
-            .get("assignees")
-            .and_then(Value::as_array)
-            .is_none_or(|assignees| assignees.is_empty())
-        {
-            target["assignees"] = serde_json::json!([issue_payload["user"].clone()]);
         }
         return create_or_update_manual_bounty(
             state,
@@ -649,7 +642,14 @@ async fn create_or_update_manual_bounty(
         state,
         full_name,
         issue_number,
-        &comments::manual_bounty_created(manual_amount, contract_id, commenter_login),
+        &comments::manual_bounty_created(
+            manual_amount,
+            contract_id,
+            commenter_login,
+            issue_payload["assignees"]
+                .as_array()
+                .is_some_and(|assignees| !assignees.is_empty()),
+        ),
     )
     .await?;
 

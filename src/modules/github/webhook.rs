@@ -33,7 +33,10 @@ struct GithubSender {
     id: i64,
 }
 
-pub async fn process_webhook_job(state: &AppState, job: WebhookJobData) -> Result<(), AppError> {
+pub async fn process_webhook_job(
+    state: &AppState,
+    mut job: WebhookJobData,
+) -> Result<(), AppError> {
     if let Some(task_id) = job.payload["_recoveryTaskId"]
         .as_str()
         .and_then(|id| uuid::Uuid::parse_str(id).ok())
@@ -70,6 +73,29 @@ pub async fn process_webhook_job(state: &AppState, job: WebhookJobData) -> Resul
                 sync_repo_full_name(state, id, full_name).await?;
             }
         }
+    }
+
+    if (job.event == "issues"
+        && matches!(
+            action,
+            "opened" | "labeled" | "assigned" | "unassigned" | "closed"
+        ))
+        || (job.event == "issue_comment" && action == "created")
+    {
+        let repo_id = job.payload["repository"]["id"]
+            .as_i64()
+            .ok_or_else(|| AppError::webhook("repository.id missing"))?;
+        let full_name = job.payload["repository"]["full_name"]
+            .as_str()
+            .ok_or_else(|| AppError::webhook("repository.full_name missing"))?;
+        let number = job.payload["issue"]["number"]
+            .as_i64()
+            .and_then(|number| i32::try_from(number).ok())
+            .filter(|number| *number > 0)
+            .ok_or_else(|| AppError::webhook("issue.number invalid"))?;
+        // Events trigger processing; the API supplies the current issue state.
+        job.payload["issue"] =
+            super::auth::fetch_issue_payload(state, repo_id, full_name, number).await?;
     }
 
     match job.event.as_str() {
