@@ -192,7 +192,8 @@ the storage bucket's CORS policy to allow `PUT` from the frontend origin.
 | System | `GET /`, `GET /health`, `GET /api/v1/health`, `GET /api/v1/health/database`, `GET /api/v1/health/redis`, `GET /api/v1/health/trustless-work`, `GET /api/v1/queue/stats` |
 | Repositories | `GET /api/v1/repos`, `POST /api/v1/repos/connect`, `POST /api/v1/repos/sync-installation`, `GET/DELETE /api/v1/repos/{repoId}` |
 | Issues and rewards | `GET /api/v1/repos/{repoId}/issues`, `PUT /api/v1/repos/{repoId}/rewards`, `POST /api/v1/issues/{issueId}/retry` (emergency override — [not part of the happy path](docs/jobs.md#retry-is-not-part-of-the-happy-path)) |
-| Contributors | `POST /api/v1/wallet/connect`, `GET /api/v1/contributor/me` |
+| Contributors | `POST /api/v1/wallet/connect`, `GET /api/v1/contributor/me`, `GET /api/contributors/leaderboard` |
+| Activity | `GET /api/activity` (`?kind=&repo=&page=&limit=`) |
 | Milestones | `POST /api/v1/milestones/push` |
 | Escrow | `POST /api/v1/escrow/create-unsigned`, `/submit-deploy`, `/fund-unsigned`, `/submit-fund`, `/refund`, `/close-unsigned`, `/submit-close` |
 | GitHub | `POST /api/v1/webhooks/github` |

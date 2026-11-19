@@ -3,6 +3,8 @@ use utoipa::{
     Modify, OpenApi,
 };
 
+use crate::modules::activity::dto::PaginatedLedgerResponse;
+
 struct SecurityAddon;
 
 impl Modify for SecurityAddon {
@@ -44,7 +46,8 @@ impl Modify for SecurityAddon {
         (name = "Tickets", description = "Authenticated support ticket lifecycle"),
         (name = "Upload", description = "Authenticated file upload"),
         (name = "GitHub", description = "GitHub App webhook ingestion"),
-        (name = "Dashboard", description = "Maintainer dashboard metrics and public leaderboard")
+        (name = "Dashboard", description = "Maintainer dashboard metrics and public leaderboard"),
+        (name = "Activity", description = "Maintainer-scoped activity ledger and contributor leaderboard")
     ),
     paths(
         crate::app::root_handler,
@@ -90,6 +93,8 @@ impl Modify for SecurityAddon {
         crate::modules::dashboard::handlers::funds_movement,
         crate::modules::dashboard::handlers::maintainer_leaderboard,
         crate::modules::dashboard::handlers::public_leaderboard,
+        crate::modules::activity::handlers::get_activity,
+        crate::modules::activity::handlers::get_contributors_leaderboard,
     ),
     components(schemas(
         crate::error::ErrorResponse,
@@ -146,6 +151,15 @@ impl Modify for SecurityAddon {
         crate::modules::dashboard::model::DashboardSummary,
         crate::modules::dashboard::model::LeaderboardEntry,
         crate::modules::dashboard::model::LeaderboardPage,
+        crate::modules::activity::dto::ActivityEventKind,
+        crate::modules::activity::dto::ActivityLedgerItem,
+        crate::modules::activity::dto::ContributorLeaderboardEntry,
+        crate::modules::activity::dto::PaginatedLedgerResponse<
+            crate::modules::activity::dto::ActivityLedgerItem,
+        >,
+        crate::modules::activity::dto::PaginatedLedgerResponse<
+            crate::modules::activity::dto::ContributorLeaderboardEntry,
+        >,
     ))
 )]
 pub struct ApiDoc;
@@ -197,6 +211,8 @@ mod tests {
         "/api/v1/dashboard/funds-movement",
         "/api/v1/dashboard/leaderboard",
         "/api/leaderboard",
+        "/api/activity",
+        "/api/contributors/leaderboard",
     ];
 
     const AUTHENTICATED_OPERATIONS: &[(&str, &str)] = &[
@@ -233,6 +249,8 @@ mod tests {
         ("/api/v1/dashboard/summary", "get"),
         ("/api/v1/dashboard/funds-movement", "get"),
         ("/api/v1/dashboard/leaderboard", "get"),
+        ("/api/activity", "get"),
+        ("/api/contributors/leaderboard", "get"),
     ];
 
     #[test]
@@ -318,6 +336,9 @@ mod tests {
             "CreateEscrow",
             "UnsignedTransactionResponse",
             "GitHubWebhookPayload",
+            "ActivityEventKind",
+            "ActivityLedgerItem",
+            "ContributorLeaderboardEntry",
         ] {
             assert!(schemas.contains_key(name), "missing schema {name}");
         }

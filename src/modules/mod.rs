@@ -1,3 +1,4 @@
+pub mod activity;
 pub mod bounty;
 pub mod contributor;
 pub mod dashboard;
