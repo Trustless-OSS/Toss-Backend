@@ -314,6 +314,8 @@ Ticket creation requires a non-empty `category`, `subject`, and `message`. Their
 | `GET /api/v1/dashboard/funds-movement` | Bearer | Monthly cumulative escrow TVL and payouts. | — |
 | `GET /api/v1/dashboard/leaderboard` | Bearer | Leaderboard restricted to repositories maintained by the caller. | `?page=&page_size=` |
 | `GET /api/leaderboard` | Public | Platform-wide aggregate leaderboard; cached for 180 seconds. | `?page=&page_size=` |
+| `GET /api/activity` | Bearer | Paginated maintainer-scoped activity ledger, newest first. | `?kind=&repo=&page=&limit=` |
+| `GET /api/contributors/leaderboard` | Bearer | Paginated maintainer-scoped contributor leaderboard (`earned_usdc` desc, `merged_prs` desc, `github_username` asc). | `?repo=&page=&limit=` |
 
 Leaderboard responses are `{ "items": [], "page": 1, "pageSize": 20, "total": 0, "totalPages": 0 }`. Each entry has `rank`, `name`, `earnedUsdc`, `mergedPrs`, `assigned`, and `repos`.
 
