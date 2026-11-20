@@ -7,9 +7,7 @@
 //! The activity feed and all aggregates are **derived from `Bounty` rows**
 //! (status + the `assigned_at` / `merged_at` / `paid_at` / `created_at`
 //! timestamps) joined with `Profile` (contributor username) and `Repository`
-//! (the `owner/name` slug). The `Activity` and `EscrowFunder` tables exist in
-//! the schema but are not yet populated by the write path, so we reconstruct
-//! events from the authoritative bounty state instead.
+//! (the `owner/name` slug), reconstructing events from authoritative bounty state.
 
 pub mod handlers;
 pub mod model;

@@ -181,9 +181,9 @@ Original finding (before remediation): the API checked only `is_maintainer`, the
 
 **Historical pre-rollback status: Fixed for unverified local credit; settlement ledger pending.** Funding requires a single-use intent bound to transaction contents, repository, network, current contract, wallet, and amount. Flat/insufficient observed balance is rejected instead of inventing credit. A durable transaction-event settlement/provenance ledger and independent ledger verification remain pending.
 
-**Evidence:** `src/modules/escrow/handler.rs::submit_fund`; `src/modules/escrow/trustless_work/escrow_service.rs::{fund, wait_for_balance_after_fund}`; `src/shared/models/schema/escrow_funder.rs`.
+**Evidence:** `src/modules/escrow/handler.rs::submit_fund`; `src/modules/escrow/trustless_work/escrow_service.rs::{fund, wait_for_balance_after_fund}`.
 
-`fund()` submits arbitrary signed XDR, ignores `_funder_wallet`, and accepts a separate client `funded_amount`. It does not verify that the transaction transferred that token/amount to this repository's contract. When repeated balance reads remain flat or lower, the function returns `previous_balance + funded_amount` and persists it. The `EscrowFunder` model has a unique transaction hash, but this funding path never inserts a verified funding record or enforces transaction-hash uniqueness.
+`fund()` submits arbitrary signed XDR, ignores `_funder_wallet`, and accepts a separate client `funded_amount`. It does not verify that the transaction transferred that token/amount to this repository's contract. When repeated balance reads remain flat or lower, the function returns `previous_balance + funded_amount` and persists it. There is no verified funding-provenance ledger or transaction-hash uniqueness check.
 
 **Impact:** A maintainer can produce a false local balance if the helper accepts a transaction unrelated to the claimed deposit, or when an actual deposit has a different amount. Retries also lack application-level credit idempotency. This can mislead users and overcommit bounties. It does not create on-chain tokens: release checks and the contract still limit actual spending.
 

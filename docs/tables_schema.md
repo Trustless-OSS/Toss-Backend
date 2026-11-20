@@ -5,7 +5,7 @@
 > **Conventions:**
 > - Every FK references the `id` (UUID) PK of the parent table — never a natural key like `github_id`
 > - `?` suffix = nullable column
-> - Append-only tables (activity, failed_tasks) are never updated, only inserted
+> - `failed_tasks` records durable recovery state for background work
 > - Derived values (share %, statistics) live in queries / materialized views — not stored columns
 
 ---
@@ -18,13 +18,11 @@
 4. [repo_maintainers](#4-repo_maintainers)
 5. [reward_levels](#5-reward_levels)
 6. [bounties](#6-bounties)
-7. [escrow_funders](#7-escrow_funders)
-8. [notifications](#8-notifications)
-9. [activity](#9-activity)
-10. [failed_tasks](#10-failed_tasks)
-11. [contributor_stats (Materialized View)](#11-contributor_stats-materialized-view)
-12. [Relationships Overview](#12-relationships-overview)
-13. [Indexes](#13-indexes)
+7. [notifications](#7-notifications)
+8. [failed_tasks](#8-failed_tasks)
+9. [contributor_stats (Materialized View)](#9-contributor_stats-materialized-view)
+10. [Relationships Overview](#10-relationships-overview)
+11. [Indexes](#11-indexes)
 
 ---
 
@@ -230,40 +228,7 @@ CREATE TABLE bounties (
 
 ---
 
-## 7. `escrow_funders`
-
-Records every on-chain funding deposit into a repo's escrow. Both anonymous wallets and registered TOSS users can fund. Each deposit is one row.
-
-| Column | Type | Constraints | Notes |
-|---|---|---|---|
-| `id` | UUID | PK, DEFAULT gen_random_uuid() | |
-| `repo_id` | UUID | FK → repositories.id, NOT NULL | Which repo's escrow |
-| `wallet_address` | TEXT | NOT NULL | Funder's on-chain address |
-| `chain` | TEXT | NOT NULL, DEFAULT 'stellar' | Chain identifier |
-| `amount` | NUMERIC(20,7) | NOT NULL | Amount deposited in this tx |
-| `tx_hash` | TEXT | UNIQUE NOT NULL | Blockchain tx ID — idempotency guard |
-| `funded_at` | TIMESTAMPTZ | NOT NULL, DEFAULT now() | |
-| `profile_id` | UUID | FK → profiles.id, nullable | Null for anonymous funders |
-
-> Share % is **not stored** — compute it with a window function when needed:
-> `amount / SUM(amount) OVER (PARTITION BY repo_id)`
-
-```sql
-CREATE TABLE escrow_funders (
-  id              UUID          PRIMARY KEY DEFAULT gen_random_uuid(),
-  repo_id         UUID          NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
-  wallet_address  TEXT          NOT NULL,
-  chain           TEXT          NOT NULL DEFAULT 'stellar',
-  amount          NUMERIC(20,7) NOT NULL,
-  tx_hash         TEXT          UNIQUE NOT NULL,
-  funded_at       TIMESTAMPTZ   NOT NULL DEFAULT now(),
-  profile_id      UUID          REFERENCES profiles(id) ON DELETE SET NULL
-);
-```
-
----
-
-## 8. `notifications`
+## 7. `notifications`
 
 In-app notifications for any user. Append-only — never updated except flipping `is_read`.
 
@@ -293,33 +258,7 @@ CREATE TABLE notifications (
 
 ---
 
-## 9. `activity`
-
-Append-only audit log of every meaningful event in the system. Never updated or deleted. Used for feeds, dashboards, and debugging.
-
-| Column | Type | Constraints | Notes |
-|---|---|---|---|
-| `id` | UUID | PK, DEFAULT gen_random_uuid() | |
-| `repo_id` | UUID | FK → repositories.id, nullable | Null for user-only events |
-| `actor_id` | UUID | FK → profiles.id, nullable | Null for system-generated events |
-| `event_type` | TEXT | NOT NULL | e.g. `bounty.created` `pr.merged` `payout.sent` |
-| `payload` | JSONB | nullable | Arbitrary event data |
-| `created_at` | TIMESTAMPTZ | NOT NULL, DEFAULT now() | |
-
-```sql
-CREATE TABLE activity (
-  id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-  repo_id     UUID        REFERENCES repositories(id) ON DELETE SET NULL,
-  actor_id    UUID        REFERENCES profiles(id)     ON DELETE SET NULL,
-  event_type  TEXT        NOT NULL,
-  payload     JSONB,
-  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-```
-
----
-
-## 10. `failed_tasks`
+## 8. `failed_tasks`
 
 Dead-letter store for background jobs (BullMQ) that exhausted retries. Ops team can inspect, fix, and re-queue from here.
 
@@ -352,7 +291,7 @@ CREATE TABLE failed_tasks (
 
 ---
 
-## 11. `contributor_stats` (Materialized View)
+## 9. `contributor_stats` (Materialized View)
 
 Derived from `bounties` — never manually updated. Refresh after every payout event.
 
@@ -378,25 +317,18 @@ CREATE UNIQUE INDEX ON contributor_stats(profile_id);
 
 ---
 
-## 12. Relationships Overview
+## 10. Relationships Overview
 
 ```
 profiles ──────────────────────────── wallets
    │  (1 profile → many wallets)
    │
    ├──── repo_maintainers ──────────── repositories
-   │      (many-to-many)                    │
-   │                                        ├──── reward_levels
+   │      (many-to-many)                    ├──── reward_levels
    │                                        │         │
-   │                                        ├──── bounties ←── assignee (profiles)
-   │                                        │
-   │                                        ├──── escrow_funders ←── profile? (profiles)
-   │                                        │
-   │                                        └──── activity
+   │                                        └──── bounties ←── assignee (profiles)
    │
-   ├──── notifications
-   │
-   └──── activity (as actor)
+   └──── notifications
 
 
 failed_tasks          (standalone — no FKs, ref_id is untyped UUID)
@@ -405,7 +337,7 @@ contributor_stats     (materialized view — reads from bounties + reward_levels
 
 ---
 
-## 13. Indexes
+## 11. Indexes
 
 ```sql
 -- profiles
@@ -428,18 +360,9 @@ CREATE INDEX idx_bounties_repo       ON bounties(repo_id);
 CREATE INDEX idx_bounties_assignee   ON bounties(assignee_id) WHERE assignee_id IS NOT NULL;
 CREATE INDEX idx_bounties_status     ON bounties(status);
 
--- escrow_funders
-CREATE INDEX idx_escrow_repo         ON escrow_funders(repo_id);
-CREATE INDEX idx_escrow_profile      ON escrow_funders(profile_id) WHERE profile_id IS NOT NULL;
-
 -- notifications
 CREATE INDEX idx_notifs_profile      ON notifications(profile_id, created_at DESC);
 CREATE INDEX idx_notifs_unread       ON notifications(profile_id) WHERE is_read = false;
-
--- activity
-CREATE INDEX idx_activity_repo       ON activity(repo_id, created_at DESC);
-CREATE INDEX idx_activity_actor      ON activity(actor_id, created_at DESC);
-CREATE INDEX idx_activity_payload    ON activity USING GIN(payload);
 
 -- failed_tasks
 CREATE INDEX idx_failed_status       ON failed_tasks(status) WHERE status != 'resolved';

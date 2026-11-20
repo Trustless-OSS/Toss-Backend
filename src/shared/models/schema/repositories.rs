@@ -1,4 +1,4 @@
-use super::{Activity, Bounty, EscrowFunder, RepoMaintainer, Reward};
+use super::{Bounty, RepoMaintainer, Reward};
 use jiff::Timestamp;
 use rust_decimal::Decimal;
 use uuid::Uuid;
@@ -35,11 +35,5 @@ pub struct Repository {
     pub reward_levels: toasty::Deferred<Vec<Reward>>,
 
     #[has_many(pair = repo)]
-    pub escrow_funders: toasty::Deferred<Vec<EscrowFunder>>,
-
-    #[has_many(pair = repo)]
     pub maintainers: toasty::Deferred<Vec<RepoMaintainer>>,
-
-    #[has_many(pair = repo)]
-    pub activity: toasty::Deferred<Vec<Activity>>,
 }

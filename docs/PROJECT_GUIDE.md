@@ -233,7 +233,7 @@ stateDiagram-v2
     Funded --> Closed: close unsigned + submit close
 ```
 
-The repository stores the contract ID and a cached decimal balance. Balance versioning is used for concurrency-safe reservations/refunds. Funding records may be stored in `escrow_funders`. Refund cancels unpaid bounties and reports the refunded amount/cancel count.
+The repository stores the contract ID and a cached decimal balance. Balance versioning is used for concurrency-safe reservations/refunds. Refund cancels unpaid bounties and reports the refunded amount/cancel count.
 
 New escrows use the platform address and a 100-basis-point (1%) TOSS platform fee. The configured token address selects the escrow asset; the code and UI language primarily describe USDC.
 
@@ -415,9 +415,7 @@ PostgreSQL is the source of durable application state. Toasty schema models live
 | `repo_maintainers` | Profile-to-repository authorization | Composite key `(repo_id, profile_id)`, role. |
 | `reward_levels` | Label-to-amount configuration | Unique `(repo_id, label)`. |
 | `bounties` | GitHub issue and payout lifecycle | Unique GitHub issue ID and `(repo_id, issue_number)`; reward, assignee, milestone, timestamps, payout hash. |
-| `escrow_funders` | Funding deposit history | Wallet, amount, unique transaction hash, optional profile. |
 | `notifications` | In-app/email delivery record | Unique dedupe key, email/read status. |
-| `activity` | Generic append-style audit/event records | Repo/actor, type, JSON payload, timestamp. |
 | `failed_tasks` | Persistable failed-task metadata | Type, reference, JSON payload, attempts/status/error. |
 | `tickets` | User-owned support requests | Profile, category/message, attachment/bounty references, status. |
 

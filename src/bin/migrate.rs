@@ -15,9 +15,7 @@ async fn main() -> anyhow::Result<()> {
 
     let db = toasty::Db::builder()
         .models(toasty::models!(
-            toss_backend::shared::models::schema::Activity,
             toss_backend::shared::models::schema::Bounty,
-            toss_backend::shared::models::schema::EscrowFunder,
             toss_backend::shared::models::schema::FailedTask,
             toss_backend::shared::models::schema::Notification,
             toss_backend::shared::models::schema::Profile,

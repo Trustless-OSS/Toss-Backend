@@ -124,22 +124,6 @@ pub struct Bounty {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-pub struct EscrowFunder {
-    pub id: Uuid,
-    pub repo_id: Uuid,
-    pub wallet_address: String,
-    pub chain: String,
-
-    #[schema(value_type = String)]
-    #[serde(with = "rust_decimal::serde::str")]
-    pub amount: Decimal,
-
-    pub tx_hash: String,
-    pub funded_at: DateTime<Utc>,
-    pub profile_id: Option<Uuid>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Notification {
     pub id: Uuid,
     pub profile_id: Uuid,
@@ -252,21 +236,6 @@ impl From<schema::Notification> for Notification {
             email_sent_at: opt_ts(v.email_sent_at),
             is_read: v.is_read,
             created_at: ts(v.created_at),
-        }
-    }
-}
-
-impl From<schema::EscrowFunder> for EscrowFunder {
-    fn from(v: schema::EscrowFunder) -> Self {
-        Self {
-            id: v.id,
-            repo_id: v.repo_id,
-            wallet_address: v.wallet_address,
-            chain: v.chain,
-            amount: v.amount,
-            tx_hash: v.tx_hash,
-            funded_at: ts(v.funded_at),
-            profile_id: v.profile_id,
         }
     }
 }

@@ -106,21 +106,6 @@ CREATE TABLE "repo_maintainers" (
 );
 CREATE INDEX "index_repo_maintainers_by_repo_id" ON "repo_maintainers" ("repo_id");
 CREATE INDEX "index_repo_maintainers_by_profile_id" ON "repo_maintainers" ("profile_id");
-CREATE TABLE "escrow_funders" (
-    "id" UUID NOT NULL,
-    "repo_id" UUID NOT NULL,
-    "wallet_address" TEXT NOT NULL,
-    "chain" TEXT NOT NULL,
-    "amount" NUMERIC NOT NULL,
-    "tx_hash" TEXT NOT NULL,
-    "funded_at" TIMESTAMPTZ(6) NOT NULL,
-    "profile_id" UUID,
-    PRIMARY KEY ("id")
-);
-CREATE INDEX "index_escrow_funders_by_repo_id" ON "escrow_funders" ("repo_id");
-CREATE INDEX "index_escrow_funders_by_wallet_address" ON "escrow_funders" ("wallet_address");
-CREATE UNIQUE INDEX "index_escrow_funders_by_tx_hash" ON "escrow_funders" ("tx_hash");
-CREATE INDEX "index_escrow_funders_by_profile_id" ON "escrow_funders" ("profile_id");
 CREATE TABLE "tickets" (
     "id" UUID NOT NULL,
     "profile_id" UUID NOT NULL,
@@ -150,15 +135,3 @@ CREATE TABLE "failed_tasks" (
     PRIMARY KEY ("id")
 );
 CREATE INDEX "index_failed_tasks_by_task_type" ON "failed_tasks" ("task_type");
-CREATE TABLE "activity" (
-    "id" UUID NOT NULL,
-    "repo_id" UUID,
-    "actor_id" UUID,
-    "event_type" TEXT NOT NULL,
-    "payload" JSONB,
-    "created_at" TIMESTAMPTZ(6) NOT NULL,
-    PRIMARY KEY ("id")
-);
-CREATE INDEX "index_activity_by_repo_id" ON "activity" ("repo_id");
-CREATE INDEX "index_activity_by_actor_id" ON "activity" ("actor_id");
-CREATE INDEX "index_activity_by_event_type" ON "activity" ("event_type");
